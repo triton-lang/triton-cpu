@@ -193,6 +193,7 @@ def filter_layouts(layouts):
     return [l for l in layouts if is_layout_applicable(l)]
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x", list(dtypes) + ["bfloat16"])
 def test_empty_kernel(dtype_x, device):
@@ -415,6 +416,7 @@ def test_dtype_codegen():
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op)
@@ -469,6 +471,7 @@ def test_bin_op(dtype_x, dtype_y, op, num_ctas, device):
             test_broadcast=(op != "%"), filter_y=filter_y, test_scalar=not skip_scalar_test)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype, order", [(dtype, order) for dtype in dtypes_with_bfloat16 for order in [0, 1]])
 def test_addptr(dtype, order, device):
@@ -495,6 +498,7 @@ def test_addptr(dtype, order, device):
     np.testing.assert_allclose(y, to_numpy(y_tri))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y", [  #
     (dtype_x, dtype_y) for dtype_x in int_dtypes for dtype_y in int_dtypes
@@ -515,6 +519,7 @@ def test_floordiv(dtype_x, dtype_y, num_ctas, device):
     _test_binary(dtype_x, dtype_y, expr, numpy_expr, filter_y=filter_y, device=device, num_ctas=num_ctas)
 
 
+@pytest.mark.cpu
 def test_unsigned_name_mangling(device):
     # Test that uint32 and int32 are mangled differently by the compiler
     SIZE = 128
@@ -551,6 +556,7 @@ def test_unsigned_name_mangling(device):
 
 # test bitwise ops
 # ---------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op)
@@ -575,6 +581,7 @@ def test_bitwise_op(dtype_x, dtype_y, op, num_ctas, device):
         _test_binary(dtype_x, dtype_y, expr, numpy_expr, device=device, num_ctas=num_ctas)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_y, op", [  #
     (dtype_x, dtype_y, op) for op in ['<<', '>>'] for dtype_x in int_dtypes + uint_dtypes for dtype_y in uint_dtypes
@@ -597,6 +604,7 @@ def test_shift_op(dtype_x, dtype_y, op, num_ctas, device):
 ops = ['==', '!=', '>', '<', '>=', '<=']
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize(
     "dtype_x, dtype_y, op, mode_x, mode_y",
@@ -621,6 +629,7 @@ def test_compare_op(dtype_x, dtype_y, op, mode_x, mode_y, num_ctas, device):
 # ---------------
 # test broadcast
 # ---------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", dtypes_with_bfloat16)
 def test_broadcast(dtype, device):
@@ -655,6 +664,7 @@ def test_broadcast(dtype, device):
 # ----------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_slice(device):
 
@@ -686,6 +696,7 @@ def test_slice(device):
 # ------------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_invalid_slice(device):
     dst = torch.empty(128, device=device)
@@ -701,6 +712,7 @@ def test_invalid_slice(device):
 # ----------------
 # test expand_dims
 # ----------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_expand_dims(device):
 
@@ -749,6 +761,7 @@ def test_expand_dims(device):
     expand_dims_kernel[(1, )](dummy_tensor, N)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_expand_dims_error_cases(device):
 
@@ -812,6 +825,7 @@ def test_expand_dims_error_cases(device):
 # ----------------------------
 # test invalid program id axis
 # ----------------------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_invalid_pid_axis(device):
     dst = torch.empty(128, device=device)
@@ -828,6 +842,7 @@ def test_invalid_pid_axis(device):
 # ---------------
 # test where
 # ---------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", dtypes_with_bfloat16 + ["*int32"])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
@@ -880,6 +895,7 @@ def test_where(dtype, num_ctas, device):
         assert (z == to_numpy(z_tri)).all()
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_where_broadcast(num_ctas, device):
@@ -924,6 +940,7 @@ def test_where_broadcast(num_ctas, device):
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, expr",
                          [(dtype_x, ' -x') for dtype_x in dtypes_with_bfloat16] + [(dtype_x, ' ~x')
@@ -938,6 +955,7 @@ def test_unary_op(dtype_x, expr, num_ctas, device):
 # ----------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, expr, x",
                          [(dtype_x, expr, x)
@@ -948,6 +966,7 @@ def test_math_op(dtype_x, expr, x, device):
     _test_unary(dtype_x, f'tl.{expr}({x})', f'np.{expr}({x}) ', device=device)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", [dtype for dtype in ["float32", "float64"]])
 def test_math_erf_op(dtype, device):
@@ -969,6 +988,7 @@ def test_math_erf_op(dtype, device):
     torch.testing.assert_close(z_tri, z_ref)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", [dtype for dtype in ["float32", "float64"]])
 def test_math_fma_op(dtype, device):
@@ -994,6 +1014,7 @@ def test_math_fma_op(dtype, device):
     torch.testing.assert_close(z_tri, z_ref)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("expr", ["tl.math.fdiv(x, y)", "tl.math.div_rn(x, y)"])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
@@ -1006,6 +1027,7 @@ def test_math_divide_op(expr, num_ctas, device):
 # -------------
 # test precise math
 # -------------
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("expr_prec, expr_ref",
                          [('tl.math.sqrt_rn(x)', 'tl.math.sqrt(x.to(tl.float64)).to(tl.float32)'),
@@ -1046,6 +1068,7 @@ def test_precise_math(expr_prec, expr_ref, num_ctas, device):
 # ----------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x", [(dtype_x) for dtype_x in dtypes_with_bfloat16])
 def test_abs(dtype_x, device):
@@ -1091,6 +1114,7 @@ def test_abs_fp8(in_dtype, device):
 # ----------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_shapes_as_params(device):
 
@@ -1160,6 +1184,7 @@ def make_ptr_str(name, shape):
     return f"{name} + {' + '.join(offsets)}"
 
 
+@pytest.mark.cpu
 # TODO: handle `%4 = triton_gpu.convert_layout %3 : tensor<32xi32, #blocked0> -> tensor<32xi32, #triton_gpu.slice<{dim = 0, parent = #blocked1}>>``
 @pytest.mark.parametrize("expr, dtype_str", [(f'x[{s}]', d)
                                              for s in ['None, :', ':, None', 'None, :, :', ':, :, None']
@@ -1229,6 +1254,7 @@ def tuples_fn(a, b):
         a * b
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_tuples(device):
 
@@ -1321,6 +1347,7 @@ def noinline_multi_values_fn(x, y, Z):
     tl.store(Z, z)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("mode", ["simple", "call_graph", "shared", "dynamic", "multi_values"])
 def test_noinline(mode, device):
@@ -1574,6 +1601,7 @@ def test_tensor_atomic_cas(sem, num_ctas, device):
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x, dtype_z, bitcast, size",
                          [(dtype_x, dtype_z, False, 1024) for dtype_x in dtypes for dtype_z in dtypes] + [
@@ -4275,6 +4303,7 @@ def test_value_specialization_overflow(value: int, overflow: bool, device) -> No
 # ----------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("op", ['+', '-', '*', '/', '%', '<', '>', '<<', '>>', '&', '^', '|'])
 @pytest.mark.parametrize("is_lhs_constexpr", [False, True])
@@ -4312,6 +4341,7 @@ def test_bin_op_constexpr(op, is_lhs_constexpr, is_rhs_constexpr, device):
     np.testing.assert_allclose(z, to_numpy(z_tri), rtol=1e-3)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_constexpr_shape(device):
 
@@ -4325,6 +4355,7 @@ def test_constexpr_shape(device):
     np.testing.assert_equal(to_numpy(x_tri), np.arange(0, 256))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_constexpr_scalar_shape(device):
 
@@ -4342,6 +4373,7 @@ def test_constexpr_scalar_shape(device):
 reshape_list = [((64, ), (8, 8)), ((2, 32), (16, 4)), ((512, ), (2, 2, 2, 2, 2, 2, 2, 2, 2)), ((64, 32), (16, 8, 16))]
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("formats", reshape_list)
 def test_reshape(formats, device):
