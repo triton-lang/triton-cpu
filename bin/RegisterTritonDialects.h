@@ -16,8 +16,6 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 
-#include "cpu/include/TritonCPUToLLVM/Passes.h"
-#include "cpu/include/TritonToTritonCPU/Passes.h"
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
 #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
@@ -65,12 +63,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonAMDGPUReorderInstructions();
   mlir::registerTritonAMDGPUStreamPipelineV2();
   mlir::registerTritonAMDGPUCanonicalizePointers();
-
-  // CPU passes
-  mlir::triton::cpu::registerTritonToTritonCPUPasses();
-  mlir::triton::cpu::registerTritonToTritonCPUPipeline();
-  mlir::triton::cpu::registerTritonCPUToLLVMPasses();
-  mlir::triton::cpu::registerTritonCPUToLLVMPipeline();
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
