@@ -56,6 +56,7 @@ public:
     addIllegalOp<triton::PreciseSqrtOp>();
     addIllegalOp<triton::ReshapeOp>();
     addIllegalOp<triton::MulhiUIOp>();
+    addIllegalOp<triton::ClampFOp>();
   }
 };
 
@@ -176,6 +177,29 @@ struct MulhiUIOpConversion : public OpConversionPattern<triton::MulhiUIOp> {
   }
 };
 
+struct ClampFOpConversion : public OpConversionPattern<triton::ClampFOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ClampFOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto val = rewriter.getRemappedValue(op.getX());
+    auto minVal = rewriter.getRemappedValue(op.getMin());
+    auto maxVal = rewriter.getRemappedValue(op.getMax());
+    Value res;
+    if (op.getPropagateNanAttr().getValue() == PropagateNan::ALL) {
+      res = rewriter.create<arith::MaximumFOp>(loc, val, minVal);
+      res = rewriter.create<arith::MinimumFOp>(loc, res, maxVal);
+    } else {
+      res = rewriter.create<arith::MaxNumFOp>(loc, val, minVal);
+      res = rewriter.create<arith::MinNumFOp>(loc, res, maxVal);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
 struct ConvertElementwiseOps
     : public triton::impl::ConvertElementwiseOpsBase<ConvertElementwiseOps> {
   using ConvertElementwiseOpsBase::ConvertElementwiseOpsBase;
@@ -221,6 +245,14 @@ struct ConvertElementwiseOps
     patterns.add<OpTypeConversion<arith::CmpFOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<arith::CmpIOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<arith::SelectOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MaximumFOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MaxNumFOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MaxSIOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MaxUIOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MinimumFOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MinNumFOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MinSIOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::MinUIOp>>(typeConverter, context);
 
     patterns.add<OpTypeConversion<math::FloorOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::CeilOp>>(typeConverter, context);
@@ -249,6 +281,7 @@ struct ConvertElementwiseOps
         typeConverter, context);
     patterns.add<ReshapeOpConversion>(typeConverter, context);
     patterns.add<MulhiUIOpConversion>(typeConverter, context);
+    patterns.add<ClampFOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

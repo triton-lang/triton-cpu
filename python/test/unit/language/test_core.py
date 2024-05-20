@@ -5215,6 +5215,7 @@ def test_enable_fp_fusion(enable_fp_fusion, device):
 # -----------------------
 
 
+@pytest.mark.cpu
 @pytest.mark.parametrize("dtype", ['float16', 'float32'])
 @pytest.mark.parametrize("propagate_nan", ['NONE', 'ALL'])
 @pytest.mark.parametrize("func", ['minimum', 'maximum', 'clamp'])
@@ -5253,6 +5254,7 @@ def test_propagate_nan(dtype, propagate_nan, func, device):
 # -----------------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", ['float16', 'float32'])
 def test_clamp(dtype, device):
@@ -5289,6 +5291,7 @@ def test_clamp(dtype, device):
 
 # Test for symmetric clamp(x, -limit, limit), as it may go through optimized
 # codegen in the backends
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", ['float16', 'float32'])
 def test_clamp_symmetric(dtype, device):
