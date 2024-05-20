@@ -294,7 +294,7 @@ void init_triton_llvm(py::module &&m) {
 
   m.def(
       "translate_to_host_asm",
-      [](std::string llvmIR) -> py::object {
+      [](std::string llvmIR, bool enable_fp_fusion) -> py::object {
         std::string res;
         {
           // when allow_threads goes out of scope, gil will be released
@@ -311,9 +311,10 @@ void init_triton_llvm(py::module &&m) {
                 "failed to parse IR: " + error.getMessage() +
                 "lineno: " + std::to_string(error.getLineNo()));
           }
-          res = translateLLVMIRToASM(
-              *module, llvm::sys::getDefaultTargetTriple(),
-              llvm::sys::getHostCPUName().str(), "", {}, false, false);
+          res =
+              translateLLVMIRToASM(*module, llvm::sys::getDefaultTargetTriple(),
+                                   llvm::sys::getHostCPUName().str(), "", {},
+                                   enable_fp_fusion, false);
         }
         return py::str(res);
       },

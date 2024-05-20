@@ -22,6 +22,7 @@ class CPUOptions:
     debug: bool = False
     allowed_dot_input_precisions: Tuple[str] = ("ieee",)
     allow_fp8e4nv: bool = False
+    enable_fp_fusion: bool = True
 
     # TODO: We may introduce CPU-specific options like # of cores.
 
@@ -138,7 +139,7 @@ class CPUBackend(BaseBackend):
     def make_bc(src, metadata, options):
         if os.environ.get("TRITON_CPU_ASM_DUMP", "0") == "1":
             print("********** Module ASM **********")
-            print(llvm.translate_to_host_asm(src))
+            print(llvm.translate_to_host_asm(src, options.enable_fp_fusion))
         ret = llvm.translate_to_bc(src)
         return ret
 
