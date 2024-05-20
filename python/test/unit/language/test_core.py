@@ -5052,6 +5052,7 @@ def test_load_scalar_with_mask(device):
 
 # This test is used to test our own PTX codegen for float16 and int16 conversions
 # maybe delete it later after ptxas has been fixed
+@pytest.mark.cpu
 @pytest.mark.parametrize("dtype_str", ['float16', 'int16'])
 def test_ptx_cast(dtype_str, device):
 
