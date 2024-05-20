@@ -55,6 +55,7 @@ public:
     addIllegalOp<triton::PreciseDivFOp>();
     addIllegalOp<triton::PreciseSqrtOp>();
     addIllegalOp<triton::ReshapeOp>();
+    addIllegalOp<triton::MulhiUIOp>();
   }
 };
 
@@ -142,6 +143,39 @@ private:
   }
 };
 
+struct MulhiUIOpConversion : public OpConversionPattern<triton::MulhiUIOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::MulhiUIOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    assert(isa<RankedTensorType>(op.getType()));
+    auto loc = op.getLoc();
+    auto lhs = rewriter.getRemappedValue(op.getX());
+    auto rhs = rewriter.getRemappedValue(op.getY());
+    auto lhsTy = dyn_cast<VectorType>(lhs.getType());
+    auto rhsTy = dyn_cast<VectorType>(rhs.getType());
+    auto vecI32Ty = lhsTy.cloneWith(std::nullopt, rewriter.getI32Type());
+    auto vecI64Ty = lhsTy.cloneWith(std::nullopt, rewriter.getI64Type());
+    assert(lhsTy.getElementType().isInteger());
+    assert(rhsTy.getElementType().isInteger());
+    // Cast to int64
+    if (lhsTy.getElementTypeBitWidth() < 64) {
+      lhs = rewriter.create<arith::ExtUIOp>(loc, vecI64Ty, lhs);
+    }
+    if (rhsTy.getElementTypeBitWidth() < 64) {
+      rhs = rewriter.create<arith::ExtUIOp>(loc, vecI64Ty, rhs);
+    }
+    Value res = rewriter.create<arith::MulIOp>(loc, lhs, rhs);
+    Value cst32 = rewriter.create<arith::ConstantOp>(
+        loc, DenseElementsAttr::get(vecI64Ty, 32LL));
+    res = rewriter.create<arith::ShRUIOp>(loc, res, cst32);
+    res = rewriter.create<arith::TruncIOp>(loc, vecI32Ty, res);
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
 struct ConvertElementwiseOps
     : public triton::impl::ConvertElementwiseOpsBase<ConvertElementwiseOps> {
   using ConvertElementwiseOpsBase::ConvertElementwiseOpsBase;
@@ -214,6 +248,7 @@ struct ConvertElementwiseOps
     patterns.add<OpTypeConversion<triton::PreciseSqrtOp, math::SqrtOp>>(
         typeConverter, context);
     patterns.add<ReshapeOpConversion>(typeConverter, context);
+    patterns.add<MulhiUIOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

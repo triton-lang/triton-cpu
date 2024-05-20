@@ -1736,6 +1736,7 @@ def test_load_store_same_ptr(device):
         assert torch.all(x == 2)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", ['int32'])
 def test_umulhi(dtype_str, device):
