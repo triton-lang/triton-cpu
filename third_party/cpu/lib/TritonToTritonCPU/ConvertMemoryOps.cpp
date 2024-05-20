@@ -32,8 +32,32 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
-struct LoadOpConversion : public OpConversionPattern<triton::LoadOp> {
-  using OpConversionPattern::OpConversionPattern;
+template <typename OpT>
+struct MemoryOpConversion : public OpConversionPattern<OpT> {
+  using OpConversionPattern<OpT>::OpConversionPattern;
+
+  MemoryOpConversion(ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                     TypeConverter &typeConverter, MLIRContext *context)
+      : OpConversionPattern<OpT>(typeConverter, context),
+        axisAnalysis(axisInfoAnalysis) {}
+
+  Value extractScalarPointer(Location loc, Value ptrs,
+                             ArrayRef<int64_t> indices,
+                             ConversionPatternRewriter &rewriter) const {
+    // TODO: Analyze data flow and build scalar pointer computation code.
+    Value ptr = rewriter.create<vector::ExtractOp>(
+        loc, rewriter.getRemappedValue(ptrs), indices);
+    auto ptrTy = dyn_cast<RankedTensorType>(ptrs.getType()).getElementType();
+    ptr = rewriter.create<IntToPtrOp>(loc, ptrTy, ptr);
+    return ptr;
+  }
+
+protected:
+  ModuleAxisInfoAnalysis &axisAnalysis;
+};
+
+struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
+  using MemoryOpConversion::MemoryOpConversion;
 
   LogicalResult
   matchAndRewrite(triton::LoadOp loadOp, OpAdaptor adaptor,
@@ -44,6 +68,10 @@ struct LoadOpConversion : public OpConversionPattern<triton::LoadOp> {
     auto boundaryChecks = loadOp.getBoundaryCheck();
 
     if (!triton::isTensorPointerType(ptr.getType())) {
+      auto axisInfo = axisAnalysis.getAxisInfo(ptr);
+      if (axisInfo) {
+        return lowerUsingAxisInfo(axisInfo, loadOp, rewriter);
+      }
       return lowerToScalarLoads(loadOp, rewriter);
     }
 
@@ -65,6 +93,70 @@ struct LoadOpConversion : public OpConversionPattern<triton::LoadOp> {
                                                            indices, inBounds);
     rewriter.replaceOp(loadOp, vecRead);
     return success();
+  }
+
+  LogicalResult lowerUsingAxisInfo(AxisInfo *axisInfo, triton::LoadOp loadOp,
+                                   ConversionPatternRewriter &rewriter) const {
+    // This is an experimental code that covers only a simple case of axis info
+    // usage to demostrate load by tensor of pointers transformation into vector
+    // loads.
+    // TODO: Support more cases.
+    // TODO: Make separate pass to produce block pointer stores?
+    auto loc = loadOp.getLoc();
+    auto vecTy =
+        dyn_cast<VectorType>(getTypeConverter()->convertType(loadOp.getType()));
+    auto shape = vecTy.getShape();
+    auto contiguity = axisInfo->getContiguity();
+    if (shape.back() > 1 && shape.back() == contiguity.back()) {
+      auto strides = computeStrides(shape);
+      int64_t numElems = vecTy.getNumElements();
+      Type subVecTy = VectorType::get(shape.back(), vecTy.getElementType());
+      Type memRefTy = MemRefType::get(shape.back(), vecTy.getElementType());
+      Value mask = loadOp.getMask()
+                       ? rewriter.getRemappedValue(loadOp.getMask())
+                       : nullptr;
+      Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      Value defaultVal = loadOp.getOther();
+      if (!defaultVal)
+        defaultVal = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getZeroAttr(vecTy.getElementType()));
+      Value res = rewriter.create<vector::BroadcastOp>(loc, vecTy, defaultVal);
+      for (int64_t idx = 0; idx < numElems; idx += shape.back()) {
+        auto indices = delinearize(idx, strides);
+        auto ptr =
+            extractScalarPointer(loc, loadOp.getPtr(), indices, rewriter);
+        Value memRef =
+            rewriter.create<triton::cpu::PtrToMemRefOp>(loc, memRefTy, ptr);
+        Value vec;
+        if (mask) {
+          Value subMask = mask;
+          if (shape.size() > 1) {
+            SmallVector<int64_t> subIndices = indices;
+            subIndices.pop_back();
+            subMask = rewriter.create<vector::ExtractOp>(loc, mask, subIndices);
+          }
+          Value passThru =
+              rewriter.create<vector::BroadcastOp>(loc, subVecTy, defaultVal);
+          vec = rewriter.create<vector::MaskedLoadOp>(
+              loc, subVecTy, memRef, zeroIdx, subMask, passThru);
+        } else {
+          vec = rewriter.create<vector::LoadOp>(loc, subVecTy, memRef, zeroIdx);
+        }
+
+        if (shape.size() > 1) {
+          SmallVector<int64_t> subIndices = indices;
+          subIndices.pop_back();
+          res = rewriter.create<vector::InsertOp>(loc, vec, res, subIndices);
+        } else {
+          res = vec;
+        }
+      }
+
+      rewriter.replaceOp(loadOp, res);
+      return success();
+    }
+
+    return lowerToScalarLoads(loadOp, rewriter);
   }
 
   LogicalResult lowerToScalarLoads(triton::LoadOp loadOp,
@@ -133,8 +225,8 @@ struct LoadOpConversion : public OpConversionPattern<triton::LoadOp> {
   }
 };
 
-struct StoreOpConversion : public OpConversionPattern<triton::StoreOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
+  using MemoryOpConversion::MemoryOpConversion;
 
   LogicalResult
   matchAndRewrite(triton::StoreOp storeOp, OpAdaptor adaptor,
@@ -145,6 +237,10 @@ struct StoreOpConversion : public OpConversionPattern<triton::StoreOp> {
     auto boundaryChecks = storeOp.getBoundaryCheck();
 
     if (!triton::isTensorPointerType(ptr.getType())) {
+      auto axisInfo = axisAnalysis.getAxisInfo(ptr);
+      if (axisInfo) {
+        return lowerUsingAxisInfo(axisInfo, storeOp, rewriter);
+      }
       return lowerToScalarStores(storeOp, rewriter);
     }
 
@@ -165,6 +261,57 @@ struct StoreOpConversion : public OpConversionPattern<triton::StoreOp> {
                                                              indices, inBounds);
     rewriter.replaceOp(storeOp, vecWrite);
     return success();
+  }
+
+  LogicalResult lowerUsingAxisInfo(AxisInfo *axisInfo, triton::StoreOp storeOp,
+                                   ConversionPatternRewriter &rewriter) const {
+    // This is an experimental code that covers only a simple case of axis info
+    // usage to demostrate load by tensor of pointers transformation into vector
+    // loads.
+    // TODO: Support more cases.
+    // TODO: Make separate pass to produce block pointer stores instead?
+    auto loc = storeOp.getLoc();
+    auto vals = rewriter.getRemappedValue(storeOp.getValue());
+    auto vecTy = dyn_cast<VectorType>(vals.getType());
+    auto shape = vecTy.getShape();
+    auto contiguity = axisInfo->getContiguity();
+    if (shape.back() > 1 && shape.back() == contiguity.back()) {
+      auto strides = computeStrides(shape);
+      int64_t numElems = vecTy.getNumElements();
+      Type memRefTy = MemRefType::get(shape.back(), vecTy.getElementType());
+      Value mask = storeOp.getMask()
+                       ? rewriter.getRemappedValue(storeOp.getMask())
+                       : nullptr;
+      Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto vals = rewriter.getRemappedValue(storeOp.getValue());
+      for (int64_t idx = 0; idx < numElems; idx += shape.back()) {
+        auto indices = delinearize(idx, strides);
+        auto ptr =
+            extractScalarPointer(loc, storeOp.getPtr(), indices, rewriter);
+        Value memRef =
+            rewriter.create<triton::cpu::PtrToMemRefOp>(loc, memRefTy, ptr);
+        indices.pop_back();
+        auto val = rewriter.create<vector::ExtractOp>(loc, vals, indices);
+
+        if (mask) {
+          Value subMask = mask;
+          if (shape.size() > 1) {
+            SmallVector<int64_t> subIndices = indices;
+            subIndices.pop_back();
+            subMask = rewriter.create<vector::ExtractOp>(loc, mask, indices);
+          }
+          rewriter.create<vector::MaskedStoreOp>(loc, memRef, zeroIdx, subMask,
+                                                 val);
+        } else {
+          rewriter.create<vector::StoreOp>(loc, val, memRef, zeroIdx);
+        }
+      }
+
+      rewriter.eraseOp(storeOp);
+      return success();
+    }
+
+    return lowerToScalarStores(storeOp, rewriter);
   }
 
   LogicalResult lowerToScalarStores(triton::StoreOp storeOp,
@@ -226,6 +373,7 @@ public:
   explicit MemoryOpConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
     addLegalDialect<vector::VectorDialect>();
     addLegalDialect<arith::ArithDialect>();
+    addLegalDialect<scf::SCFDialect>();
     addLegalDialect<cf::ControlFlowDialect>();
     addLegalDialect<TritonDialect>();
     addLegalDialect<TritonCPUDialect>();
@@ -251,11 +399,13 @@ struct ConvertMemoryOps
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
+    ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
     MemoryOpConversionTarget convTarget(*context);
     TritonToTritonCPUTypeConverter pointerConverter;
     RewritePatternSet patterns(context);
-    patterns.add<LoadOpConversion>(pointerConverter, context);
-    patterns.add<StoreOpConversion>(pointerConverter, context);
+    patterns.add<LoadOpConversion>(axisInfoAnalysis, pointerConverter, context);
+    patterns.add<StoreOpConversion>(axisInfoAnalysis, pointerConverter,
+                                    context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

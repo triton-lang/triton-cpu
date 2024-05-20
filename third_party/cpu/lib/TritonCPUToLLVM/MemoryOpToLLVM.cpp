@@ -111,6 +111,25 @@ struct ExtractIndicesOpConversion
   }
 };
 
+struct PtrToMemRefOpConversion : public OpConversionPattern<PtrToMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(PtrToMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value ptr = rewriter.getRemappedValue(op.getSrc());
+    auto memRefStructTy = getTypeConverter()->convertType(op.getType());
+
+    Value res = undef(memRefStructTy);
+    res =
+        rewriter.create<LLVM::InsertValueOp>(loc, memRefStructTy, res, ptr, 1);
+    rewriter.replaceOp(op, res);
+
+    return success();
+  }
+};
+
 struct MakeTensorPtrOpConversion : public OpConversionPattern<MakeTensorPtrOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -256,6 +275,7 @@ struct MemoryOpToLLVM
     patterns.add<StoreOpConversion>(typeConverter, context);
     patterns.add<PtrToIntOpConversion>(typeConverter, context);
     patterns.add<IntToPtrOpConversion>(typeConverter, context);
+    patterns.add<PtrToMemRefOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

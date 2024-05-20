@@ -60,4 +60,20 @@ def TTC_ExtractIndicesOp : TTC_Op<"extract_indices", [NoMemoryEffect]> {
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 }
 
+def TTC_PtrToMemRefOp : TTC_Op<"ptr_to_memref", [NoMemoryEffect]> {
+  let summary = "Build a memref for a pointer.";
+
+  let description = [{
+    Build memref with static shape, offset, strides, and specified base pointer.
+  }];
+
+  let arguments = (ins TT_Ptr:$src);
+
+  let results = (outs AnyStaticShapeMemRef:$result);
+
+  let hasCanonicalizer = 0;
+
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+}
+
 #endif
