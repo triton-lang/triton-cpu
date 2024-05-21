@@ -98,6 +98,8 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
+        cpu.passes.ttcpuir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         cpu.passes.ttcpuir.add_triton_cpu_to_llvmir_pipeline(pm)

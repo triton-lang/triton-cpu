@@ -2978,6 +2978,7 @@ def test_trans_2d(dtype_str, shape, perm, device):
     np.testing.assert_equal(to_numpy(expected), to_numpy(actual))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", ["int32", "int8"])
 @pytest.mark.parametrize("shape", [(2, 2, 8, 64), (4, 4, 4, 4)])
@@ -4094,6 +4095,7 @@ def test_reshape_err(device):
     assert "reshape" in str(exc_info.value)
 
 
+@pytest.mark.cpu
 def test_trans_reshape(device):
 
     @triton.jit
@@ -4120,8 +4122,9 @@ def test_trans_reshape(device):
     actual = torch.zeros(expected.shape, dtype=torch.int32, device=device)
 
     k = kernel[(1, )](input, actual, shape[0], shape[1])
-    assert k.asm['ttgir'].count(
-        'triton_gpu.convert_layout') == 1, "Expected exactly one convert_layout op in the TTGIR after optimization"
+    if not is_cpu():
+        assert k.asm['ttgir'].count(
+            'triton_gpu.convert_layout') == 1, "Expected exactly one convert_layout op in the TTGIR after optimization"
 
     np.testing.assert_equal(to_numpy(expected), to_numpy(actual))
 

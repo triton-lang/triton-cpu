@@ -34,8 +34,19 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_triton_cpu_to_llvmir_pipeline", [](mlir::PassManager &pm) {
     mlir::triton::cpu::tritonCPUToLLVMPipelineBuilder(pm);
   });
+  m.def("add_vector_to_scf", [](mlir::PassManager &pm, bool full_unroll,
+                                unsigned target_rank, bool lower_tensors) {
+    mlir::VectorTransferToSCFOptions opts;
+    opts.setTargetRank(target_rank);
+    opts.enableFullUnroll(full_unroll);
+    opts.enableLowerTensors(lower_tensors);
+    pm.addPass(mlir::createConvertVectorToSCFPass(opts));
+  });
   m.def("add_vector_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertVectorToLLVMPass());
+  });
+  m.def("add_lower_affine", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createLowerAffinePass());
   });
   m.def("add_memref_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
