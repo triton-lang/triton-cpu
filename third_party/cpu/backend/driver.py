@@ -149,7 +149,6 @@ def make_launcher(constants, signature, ids):
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
-    arg_types = (', '.join(f"{ty_to_cpp(ty)}" for i, ty in signature.items()) + ", " if len(signature) > 0 else '') + "uint32_t, uint32_t, uint32_t"
 
     def _extracted_type(ty):
         if ty[0] == '*':
@@ -174,8 +173,10 @@ def make_launcher(constants, signature, ids):
 
     args_format = ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
     format = "iiiOKOOOO" + args_format
-    args_list = ', '.join(f"arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
     arg_ptrs_list = ', '.join(f"&arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    kernel_fn_args = [i for i in signature.keys() if i not in constants]
+    kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args) if len(kernel_fn_args) > 0 else ''
+    kernel_fn_arg_types = (', '.join(f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args) + ", " if len(signature) > 0 else '') + "uint32_t, uint32_t, uint32_t"
 
     # generate glue code
     src = f"""
@@ -188,7 +189,7 @@ def make_launcher(constants, signature, ids):
 #include <Python.h>
 #include <stdio.h>
 
-using kernel_ptr_t = void(*)({arg_types});
+using kernel_ptr_t = void(*)({kernel_fn_arg_types});
 
 typedef struct _DevicePtrInfo {{
   void* dev_ptr;
@@ -235,7 +236,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
   for (uint32_t z = 0; z < gridZ; ++z) {{
     for (uint32_t y = 0; y < gridY; ++y) {{
       for (uint32_t x = 0; x < gridX; ++x) {{
-        (*kernel_ptr)({args_list + ', ' if len(arg_decls) > 0 else ''} x, y, z);
+        (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
       }}
     }}
   }}

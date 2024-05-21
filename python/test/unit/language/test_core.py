@@ -2896,6 +2896,7 @@ def test_generic_reduction(device):
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str, shape, perm", [(dtype, shape, perm)
                                                     # TODO: bfloat16
