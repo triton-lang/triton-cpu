@@ -57,6 +57,7 @@ public:
     addIllegalOp<triton::ReshapeOp>();
     addIllegalOp<triton::MulhiUIOp>();
     addIllegalOp<triton::ClampFOp>();
+    addIllegalOp<triton::TransOp>();
   }
 };
 
@@ -200,6 +201,21 @@ struct ClampFOpConversion : public OpConversionPattern<triton::ClampFOp> {
   }
 };
 
+struct TransOpConversion : public OpConversionPattern<triton::TransOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::TransOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto val = rewriter.getRemappedValue(op.getSrc());
+    auto order = op.getOrder();
+    SmallVector<int64_t> permutation(order.begin(), order.end());
+    rewriter.replaceOpWithNewOp<vector::TransposeOp>(op, val, permutation);
+    return success();
+  }
+};
+
 struct ConvertElementwiseOps
     : public triton::impl::ConvertElementwiseOpsBase<ConvertElementwiseOps> {
   using ConvertElementwiseOpsBase::ConvertElementwiseOpsBase;
@@ -282,6 +298,7 @@ struct ConvertElementwiseOps
     patterns.add<ReshapeOpConversion>(typeConverter, context);
     patterns.add<MulhiUIOpConversion>(typeConverter, context);
     patterns.add<ClampFOpConversion>(typeConverter, context);
+    patterns.add<TransOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

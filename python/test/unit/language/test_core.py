@@ -1114,6 +1114,7 @@ def test_shapes_as_params(device):
 # ----------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_x", [(dtype_x) for dtype_x in dtypes_with_bfloat16])
 def test_transpose(dtype_x, device):
@@ -2953,6 +2954,7 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     assert 'st.global.v4' in ptx
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", ["int32", "int8"])
 @pytest.mark.parametrize("shape", [(2, 4), (16, 16)])
