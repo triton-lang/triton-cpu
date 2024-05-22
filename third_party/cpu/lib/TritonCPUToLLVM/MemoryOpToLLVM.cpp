@@ -252,6 +252,59 @@ struct IntToPtrOpConversion : public OpConversionPattern<triton::IntToPtrOp> {
   }
 };
 
+struct AddPtrOpConversion : public OpConversionPattern<triton::AddPtrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::AddPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Expect only scalar pointers here.
+    assert(isa<PointerType>(op.getType()));
+    auto ptrTy = cast<PointerType>(op.getPtr().getType());
+    Type elemTy = getTypeConverter()->convertType(ptrTy.getPointeeType());
+    Type resTy = getTypeConverter()->convertType(ptrTy);
+    Value ptr = rewriter.getRemappedValue(op.getPtr());
+    Value offset = rewriter.getRemappedValue(op.getOffset());
+    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(op, resTy, elemTy, ptr, offset);
+    return success();
+  }
+};
+
+struct PtrBitcastConversion : public OpConversionPattern<triton::BitcastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // By this moment we expect tt.bitcast used only for scalar pointer casts.
+    // This cast becomes NOP for LLVM dialect, so simply return the source arg.
+    assert(isa<PointerType>(op.getType()));
+    assert(isa<PointerType>(op.getSrc().getType()));
+    Value src = rewriter.getRemappedValue(op.getSrc());
+    rewriter.replaceOp(op, src);
+    return success();
+  }
+};
+
+struct PtrSelectConversion : public OpConversionPattern<arith::SelectOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // By this moment we expect tt.bitcast used only for scalar pointer casts.
+    // This cast becomes NOP for LLVM dialect, so simply return the source arg.
+    if (!isa<PointerType>(op.getType()))
+      return failure();
+
+    Value trueVal = rewriter.getRemappedValue(op.getTrueValue());
+    Value falseVal = rewriter.getRemappedValue(op.getFalseValue());
+    Value cond = rewriter.getRemappedValue(op.getCondition());
+    rewriter.replaceOpWithNewOp<LLVM::SelectOp>(op, cond, trueVal, falseVal);
+    return success();
+  }
+};
+
 struct MemoryOpToLLVM
     : public triton::impl::MemoryOpToLLVMBase<MemoryOpToLLVM> {
   using MemoryOpToLLVMBase::MemoryOpToLLVMBase;
@@ -276,6 +329,9 @@ struct MemoryOpToLLVM
     patterns.add<PtrToIntOpConversion>(typeConverter, context);
     patterns.add<IntToPtrOpConversion>(typeConverter, context);
     patterns.add<PtrToMemRefOpConversion>(typeConverter, context);
+    patterns.add<AddPtrOpConversion>(typeConverter, context);
+    patterns.add<PtrBitcastConversion>(typeConverter, context);
+    patterns.add<PtrSelectConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

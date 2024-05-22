@@ -1,5 +1,6 @@
 #include "TypeConverter.h"
 
+#include "cpu/include/Analysis/TensorPtrShapeInfo.h"
 #include "cpu/include/TritonToTritonCPU/Passes.h"
 
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -35,11 +36,13 @@ namespace {
 template <typename OpT>
 struct MemoryOpConversion : public OpConversionPattern<OpT> {
   using OpConversionPattern<OpT>::OpConversionPattern;
+  using OpConversionPattern<OpT>::getContext;
 
   MemoryOpConversion(ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                     ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
                      TypeConverter &typeConverter, MLIRContext *context)
       : OpConversionPattern<OpT>(typeConverter, context),
-        axisAnalysis(axisInfoAnalysis) {}
+        axisAnalysis(axisInfoAnalysis), shapeAnalysis(shapeInfoAnalysis) {}
 
   Value extractScalarPointer(Location loc, Value ptrs,
                              ArrayRef<int64_t> indices,
@@ -52,8 +55,28 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
     return ptr;
   }
 
+  Value extractMemRef(Location loc, Value ptr,
+                      ConversionPatternRewriter &rewriter) const {
+    auto tensorTy = dyn_cast<RankedTensorType>(
+        dyn_cast<PointerType>(ptr.getType()).getPointeeType());
+    auto elemTy = tensorTy.getElementType();
+    auto shapeInfo = shapeAnalysis.getPtrShapeInfo(ptr);
+    Type memRefTy;
+    if (shapeInfo && shapeInfo->getRank() > 0) {
+      auto layout =
+          StridedLayoutAttr::get(getContext(), 0, shapeInfo->getStrides());
+      memRefTy = MemRefType::get(shapeInfo->getShape(), elemTy, layout);
+    } else {
+      SmallVector<int64_t> dynVals(tensorTy.getRank(), ShapedType::kDynamic);
+      auto layout = StridedLayoutAttr::get(getContext(), 0, dynVals);
+      memRefTy = MemRefType::get(dynVals, elemTy, layout);
+    }
+    return rewriter.create<ExtractMemRefOp>(loc, memRefTy, ptr);
+  }
+
 protected:
   ModuleAxisInfoAnalysis &axisAnalysis;
+  ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis;
 };
 
 struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
@@ -80,7 +103,7 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
       llvm_unreachable("unsupported load op");
     }
 
-    auto memRef = rewriter.getRemappedValue(ptr);
+    auto memRef = extractMemRef(loc, ptr, rewriter);
     auto rank = dyn_cast<MemRefType>(memRef.getType()).getRank();
     auto resTy = dyn_cast<VectorType>(
         getTypeConverter()->convertType(loadOp.getResult().getType()));
@@ -250,7 +273,7 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
     }
 
     auto value = rewriter.getRemappedValue(storeOp.getValue());
-    auto memRef = rewriter.getRemappedValue(ptr);
+    auto memRef = extractMemRef(loc, ptr, rewriter);
     auto rank = dyn_cast<MemRefType>(memRef.getType()).getRank();
     auto indices = rewriter.create<ExtractIndicesOp>(loc, ptr).getResults();
     SmallVector<bool, 4> inBounds(rank, true);
@@ -400,12 +423,14 @@ struct ConvertMemoryOps
     ModuleOp mod = getOperation();
 
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+    ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
     MemoryOpConversionTarget convTarget(*context);
     TritonToTritonCPUTypeConverter pointerConverter;
     RewritePatternSet patterns(context);
-    patterns.add<LoadOpConversion>(axisInfoAnalysis, pointerConverter, context);
-    patterns.add<StoreOpConversion>(axisInfoAnalysis, pointerConverter,
-                                    context);
+    patterns.add<LoadOpConversion>(axisInfoAnalysis, shapeInfoAnalysis,
+                                   pointerConverter, context);
+    patterns.add<StoreOpConversion>(axisInfoAnalysis, shapeInfoAnalysis,
+                                    pointerConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

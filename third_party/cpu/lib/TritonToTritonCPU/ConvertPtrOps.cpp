@@ -47,12 +47,14 @@ public:
     addLegalDialect<TritonCPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
-    // Allow only scalar pointer conversion.
+    // Scalar pointer operations are translated directly to LLVM.
     addDynamicallyLegalOp<triton::PtrToIntOp>(
         [](triton::PtrToIntOp op) { return op.getType().isInteger(); });
     addDynamicallyLegalOp<triton::IntToPtrOp>([](triton::IntToPtrOp op) {
       return op.getSrc().getType().isInteger();
     });
+    addDynamicallyLegalOp<triton::AddPtrOp>(
+        [](triton::AddPtrOp op) { return isa<PointerType>(op.getType()); });
   }
 };
 
@@ -89,12 +91,9 @@ struct SplatOpConversion : public OpConversionPattern<triton::SplatOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value val = op.getSrc();
-    Type dstValType = getTypeConverter()->convertType(val.getType());
     // Cast pointer
     if (isa<PointerType>(val.getType()))
-      val = rewriter
-                .create<PtrToIntOp>(
-                    loc, getTypeConverter()->convertType(val.getType()), val)
+      val = rewriter.create<PtrToIntOp>(loc, rewriter.getI64Type(), val)
                 .getResult();
     Type resType = getTypeConverter()->convertType(op.getType());
     auto cast = rewriter.create<vector::SplatOp>(loc, resType, val);
@@ -115,11 +114,16 @@ struct AddPtrOpConversion : public OpConversionPattern<triton::AddPtrOp> {
     Value offset = rewriter.getRemappedValue(op.getOffset());
     unsigned offsetBitWidth = getElemBitWidth(offset.getType());
     unsigned elemBitWidth = getPointeeBitWidth(op.getPtr().getType());
-    // Compute scale. i1 elements take 1 byte.
-    Value scale = rewriter.create<arith::ConstantIntOp>(
-        loc, (elemBitWidth + 7) / 8, offsetBitWidth);
-    if (isa<VectorType>(offset.getType()))
-      scale = rewriter.create<vector::SplatOp>(loc, offset.getType(), scale);
+    // Scalar case is not expected.
+    assert(isa<VectorType>(offset.getType()));
+    assert(isa<VectorType>(ptr.getType()));
+    VectorType offsetTy = cast<VectorType>(offset.getType());
+    // Build scale vector. i1 elements take 1 byte.
+    Value scale = rewriter.create<arith::ConstantOp>(
+        loc, offsetTy,
+        SplatElementsAttr::get(
+            offsetTy, rewriter.getIntegerAttr(offsetTy.getElementType(),
+                                              (elemBitWidth + 7) / 8)));
     offset = rewriter.create<arith::MulIOp>(loc, offset, scale);
     offset = rewriter.create<arith::ExtSIOp>(loc, ptr.getType(), offset);
     rewriter.replaceOpWithNewOp<arith::AddIOp>(op, ptr.getType(), ptr, offset);

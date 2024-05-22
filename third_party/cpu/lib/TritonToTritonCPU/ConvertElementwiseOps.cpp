@@ -49,7 +49,8 @@ public:
           return converter.isLegal(op);
         });
 
-    addIllegalOp<triton::BitcastOp>();
+    addDynamicallyLegalOp<triton::BitcastOp>(
+        [](triton::BitcastOp op) { return isa<PointerType>(op.getType()); });
     addIllegalOp<triton::BroadcastOp>();
     addIllegalOp<triton::ExpandDimsOp>();
     addIllegalOp<triton::PreciseDivFOp>();
