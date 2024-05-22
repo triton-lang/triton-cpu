@@ -3632,6 +3632,7 @@ def test_arange(start, num_ctas, device):
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str, size, size_diff, other", [(dtype_str, size, size_diff, other)
                                                                for dtype_str in torch_dtypes
@@ -3670,6 +3671,7 @@ def test_masked_load(dtype_str, size, size_diff, other, num_ctas, device):
     torch.testing.assert_close(output, reference_out)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 @pytest.mark.parametrize("mask_val", [True, False])

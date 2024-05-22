@@ -37,6 +37,7 @@ template <typename OpT>
 struct MemoryOpConversion : public OpConversionPattern<OpT> {
   using OpConversionPattern<OpT>::OpConversionPattern;
   using OpConversionPattern<OpT>::getContext;
+  using OpConversionPattern<OpT>::getTypeConverter;
 
   MemoryOpConversion(ModuleAxisInfoAnalysis &axisInfoAnalysis,
                      ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
@@ -72,6 +73,19 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
       memRefTy = MemRefType::get(dynVals, elemTy, layout);
     }
     return rewriter.create<ExtractMemRefOp>(loc, memRefTy, ptr);
+  }
+
+  Value convertOtherVal(triton::LoadOp loadOp,
+                        ConversionPatternRewriter &rewriter) const {
+    if (loadOp.getOther())
+      return rewriter.getRemappedValue(loadOp.getOther());
+
+    auto resTy =
+        dyn_cast<VectorType>(getTypeConverter()->convertType(loadOp.getType()));
+    return rewriter.create<arith::ConstantOp>(
+        loadOp.getLoc(), resTy,
+        SplatElementsAttr::get(resTy,
+                               rewriter.getZeroAttr(resTy.getElementType())));
   }
 
 protected:
@@ -139,13 +153,12 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
                        ? rewriter.getRemappedValue(loadOp.getMask())
                        : nullptr;
       Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value defaultVal = loadOp.getOther();
-      if (!defaultVal)
-        defaultVal = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getZeroAttr(vecTy.getElementType()));
-      Value res = rewriter.create<vector::BroadcastOp>(loc, vecTy, defaultVal);
+      Value defaultVal = convertOtherVal(loadOp, rewriter);
+      Value res = defaultVal;
       for (int64_t idx = 0; idx < numElems; idx += shape.back()) {
         auto indices = delinearize(idx, strides);
+        SmallVector<int64_t> subIndices(indices.begin(),
+                                        indices.begin() + indices.size() - 1);
         auto ptr =
             extractScalarPointer(loc, loadOp.getPtr(), indices, rewriter);
         Value memRef =
@@ -153,13 +166,12 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
         Value vec;
         if (mask) {
           Value subMask = mask;
+          Value passThru = defaultVal;
           if (shape.size() > 1) {
-            SmallVector<int64_t> subIndices = indices;
-            subIndices.pop_back();
             subMask = rewriter.create<vector::ExtractOp>(loc, mask, subIndices);
+            passThru =
+                rewriter.create<vector::ExtractOp>(loc, defaultVal, subIndices);
           }
-          Value passThru =
-              rewriter.create<vector::BroadcastOp>(loc, subVecTy, defaultVal);
           vec = rewriter.create<vector::MaskedLoadOp>(
               loc, subVecTy, memRef, zeroIdx, subMask, passThru);
         } else {
@@ -167,8 +179,6 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
         }
 
         if (shape.size() > 1) {
-          SmallVector<int64_t> subIndices = indices;
-          subIndices.pop_back();
           res = rewriter.create<vector::InsertOp>(loc, vec, res, subIndices);
         } else {
           res = vec;
@@ -199,13 +209,7 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
     auto cache = loadOp.getCache();
     auto evict = loadOp.getEvict();
     auto isVolatile = loadOp.getIsVolatile();
-
-    Value defaultVal = loadOp.getOther();
-    if (!defaultVal)
-      defaultVal = rewriter.create<arith::ConstantOp>(
-          loc, rewriter.getZeroAttr(vecTy.getElementType()));
-    Value dst = rewriter.create<vector::BroadcastOp>(loc, vecTy, defaultVal);
-
+    Value dst = convertOtherVal(loadOp, rewriter);
     int64_t numElems = vecTy.getNumElements();
     auto strides = computeStrides(vecTy.getShape());
     for (auto idx = 0; idx < numElems; ++idx) {
