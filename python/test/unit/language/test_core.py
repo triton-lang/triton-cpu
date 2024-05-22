@@ -1775,6 +1775,7 @@ def test_umulhi(dtype_str, device):
     np.testing.assert_equal(z_ref, to_numpy(z_tri))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_join(device):
 
@@ -1795,6 +1796,7 @@ def test_join(device):
     np.testing.assert_equal(to_numpy(z_ref), to_numpy(z))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_join_scalars(device):
 
@@ -1814,6 +1816,7 @@ def test_join_scalars(device):
     np.testing.assert_equal([42, 100], to_numpy(z))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_join_with_mma(device):
 
@@ -1852,6 +1855,7 @@ def test_interleave(device, debug):
     np.testing.assert_equal(to_numpy(z_ref), to_numpy(z))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_interleave_scalars(device):
 

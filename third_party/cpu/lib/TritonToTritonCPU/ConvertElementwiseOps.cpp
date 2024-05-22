@@ -59,6 +59,7 @@ public:
     addIllegalOp<triton::MulhiUIOp>();
     addIllegalOp<triton::ClampFOp>();
     addIllegalOp<triton::TransOp>();
+    addIllegalOp<triton::JoinOp>();
   }
 };
 
@@ -217,6 +218,24 @@ struct TransOpConversion : public OpConversionPattern<triton::TransOp> {
   }
 };
 
+struct JoinOpConversion : public OpConversionPattern<triton::JoinOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::JoinOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto lhs = rewriter.getRemappedValue(op.getLhs());
+    auto rhs = rewriter.getRemappedValue(op.getRhs());
+    auto interleave = rewriter.create<vector::InterleaveOp>(loc, lhs, rhs);
+    // JoinOp creates a new dimension, but InterleaveOp doubles the final one.
+    // Use ShapeCastOp to get the required shape.
+    auto resTy = getTypeConverter()->convertType(op.getType());
+    rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(op, resTy, interleave);
+    return success();
+  }
+};
+
 struct ConvertElementwiseOps
     : public triton::impl::ConvertElementwiseOpsBase<ConvertElementwiseOps> {
   using ConvertElementwiseOpsBase::ConvertElementwiseOpsBase;
@@ -300,6 +319,7 @@ struct ConvertElementwiseOps
     patterns.add<MulhiUIOpConversion>(typeConverter, context);
     patterns.add<ClampFOpConversion>(typeConverter, context);
     patterns.add<TransOpConversion>(typeConverter, context);
+    patterns.add<JoinOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
