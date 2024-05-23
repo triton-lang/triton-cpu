@@ -30,9 +30,9 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
-class PtrConversionTarget : public ConversionTarget {
+class DotConversionTarget : public ConversionTarget {
 public:
-  explicit PtrConversionTarget(MLIRContext &ctx, TypeConverter &converter)
+  explicit DotConversionTarget(MLIRContext &ctx, TypeConverter &converter)
       : ConversionTarget(ctx) {
     addLegalDialect<vector::VectorDialect>();
     addLegalDialect<arith::ArithDialect>();
@@ -78,7 +78,7 @@ struct ConvertDotOp : public triton::impl::ConvertDotOpBase<ConvertDotOp> {
     ModuleOp mod = getOperation();
 
     TritonToTritonCPUTypeConverter typeConverter;
-    PtrConversionTarget convTarget(*context, typeConverter);
+    DotConversionTarget convTarget(*context, typeConverter);
     RewritePatternSet patterns(context);
     patterns.add<DotOpConversion>(typeConverter, context);
 
