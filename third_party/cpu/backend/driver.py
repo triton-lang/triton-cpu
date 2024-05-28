@@ -1,12 +1,11 @@
-import hashlib
 import os
+import hashlib
 import tempfile
 from pathlib import Path
-
-from triton.backends.compiler import GPUTarget
-from triton.backends.driver import DriverBase
 from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
+from triton.backends.driver import DriverBase
+from triton.backends.compiler import GPUTarget
 
 dirname = os.getenv("TRITON_SYS_PATH", default="/usr/local")
 llvm_root = os.getenv("LLVM_PATH", default="~/.triton/llvm")
@@ -92,7 +91,6 @@ def compile_module_from_src(src, name):
             with open(so, "rb") as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
     import importlib.util
-
     spec = importlib.util.spec_from_file_location(name, cache_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -127,7 +125,7 @@ class CPUUtils(object):
 
 
 def ty_to_cpp(ty):
-    if ty[0] == "*":
+    if ty[0] == '*':
         return "void*"
     return {
         "i1": "int32_t",
@@ -151,10 +149,10 @@ def ty_to_cpp(ty):
 def make_launcher(constants, signature, ids):
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
-    arg_decls = ", ".join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
 
     def _extracted_type(ty):
-        if ty[0] == "*":
+        if ty[0] == '*':
             return "PyObject*"
         return ty_to_cpp(ty)
 
@@ -174,13 +172,13 @@ def make_launcher(constants, signature, ids):
             "uint64_t": "K",
         }[ty]
 
-    args_format = "".join([format_of(_extracted_type(ty)) for ty in signature.values()])
+    args_format = ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
     format = "iiiOKOOOO" + args_format
-    arg_ptrs_list = (", ".join(f"&arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
     kernel_fn_args = [i for i in signature.keys() if i not in constants]
-    kernel_fn_args_list = (", ".join(f"arg{i}" for i in kernel_fn_args) if len(kernel_fn_args) > 0 else "")
-    kernel_fn_arg_types = (", ".join(f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args) +
-                           ", " if len(signature) > 0 else "") + "uint32_t, uint32_t, uint32_t"
+    kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args) if len(kernel_fn_args) > 0 else ''
+    kernel_fn_arg_types = (', '.join(f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args) +
+                           ", " if len(signature) > 0 else '') + "uint32_t, uint32_t, uint32_t"
 
     # generate glue code
     src = f"""
