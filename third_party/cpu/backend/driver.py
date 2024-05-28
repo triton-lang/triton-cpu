@@ -74,6 +74,7 @@ libraries = [
     "LLVMSupport",
     "LLVMDemangle",
     "stdc++",
+    "z",
 ]
 
 
