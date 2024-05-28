@@ -33,5 +33,37 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     cc_cmd += [f'-l{lib}' for lib in libraries]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
-    subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
+    # CPU backend uses C++ (driver.cpp). Some old version compilers need a specific C++17 flag.
+    if src.endswith(".cpp") or src.endswith(".cc"):
+        cc_cmd += ["-std=c++17"]
+    ret = subprocess.check_call(cc_cmd)
+    if ret == 0:
+        return so
+    # fallback on setuptools
+    extra_compile_args = []
+    # extra arguments
+    extra_link_args = []
+    # create extension module
+    ext = setuptools.Extension(
+        name=name,
+        language='c',
+        sources=[src],
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args + ['-O3'],
+        extra_link_args=extra_link_args,
+        library_dirs=library_dirs,
+        libraries=libraries,
+    )
+    # build extension module
+    args = ['build_ext']
+    args.append('--build-temp=' + srcdir)
+    args.append('--build-lib=' + srcdir)
+    args.append('-q')
+    args = dict(
+        name=name,
+        ext_modules=[ext],
+        script_args=args,
+    )
+    with quiet():
+        setuptools.setup(**args)
     return so
