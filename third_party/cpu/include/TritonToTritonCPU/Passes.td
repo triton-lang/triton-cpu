@@ -84,6 +84,17 @@ def ConvertHistogramOp : Pass<"triton-cpu-convert-histogram-op", "mlir::ModuleOp
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::memref::MemRefDialect",
                              "mlir::vector::VectorDialect",
+
+def ConvertReductionOp : Pass<"triton-cpu-convert-reduction", "mlir::ModuleOp"> {
+    let summary = "Convert Triton ReduceOp.";
+    let description = [{
+
+    }];
+    let constructor = "mlir::triton::cpu::createConvertReductionOp()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::scf::SCFDialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
