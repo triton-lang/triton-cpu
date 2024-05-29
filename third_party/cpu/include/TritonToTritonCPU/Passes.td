@@ -74,4 +74,18 @@ def ConvertControlFlowOps : Pass<"triton-cpu-convert-control-flow-op", "mlir::Mo
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def ConvertHistogramOp : Pass<"triton-cpu-convert-histogram-op", "mlir::ModuleOp"> {
+    let summary = "Convert Triton HistogramOp.";
+    let description = [{
+
+    }];
+    let constructor = "mlir::triton::cpu::createConvertHistogramOp()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::memref::MemRefDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 #endif
