@@ -23,6 +23,8 @@ import torch
 import triton
 import triton.language as tl
 
+BLOCK_SIZE = 1024
+
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
@@ -57,10 +59,17 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 # and (2) enqueue the above kernel with appropriate grid/block sizes:
 
 
-def add(x: torch.Tensor, y: torch.Tensor):
+def add(x: torch.Tensor, y: torch.Tensor, is_cpu=False):
+    if is_cpu:
+        triton.runtime.driver.set_active_to_cpu()
+        x = x.to('cpu')
+        y = y.to('cpu')
+    else:
+        triton.runtime.driver.set_active_to_gpu()
+
     # We need to preallocate the output.
     output = torch.empty_like(x)
-    assert x.is_cuda and y.is_cuda and output.is_cuda
+    assert x.is_cuda == y.is_cuda and y.is_cuda == output.is_cuda and output.is_cuda == (not is_cpu)
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -90,6 +99,11 @@ print(output_triton)
 print(f'The maximum difference between torch and triton is '
       f'{torch.max(torch.abs(output_torch - output_triton))}')
 
+output_triton_cpu = add(x, y, True)
+print(output_triton_cpu)
+print(f'The maximum difference between torch and triton-cpu is '
+      f'{torch.max(torch.abs(output_torch.to("cpu") - output_triton_cpu))}')
+
 # %%
 # Seems like we're good to go!
 
@@ -108,11 +122,13 @@ print(f'The maximum difference between torch and triton is '
         x_vals=[2**i for i in range(12, 28, 1)],  # Different possible values for `x_name`.
         x_log=True,  # x axis is logarithmic.
         line_arg='provider',  # Argument name whose value corresponds to a different line in the plot.
-        line_vals=['triton', 'torch'],  # Possible values for `line_arg`.
-        line_names=['Triton', 'Torch'],  # Label name for the lines.
-        styles=[('blue', '-'), ('green', '-')],  # Line styles.
+        line_vals=['triton-cpu', 'triton', 'torch'],  # Possible values for `line_arg`.
+        line_names=['TritonCPU', 'Triton', 'Torch'],  # Label name for the lines.
+        styles=[('blue', '-'), ('green', '-'), ('yellow', '-')],  # Line styles.
         ylabel='GB/s',  # Label name for the y-axis.
-        plot_name='vector-add-performance',  # Name for the plot. Used also as a file name for saving the plot.
+        plot_name=
+        # Name for the plot. Used also as a file name for saving the plot.
+        f'vector-add-performance (BLOCK_SIZE={BLOCK_SIZE})',
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(size, provider):
@@ -123,6 +139,8 @@ def benchmark(size, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y), quantiles=quantiles)
+    if provider == 'triton-cpu':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles)
     gbps = lambda ms: 12 * size / ms * 1e-6
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
