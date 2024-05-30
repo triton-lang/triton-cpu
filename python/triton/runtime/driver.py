@@ -80,5 +80,8 @@ class DriverConfig:
         self.active = active_gpus[0][1]()
         return active_gpus[0][0]
 
+    def get_active_gpus(self):
+        return [name for name, backend in backends.items() if backend.driver.is_active() and name != "cpu"]
+
 
 driver = DriverConfig()
