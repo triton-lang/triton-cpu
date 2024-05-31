@@ -155,9 +155,9 @@ def benchmark(size, provider):
     elif provider == 'triton-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, False), quantiles=quantiles)
     elif provider == 'torch-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
     gbps = lambda ms: 12 * size / ms * 1e-6
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
