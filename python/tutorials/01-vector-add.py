@@ -23,7 +23,8 @@ import torch
 import triton
 import triton.language as tl
 
-BLOCK_SIZE = 1024
+GPU_BLOCK_SIZE = 1024
+CPU_BLOCK_SIZE = 128
 
 
 @triton.jit
@@ -72,7 +73,7 @@ def add(x: torch.Tensor, y: torch.Tensor, is_cpu):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
+    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if is_cpu else GPU_BLOCK_SIZE)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
@@ -93,9 +94,9 @@ print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
       f'{torch.max(torch.abs(output_torch_cpu - output_triton_cpu))}')
 
-LINE_VALS = ['triton-cpu', 'torch-cpu']
-LINE_NAMES = ['TritonCPU', 'TorchCPU']
-LINE_STYLES = [('blue', '-'), ('green', '-')]
+LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu']
+LINE_NAMES = ['TritonCPU 1-core', 'TritonCPU', 'TorchCPU']
+LINE_STYLES = [('blue', '-'), ('cyan', '-'), ('green', '-')]
 
 if triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
@@ -136,16 +137,22 @@ if triton.runtime.driver.get_active_gpus():
         ylabel='GB/s',  # Label name for the y-axis.
         plot_name=
         # Name for the plot. Used also as a file name for saving the plot.
-        f'vector-add-performance (BLOCK_SIZE={BLOCK_SIZE})',
+        f'vector-add-performance (CPU_BLOCK_SIZE={CPU_BLOCK_SIZE}, GPU_BLOCK_SIZE={GPU_BLOCK_SIZE})',
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(size, provider):
+    import os
+
     device = 'cpu' if 'cpu' in provider else 'cuda'
     x = torch.rand(size, device=device, dtype=torch.float32)
     y = torch.rand(size, device=device, dtype=torch.float32)
 
     if device == 'cpu':
         triton.runtime.driver.set_active_to_cpu()
+        if 'single' in provider:
+            os.environ['TRITON_CPU_SINGLE_CORE'] = '1'
+        else:
+            os.unsetenv('TRITON_CPU_SINGLE_CORE')
     else:
         triton.runtime.driver.set_active_to_gpu()
 
@@ -156,6 +163,8 @@ def benchmark(size, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, False), quantiles=quantiles)
     elif provider == 'torch-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=True)
+    elif provider == 'triton-cpu-single':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
     gbps = lambda ms: 12 * size / ms * 1e-6

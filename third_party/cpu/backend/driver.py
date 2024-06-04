@@ -16,6 +16,7 @@ if len(llvm_dirs) == 1:
 include_dir = [
     os.path.join(dirname, "include"),
     os.path.join(llvm_root, "include"),
+    os.path.join(".", "include"),
 ]
 library_dir = [os.path.join(dirname, "lib"), os.path.join(llvm_root, "lib")]
 libraries = [
@@ -77,6 +78,8 @@ libraries = [
     "z",
 ]
 
+MINIMUM_OMP_CHUNK_SIZE = 10
+
 
 def compile_module_from_src(src, name):
     key = hashlib.md5(src.encode("utf-8")).hexdigest()
@@ -110,7 +113,6 @@ class CPUUtils(object):
         return cls.instance
 
     def __init__(self):
-        pass
         dirname = os.path.dirname(os.path.realpath(__file__))
         mod = compile_module_from_src(Path(os.path.join(dirname, "driver.cpp")).read_text(), "cpu_utils")
         self.load_binary = mod.load_binary
@@ -186,6 +188,10 @@ def make_launcher(constants, signature, ids):
 #include <string>
 #include <iostream>
 #include <iomanip>
+#include <omp.h>
+#include <cmath>
+
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
@@ -233,20 +239,56 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   return ptr_info;
 }}
 
-static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kernel_ptr_t kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
-  // TODO: add OMP pragmas to run in parallel
+static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {{
+  std::unique_ptr<uint32_t[][3]> grids(new uint32_t[gridX * gridY * gridZ][3]);
+  // TODO: which order would be more effective for cache locality?
   for (uint32_t z = 0; z < gridZ; ++z) {{
     for (uint32_t y = 0; y < gridY; ++y) {{
       for (uint32_t x = 0; x < gridX; ++x) {{
-        (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
+        grids[z * gridY * gridX + y * gridX + x][0] = x;
+        grids[z * gridY * gridX + y * gridX + x][1] = y;
+        grids[z * gridY * gridX + y * gridX + x][2] = z;
       }}
     }}
+  }}
+  return grids;
+}}
+
+static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kernel_ptr_t kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+  auto all_grids = get_all_grids(gridX, gridY, gridZ);
+  size_t N = gridX * gridY * gridZ;
+
+  if (mlir::triton::tools::getBoolEnv("TRITON_CPU_SINGLE_CORE")) {{
+    if (mlir::triton::tools::getBoolEnv("TRITON_CPU_OMP_DEBUG"))
+      printf("Single core launcher\\n");
+    for (uint32_t i = 0; i < N; ++i) {{
+      const auto [x, y, z] = all_grids[i];
+      (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
+    }}
+    return;
+  }}
+
+  // Use the default static scheduling with a simple chuck size policy.
+  std::optional<int> max_threads = mlir::triton::tools::getIntEnv("TRITON_CPU_MAX_THREADS");
+  if (max_threads.has_value())
+    max_threads = std::max(1, std::min(max_threads.value(), omp_get_max_threads()));
+  else
+    max_threads = omp_get_max_threads();
+
+  int chunk_size = std::ceil((double)N / (double)max_threads.value());
+  chunk_size = std::max(chunk_size, {MINIMUM_OMP_CHUNK_SIZE});
+
+  if (mlir::triton::tools::getBoolEnv("TRITON_CPU_OMP_DEBUG"))
+    printf("N: %zu, max_threads: %d, chunk_size: %zu\\n", N, max_threads, chunk_size);
+
+#pragma omp parallel for schedule(static, chunk_size) num_threads(max_threads.value())
+  for (uint32_t i = 0; i < N; ++i) {{
+    const auto [x, y, z] = all_grids[i];
+    (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
   }}
 }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
-
-
   int gridX, gridY, gridZ;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
