@@ -96,9 +96,9 @@ print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
       f'{torch.max(torch.abs(output_torch_cpu - output_triton_cpu))}')
 
-LINE_VALS = ['triton-cpu-single-prealloc', 'triton-cpu-prealloc', 'triton-cpu-single', 'triton-cpu', 'torch-cpu']
-LINE_NAMES = ['TritonCPU 1+pre', 'TritonCPU pre', 'TritonCPU 1', 'TritonCPU', 'TorchCPU']
-LINE_STYLES = [('blue', '--'), ('green', '--'), ('blue', '-'), ('green', '-'), ('cyan', '-')]
+LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu']
+LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU']
+LINE_STYLES = [('blue', '-'), ('green', '-'), ('cyan', '-')]
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
@@ -164,19 +164,17 @@ def benchmark(size, provider):
     elif provider == 'triton-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles)
     elif provider == 'torch-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=True)
-    elif provider == 'triton-cpu-single':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, True), quantiles=quantiles, is_cpu=True)
-    elif provider == 'triton-cpu-prealloc':
         # Note that we preallocate the output buffer here to only measure the kernel performance
         # without a large chunk of memory allocation.
         output = torch.empty_like(x)
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
-    elif provider == 'triton-cpu-single-prealloc':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.add(x, y, out=output), quantiles=quantiles,
+                                                     is_cpu=True)
+    elif provider == 'triton-cpu-single':
         output = torch.empty_like(x)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, True), quantiles=quantiles, is_cpu=True)
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
     gbps = lambda ms: 12 * size / ms * 1e-6
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
