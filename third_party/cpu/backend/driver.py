@@ -281,7 +281,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
     if (getBoolEnv("TRITON_CPU_OMP_DEBUG"))
       printf("Single core launcher\\n");
 
-    for (uint32_t i = 0; i < N; ++i) {{
+    for (size_t i = 0; i < N; ++i) {{
       const auto [x, y, z] = all_grids[i];
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
     }}
@@ -299,7 +299,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
 
   // For now, use the default chunk size, total iterations / max_threads.
 #pragma omp parallel for schedule(static) num_threads(max_threads.value())
-  for (uint32_t i = 0; i < N; ++i) {{
+  for (size_t i = 0; i < N; ++i) {{
     const auto [x, y, z] = all_grids[i];
     (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
   }}
