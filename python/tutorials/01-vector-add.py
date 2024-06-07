@@ -24,7 +24,8 @@ import triton
 import triton.language as tl
 
 GPU_BLOCK_SIZE = 1024
-CPU_BLOCK_SIZE = 128
+CPU_BLOCK_SIZE = 4096
+USE_GPU = True
 
 
 @triton.jit
@@ -60,10 +61,11 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 # and (2) enqueue the above kernel with appropriate grid/block sizes:
 
 
-def add(x: torch.Tensor, y: torch.Tensor, is_cpu):
-    # We need to preallocate the output.
-    output = torch.empty_like(x)
-    assert x.is_cpu == is_cpu and y.is_cpu == is_cpu and output.is_cpu == is_cpu
+def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, is_cpu):
+    if output is None:
+        # We need to preallocate the output.
+        output = torch.empty_like(x)
+        assert x.is_cpu == is_cpu and y.is_cpu == is_cpu and output.is_cpu == is_cpu
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -88,22 +90,22 @@ triton.runtime.driver.set_active_to_cpu()
 x = torch.rand(size, device='cpu')
 y = torch.rand(size, device='cpu')
 output_torch_cpu = x + y
-output_triton_cpu = add(x, y, is_cpu=True)
+output_triton_cpu = add(x, y, None, is_cpu=True)
 print(output_torch_cpu)
 print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
       f'{torch.max(torch.abs(output_torch_cpu - output_triton_cpu))}')
 
-LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu']
-LINE_NAMES = ['TritonCPU 1-core', 'TritonCPU', 'TorchCPU']
-LINE_STYLES = [('blue', '-'), ('cyan', '-'), ('green', '-')]
+LINE_VALS = ['triton-cpu-single-prealloc', 'triton-cpu-prealloc', 'triton-cpu-single', 'triton-cpu', 'torch-cpu']
+LINE_NAMES = ['TritonCPU 1+pre', 'TritonCPU pre', 'TritonCPU 1', 'TritonCPU', 'TorchCPU']
+LINE_STYLES = [('blue', '--'), ('green', '--'), ('blue', '-'), ('green', '-'), ('cyan', '-')]
 
-if triton.runtime.driver.get_active_gpus():
+if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
     x = x.to('cuda')
     y = y.to('cuda')
     output_torch_gpu = x + y
-    output_triton_gpu = add(x, y, is_cpu=False)
+    output_triton_gpu = add(x, y, None, is_cpu=False)
     print(output_torch_gpu)
     print(output_triton_gpu)
     print(f'The maximum difference between torch-gpu and triton-gpu is '
@@ -160,13 +162,21 @@ def benchmark(size, provider):
     if provider == 'torch-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
     elif provider == 'triton-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, False), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles)
     elif provider == 'torch-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu-single':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, True), quantiles=quantiles, is_cpu=True)
+    elif provider == 'triton-cpu-prealloc':
+        # Note that we preallocate the output buffer here to only measure the kernel performance
+        # without a large chunk of memory allocation.
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
+    elif provider == 'triton-cpu-single-prealloc':
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, True), quantiles=quantiles, is_cpu=True)
     gbps = lambda ms: 12 * size / ms * 1e-6
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 

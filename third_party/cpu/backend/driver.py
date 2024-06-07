@@ -16,7 +16,6 @@ if len(llvm_dirs) == 1:
 include_dir = [
     os.path.join(dirname, "include"),
     os.path.join(llvm_root, "include"),
-    os.path.join(".", "include"),
 ]
 library_dir = [os.path.join(dirname, "lib"), os.path.join(llvm_root, "lib")]
 libraries = [
@@ -77,8 +76,6 @@ libraries = [
     "stdc++",
     "z",
 ]
-
-MINIMUM_OMP_CHUNK_SIZE = 10
 
 
 def compile_module_from_src(src, name):
@@ -184,18 +181,39 @@ def make_launcher(constants, signature, ids):
 
     # generate glue code
     src = f"""
-#include <cstddef>
-#include <string>
-#include <iostream>
-#include <iomanip>
-#include <omp.h>
+#include <algorithm>
 #include <cmath>
-
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include <cstddef>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <omp.h>
+#include <optional>
+#include <stdio.h>
+#include <string>
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
-#include <stdio.h>
+
+inline bool getBoolEnv(const std::string &env) {{
+  const char *s = std::getenv(env.c_str());
+  std::string str(s ? s : "");
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c) {{ return std::tolower(c); }});
+  return str == "on" || str == "true" || str == "1";
+}}
+
+inline std::optional<int64_t> getIntEnv(const std::string &env) {{
+  const char *cstr = std::getenv(env.c_str());
+  if (!cstr)
+    return std::nullopt;
+
+  char *endptr;
+  long int result = std::strtol(cstr, &endptr, 10);
+  if (endptr == cstr)
+    assert(false && "invalid integer");
+  return result;
+}}
 
 using kernel_ptr_t = void(*)({kernel_fn_arg_types});
 
@@ -255,12 +273,14 @@ static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gri
 }}
 
 static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kernel_ptr_t kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+  // TODO: Consider using omp collapse(3) clause for simplicity?
   auto all_grids = get_all_grids(gridX, gridY, gridZ);
   size_t N = gridX * gridY * gridZ;
 
-  if (mlir::triton::tools::getBoolEnv("TRITON_CPU_SINGLE_CORE")) {{
-    if (mlir::triton::tools::getBoolEnv("TRITON_CPU_OMP_DEBUG"))
+  if (getBoolEnv("TRITON_CPU_SINGLE_CORE")) {{
+    if (getBoolEnv("TRITON_CPU_OMP_DEBUG"))
       printf("Single core launcher\\n");
+
     for (uint32_t i = 0; i < N; ++i) {{
       const auto [x, y, z] = all_grids[i];
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);
@@ -268,20 +288,17 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
     return;
   }}
 
-  // Use the default static scheduling with a simple chuck size policy.
-  std::optional<int> max_threads = mlir::triton::tools::getIntEnv("TRITON_CPU_MAX_THREADS");
+  std::optional<int> max_threads = getIntEnv("TRITON_CPU_MAX_THREADS");
   if (max_threads.has_value())
     max_threads = std::max(1, std::min(max_threads.value(), omp_get_max_threads()));
   else
     max_threads = omp_get_max_threads();
 
-  int chunk_size = std::ceil((double)N / (double)max_threads.value());
-  chunk_size = std::max(chunk_size, {MINIMUM_OMP_CHUNK_SIZE});
+  if (getBoolEnv("TRITON_CPU_OMP_DEBUG"))
+    printf("N: %zu, max_threads: %d\\n", N, max_threads.value());
 
-  if (mlir::triton::tools::getBoolEnv("TRITON_CPU_OMP_DEBUG"))
-    printf("N: %zu, max_threads: %d, chunk_size: %zu\\n", N, max_threads, chunk_size);
-
-#pragma omp parallel for schedule(static, chunk_size) num_threads(max_threads.value())
+  // For now, use the default chunk size, total iterations / max_threads.
+#pragma omp parallel for schedule(static) num_threads(max_threads.value())
   for (uint32_t i = 0; i < N; ++i) {{
     const auto [x, y, z] = all_grids[i];
     (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z);

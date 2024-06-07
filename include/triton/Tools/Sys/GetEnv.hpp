@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <assert.h>
 #include <cstdlib>
-#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -30,9 +29,6 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
 
 inline const std::set<std::string> CACHE_NEUTRAL_ENV_VARS = {
     "TRITON_REPRODUCER_PATH",
-    "TRITON_CPU_SINGLE_CORE",
-    "TRITON_CPU_MAX_THREADS",
-    "TRITON_CPU_OMP_DEBUG",
 };
 
 namespace tools {
@@ -53,21 +49,6 @@ inline std::string getStrEnv(const std::string &env) {
   if (!cstr)
     return "";
   std::string result(cstr);
-  return result;
-}
-
-inline std::optional<int64_t> getIntEnv(const std::string &env) {
-  assertIsRecognized(env);
-  const char *cstr = std::getenv(env.c_str());
-  if (!cstr) {
-    return std::nullopt;
-  }
-
-  char *endptr;
-  long int result = std::strtol(cstr, &endptr, 10);
-  if (endptr == cstr) {
-    assert(false && "invalid integer");
-  }
   return result;
 }
 
