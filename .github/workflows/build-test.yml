@@ -9,7 +9,6 @@ jobs:
     name: Pre-commit checks
     runs-on:
       - glados
-      - cpu
       - intel
       - x86
     steps:
@@ -42,7 +41,6 @@ jobs:
     name: Build and test
     runs-on:
       - glados
-      - cpu
       - intel
       - x86
     strategy:
