@@ -54,7 +54,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install pip dependencies
+      - name: Install pip and apt dependencies
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit
@@ -69,5 +69,4 @@ jobs:
 
       - name: Run python unit tests
         run: |
-          cd python/test/unit
           python -m pytest -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
