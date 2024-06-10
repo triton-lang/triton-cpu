@@ -23,12 +23,10 @@ import torch
 import triton
 import triton.language as tl
 
-<<<<<<< HEAD
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-=======
-BLOCK_SIZE = 1024
->>>>>>> 61ecff13b ([CPU] Support flexible active driver + update vector-add tutorial (#11))
-
+GPU_BLOCK_SIZE = 1024
+CPU_BLOCK_SIZE = 4096
+USE_GPU = True
 
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
@@ -76,7 +74,7 @@ def add(x: torch.Tensor, y: torch.Tensor, is_cpu):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)
+    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if is_cpu else GPU_BLOCK_SIZE)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
@@ -119,21 +117,35 @@ print(f'The maximum difference between torch and triton is '
         ylabel='GB/s',  # Label name for the y-axis.
         plot_name=
         # Name for the plot. Used also as a file name for saving the plot.
-        f'vector-add-performance (BLOCK_SIZE={BLOCK_SIZE})',
+        f'vector-add-performance (CPU_BLOCK_SIZE={CPU_BLOCK_SIZE}, GPU_BLOCK_SIZE={GPU_BLOCK_SIZE})',
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(size, provider):
     x = torch.rand(size, device=DEVICE, dtype=torch.float32)
     y = torch.rand(size, device=DEVICE, dtype=torch.float32)
+
+    if DEVICE == 'cpu':
+        triton.runtime.driver.set_active_to_cpu()
+    else:
+        triton.runtime.driver.set_active_to_gpu()
+
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
     elif provider == 'triton-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, False), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles)
     elif provider == 'torch-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=True)
+        # Note that we preallocate the output buffer here to only measure the kernel performance
+        # without a large chunk of memory allocation.
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.add(x, y, out=output), quantiles=quantiles,
+                                                     is_cpu=True)
+    elif provider == 'triton-cpu-single':
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, True), quantiles=quantiles, is_cpu=True)
+        output = torch.empty_like(x)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles, is_cpu=True)
     gbps = lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
