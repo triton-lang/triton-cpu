@@ -140,9 +140,6 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_bc(src, metadata, options):
-        if os.environ.get("TRITON_CPU_ASM_DUMP", "0") == "1":
-            print("********** Module ASM **********")
-            print(llvm.translate_to_host_asm(src, options.enable_fp_fusion))
         ret = llvm.translate_to_bc(src)
         return ret
 
