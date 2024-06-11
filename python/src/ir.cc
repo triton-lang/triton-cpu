@@ -1615,7 +1615,10 @@ void init_triton_ir(py::module &&m) {
                           });
 
           ::llvm::DebugFlag = true;
-          ::llvm::setCurrentDebugTypes(debugTypes.data(), debugTypes.size());
+          // For release build setCurrentDebugTypes is a macro, so avoid
+          // namespace prefix
+          using namespace llvm;
+          setCurrentDebugTypes(debugTypes.data(), debugTypes.size());
         }
 
         if (failed(self.run(mod.getOperation())))
