@@ -293,13 +293,6 @@ def compile(src, target=None, options=None):
             ttgir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module = parse(ttgir_full_name, ext, context)
             print(f"re-parse ttgir with {ttgir_full_name}")
-        # It's ugly, but a quick hack to generate human-readable asm.
-        if ext == "bc" and backend.target.backend == "cpu":
-            from triton._C.libtriton import llvm
-
-            asm_filename = f"{src.name}.asm"
-            asm = llvm.translate_to_host_asm(module, options.enable_fp_fusion)
-            metadata_group[asm_filename] = fn_cache_manager.put(asm, asm_filename)
         module = next_module
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
