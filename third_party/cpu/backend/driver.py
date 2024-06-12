@@ -2,77 +2,20 @@ import os
 import hashlib
 import tempfile
 from pathlib import Path
+
+from triton._C.libtriton import cpu
+
 from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 
 dirname = os.getenv("TRITON_SYS_PATH", default="/usr/local")
-llvm_root = os.getenv("LLVM_PATH", default="~/.triton/llvm")
-llvm_root = os.path.expanduser(llvm_root)
-llvm_dirs = os.listdir(llvm_root)
-if len(llvm_dirs) == 1:
-    llvm_root = os.path.join(llvm_root, llvm_dirs[0])
 include_dir = [
     os.path.join(dirname, "include"),
-    os.path.join(llvm_root, "include"),
 ]
-library_dir = [os.path.join(dirname, "lib"), os.path.join(llvm_root, "lib")]
+library_dir = [os.path.join(dirname, "lib")]
 libraries = [
-    "LLVMOrcJIT",
-    "LLVMPasses",
-    "LLVMX86CodeGen",
-    "LLVMX86AsmParser",
-    "LLVMX86Desc",
-    "LLVMX86Info",
-    "LLVMGlobalISel",
-    "LLVMSelectionDAG",
-    "LLVMHipStdPar",
-    "LLVMCoroutines",
-    "LLVMipo",
-    "LLVMFrontendOpenMP",
-    "LLVMInstrumentation",
-    "LLVMAsmPrinter",
-    "LLVMCodeGen",
-    "LLVMObjCARCOpts",
-    "LLVMLinker",
-    "LLVMVectorize",
-    "LLVMScalarOpts",
-    "LLVMInstCombine",
-    "LLVMFrontendOffloading",
-    "LLVMExecutionEngine",
-    "LLVMAggressiveInstCombine",
-    "LLVMTransformUtils",
-    "LLVMTarget",
-    "LLVMRuntimeDyld",
-    "LLVMJITLink",
-    "LLVMIRPrinter",
-    "LLVMBitWriter",
-    "LLVMAnalysis",
-    "LLVMProfileData",
-    "LLVMSymbolize",
-    "LLVMDebugInfoDWARF",
-    "LLVMObject",
-    "LLVMTextAPI",
-    "LLVMMCParser",
-    "LLVMMCDisassembler",
-    "LLVMMC",
-    "LLVMIRReader",
-    "LLVMCFGuard",
-    "LLVMBitReader",
-    "LLVMAsmParser",
-    "LLVMCore",
-    "LLVMBinaryFormat",
-    "LLVMOrcTargetProcess",
-    "LLVMTargetParser",
-    "LLVMRemarks",
-    "LLVMOrcShared",
-    "LLVMOption",
-    "LLVMDebugInfoCodeView",
-    "LLVMCodeGenTypes",
-    "LLVMBitstreamReader",
-    "LLVMSupport",
-    "LLVMDemangle",
     "stdc++",
     "z",
 ]
@@ -112,7 +55,7 @@ class CPUUtils(object):
     def __init__(self):
         dirname = os.path.dirname(os.path.realpath(__file__))
         mod = compile_module_from_src(Path(os.path.join(dirname, "driver.cpp")).read_text(), "cpu_utils")
-        self.load_binary = mod.load_binary
+        self.load_binary = cpu.utils.load_binary
 
     def get_device_properties(self, *args):
         return {"max_shared_mem": 0}

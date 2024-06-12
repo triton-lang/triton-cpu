@@ -206,7 +206,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     MLIRGPUToROCDLTransforms
 
     # LLVM
-    LLVMPasses
+    LLVMOrcJIT
     LLVMNVPTXCodeGen
     # LLVMNVPTXAsmPrinter
     LLVMAMDGPUCodeGen
