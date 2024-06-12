@@ -132,6 +132,8 @@ static PyObject *loadBitcode(PyObject *self, PyObject *args) {
     return NULL;
   }
   llvm::orc::JITTargetMachineBuilder tmb = std::move(*detect_host_res);
+  llvm::errs() << "CPU: " << tmb.getCPU() << "\n";
+  llvm::errs() << "Features: " << tmb.getFeatures().getString() << "\n";
 
   auto data_layout_res = tmb.getDefaultDataLayoutForTarget();
   if (!data_layout_res) {
