@@ -2147,6 +2147,12 @@ keep_dims_3d_configs = [(op, 'float32', (32, 2, 16), axis, True)
 def test_reduce(op, dtype_str, shape, axis, keep_dims, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
 
+    # fpext fp16->fp32 is broken in LLVM for large vectors:
+    #   https://github.com/llvm/llvm-project/issues/95278
+    # TODO: remove the change after the bug is fixed.
+    if is_cpu() and dtype_str == "float16":
+        shape = (min(shape[0], 512), min(shape[1], 512))
+
     @triton.jit
     def kernel(X, Z, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, IS_3D: tl.constexpr,
                AXIS: tl.constexpr, KEEP_DIMS: tl.constexpr):
