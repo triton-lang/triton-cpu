@@ -1604,6 +1604,12 @@ def test_cast(dtype_x, dtype_z, bitcast, size, num_ctas, device):
     if is_cpu() and (dtype_x in torch_float8_dtypes or dtype_z in torch_float8_dtypes):
         pytest.skip(f'test_cast{(dtype_x, dtype_z)} is not supported on CPU.')
 
+    # fptrunc fp32->fp16 is broken in LLVM for large vectors:
+    #   https://github.com/llvm/llvm-project/issues/95274
+    # TODO: remove the change after the bug is fixed.
+    if is_cpu() and dtype_x == "float32" and dtype_z == "float16":
+        size = 512
+
     # bf16 vector cast is broken in LLVM for large vectors:
     #   https://github.com/llvm/llvm-project/issues/92471
     # TODO: Remove the change after the bug is fixed.
