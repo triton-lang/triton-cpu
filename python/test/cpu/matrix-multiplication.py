@@ -1,8 +1,7 @@
 """
 Matrix Multiplication
 =====================
-In this tutorial, you will write a very short high-performance FP16 matrix multiplication kernel that achieves
-performance on par with cuBLAS or rocBLAS.
+In this tutorial, you will write a very short high-performance FP32 matrix multiplication kernel.
 
 You will specifically learn about:
 
@@ -212,7 +211,7 @@ def matmul_kernel(
     # Iterate to compute a block of the C matrix.
     # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block
     # of fp32 values for higher accuracy.
-    # `accumulator` will be converted back to fp16 after the loop.
+    # `accumulator` will be converted back to matrix C's type after the loop, if C has lower precision type (for example, float16 and bfloat16).
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         # Load the next block of A and B, generate a mask by checking the K dimension.
@@ -229,6 +228,7 @@ def matmul_kernel(
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     
+    # Convert the accumulator to the output matrix C's type if needed.
     c = accumulator
 
     # -----------------------------------------------------------
@@ -278,7 +278,7 @@ def matmul(a, b):
 # Unit Test
 # ---------
 #
-# We can test our custom matrix multiplication operation against a native torch implementation (i.e., cuBLAS).
+# We can test our custom matrix multiplication operation against a native torch implementation.
 
 torch.manual_seed(0)
 
@@ -291,9 +291,6 @@ triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 print(f"triton_cpu_output_with_{a.dtype}_inputs={triton_output}")
 print(f"torch_cpu_output_with_{a.dtype}_inputs={torch_output}")
-# Bigger tolerance for AMD MI200 devices.
-# MI200 devices use reduced precision fp16 and bf16 and flush input and
-# output denormal values to zero. Detailed info is at: https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
 rtol = 0
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
@@ -307,7 +304,7 @@ else:
 # Square Matrix Performance
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
-# We can now compare the performance of our kernel against that of cuBLAS or rocBLAS. Here we focus on square matrices,
+# We can now compare the performance of our kernel against that of Pytorch. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
 LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu']
