@@ -1845,6 +1845,8 @@ void init_triton_ir(py::module &&m) {
           llvm::SmallVector<const char *, 3> debugTypes =
               parseCommaSeparatedValues(debugOnly, storage);
           ::llvm::DebugFlag = true;
+          // For release build setCurrentDebugTypes is a macro, so avoid
+          // namespace prefix
           using namespace llvm;
           setCurrentDebugTypes(debugTypes.data(), debugTypes.size());
         }
