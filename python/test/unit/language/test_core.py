@@ -1886,6 +1886,7 @@ def test_interleave_scalars(device):
     np.testing.assert_equal([10, 20], to_numpy(z))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_split(device):
 
@@ -1908,6 +1909,7 @@ def test_split(device):
     np.testing.assert_equal(to_numpy(z2_ref), to_numpy(z2))
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_split_to_scalar(device):
 
