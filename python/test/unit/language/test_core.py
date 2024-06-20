@@ -5233,6 +5233,7 @@ def test_fp8_dot_acc(in_type_str, low_precision_acc, device):
 # -----------------------
 
 
+@pytest.mark.cpu
 @pytest.mark.parametrize("enable_fp_fusion", [False, True])
 def test_enable_fp_fusion(enable_fp_fusion, device):
     if is_hip():
@@ -5249,10 +5250,12 @@ def test_enable_fp_fusion(enable_fp_fusion, device):
     data = torch.randn((128, ), device=device, dtype=torch.float32)
     h = mul_add[(1, )](data, enable_fp_fusion=enable_fp_fusion)
 
-    if not is_cuda():
-        return
-    found_fma = re.search(r'(mad|fma)\.r[nzmp]\.(ftz\.)?f32', h.asm["ptx"]) is not None
-    assert found_fma == enable_fp_fusion
+    if is_cuda():
+        found_fma = re.search(r'(mad|fma)\.r[nzmp]\.(ftz\.)?f32', h.asm["ptx"]) is not None
+        assert found_fma == enable_fp_fusion
+    elif is_cpu():
+        found_fma = re.search(r'vfma', h.asm["asm"].decode('utf-8')) is not None
+        assert found_fma == enable_fp_fusion
 
 
 # -----------------------
