@@ -19,7 +19,7 @@ class CPUOptions:
     cluster_dims: tuple = (1, 1, 1)
     extern_libs: dict = None
     debug: bool = False
-    allowed_dot_input_precisions: Tuple[str] = ("ieee", )
+    allowed_dot_input_precisions: Tuple[str] = ("ieee", "tf32", "tf32x3")
     allow_fp8e4nv: bool = False
     enable_fp_fusion: bool = True
 
