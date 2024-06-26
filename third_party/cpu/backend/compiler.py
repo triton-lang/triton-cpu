@@ -20,8 +20,10 @@ class CPUOptions:
     extern_libs: dict = None
     debug: bool = False
     allowed_dot_input_precisions: Tuple[str] = ("ieee", "tf32", "tf32x3")
-    allow_fp8e4nv: bool = False
+    allow_fp8e4nv: bool = True
+    allow_fp8e4b15: bool = True
     enable_fp_fusion: bool = True
+    max_num_imprecise_acc_default: int = 0
 
     # TODO: We may introduce CPU-specific options like # of cores.
 
@@ -97,8 +99,9 @@ class CPUBackend(BaseBackend):
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
         convert_mixed_precision_matmul = True
         cpu.passes.ttcpuir.add_convert_unsupported_ops(pm, promote_bf16_to_fp32, convert_mixed_precision_matmul)
-        if promote_bf16_to_fp32:
-            cpu.passes.ttcpuir.add_decompose_fp_conversions(pm)
+        decompose_bf16_conv = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
+        decompose_fp8_conv = True
+        cpu.passes.ttcpuir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
