@@ -263,8 +263,8 @@ Value convertFp16ToFp8E5M2B16Rtne(Location loc, Value src,
                                   PatternRewriter &rewriter) {
   Value f32Src =
       rewriter.create<arith::ExtFOp>(loc, toFp32(src.getType()), src);
-  return convertToFp8(loc, f32Src, rewriter.getFloat8E5M2FNUZType(), 5, 16, true,
-                      true, rewriter);
+  return convertToFp8(loc, f32Src, rewriter.getFloat8E5M2FNUZType(), 5, 16,
+                      true, true, rewriter);
 }
 
 Value convertBf16ToFp8E4M3Rtz(Location loc, Value src,
