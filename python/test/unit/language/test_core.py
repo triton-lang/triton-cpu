@@ -6820,6 +6820,7 @@ def test_temp_var_in_loop(device):
     assert (acc == out).all()
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_num_programs(device):
     # Assuming that the kernel is launched with a grid of (11, 21, 31)
