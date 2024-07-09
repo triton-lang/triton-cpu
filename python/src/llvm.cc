@@ -125,9 +125,9 @@ std::string translateLLVMIRToASM(
     opt.UnsafeFPMath = false;
     opt.NoInfsFPMath = false;
     opt.NoNaNsFPMath = true;
-    opt.TrapUnreachable = true;
   }
 
+  opt.TrapUnreachable = true;
   opt.MCOptions.AsmVerbose = true;
   opt.MCOptions.PreserveAsmComments = true;
 
