@@ -3,8 +3,8 @@ import torch
 import triton
 import triton.language as tl
 
-BLOCK_M = 1
-BLOCK_N = 512
+BLOCK_SIZE_M = 1
+BLOCK_SIZE_N = 512
 USE_GPU = False
 """
 Kernel for computing Y = A @ X, where A is a dense matrix with
@@ -23,23 +23,23 @@ def gemv_kernel(
     M,
     N,
     stride_am,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
 ):
     start_m = tl.program_id(0)
-    rm = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    rn = tl.arange(0, BLOCK_N)
+    rm = start_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    rn = tl.arange(0, BLOCK_SIZE_N)
 
     A = A + (rm[:, None] * stride_am + rn[None, :])
     X = X + rn
 
-    acc = tl.zeros((BLOCK_M, ), dtype=tl.float32)
-    for n in range(N, 0, -BLOCK_N):
+    acc = tl.zeros((BLOCK_SIZE_M, ), dtype=tl.float32)
+    for n in range(N, 0, -BLOCK_SIZE_N):
         a = tl.load(A)
         x = tl.load(X)
-        acc += tl.sum(a * x[None, :], 1)
-        A += BLOCK_N
-        X += BLOCK_N
+        acc += tl.sum(a * x[None, :], axis=1)
+        A += BLOCK_SIZE_N
+        X += BLOCK_SIZE_N
 
     Y = Y + rm
     tl.store(Y, acc)
@@ -57,7 +57,7 @@ def gemv(
     M, N = weight.shape
 
     # TODO: Currently masked load is not supported yet.
-    assert M % BLOCK_M == 0 and N % BLOCK_N == 0, "Masking currently not supported, Matrix dimensions must be multiples of block size"
+    assert M % BLOCK_SIZE_M == 0 and N % BLOCK_SIZE_N == 0, "Masking currently not supported, Matrix dimensions must be multiples of block size"
 
     if output is None:
         # Allocates output.
@@ -66,9 +66,9 @@ def gemv(
         assert output.shape == (M, ) and output.dtype == x.dtype, "Incompatible output"
 
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]), )
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), )
 
-    gemv_kernel[grid](output, weight, x, M, N, weight.stride(0), BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+    gemv_kernel[grid](output, weight, x, M, N, weight.stride(0), BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N)
 
     return output
 
@@ -132,7 +132,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
         ylabel='GFLOPS',  # Label name for the y-axis.
         plot_name=
         # Name for the plot. Used also as a file name for saving the plot.
-        f'gemv-performance-fp32 (BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N})',
+        f'gemv-performance-fp32 (BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N})',
         args={'M': 4096},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(M, N, provider):
