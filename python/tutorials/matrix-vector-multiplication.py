@@ -80,7 +80,9 @@ triton.runtime.driver.set_active_to_cpu()
 weight = torch.randn((512, 1024), device='cpu', dtype=torch.float32)
 x = torch.randn((1024), device='cpu', dtype=torch.float32)
 triton_output = gemv(weight, x, None)
-torch_output = torch.matmul(weight, x)
+# torch.matmul will select bf16 kernels on Linux Arm if x is 1-d, which has lower precision.
+# So we reshape x to be 2-d, which will invoke different kernels.
+torch_output = torch.matmul(weight, x[:, None]).reshape(-1)
 #print(f"triton_cpu_output_with_{weight.dtype}_inputs={triton_output}")
 #print(f"torch_cpu_output_with_{weight.dtype}_inputs={torch_output}")
 rtol = 0
@@ -90,9 +92,17 @@ else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
 
-LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
-LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (native)', 'TorchCPU (compile)']
-LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
+LINE_VALS = [
+    'triton-cpu-single', 'triton-cpu', 'triton-cpu-linear', 'torch-cpu-native', 'torch-cpu-compile',
+    'torch-cpu-2d-native', 'torch-cpu-2d-compile', 'torch-cpu-transpose-native', 'torch-cpu-transpose-compile',
+    'torch-cpu-linear'
+]
+LINE_NAMES = [
+    'TritonCPU 1', 'TritonCPU', 'TritonCPU Linear', 'TorchCPU (native)', 'TorchCPU (compile)', 'TorchCPU 2D (native)',
+    'TorchCPU 2D (compile)', 'TorchCPU Transpose (native)', 'TorchCPU Transpose (compile)', 'TorchCPU Linear'
+]
+LINE_STYLES = [('blue', '--'), ('blue', '-'), ('blue', ':'), ('green', '--'), ('green', '-'), ('red', '--'),
+               ('red', '-'), ('yellow', '--'), ('yellow', '-'), ('purple', '-')]
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
@@ -149,6 +159,14 @@ def benchmark(M, N, provider):
             os.environ['TRITON_CPU_SINGLE_CORE'] = '1'
         else:
             os.unsetenv('TRITON_CPU_SINGLE_CORE')
+
+        if 'transpose' in provider:
+            weight = torch.transpose(weight, 0, 1)
+            x = x[None, :]
+            output = output[None, :]
+        elif '2d' in provider:
+            x = x[:, None]
+            output = output[:, None]
     else:
         output = None
         triton.runtime.driver.set_active_to_gpu()
@@ -158,17 +176,30 @@ def benchmark(M, N, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(weight, x), quantiles=quantiles)
     elif provider == 'triton-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles)
-    elif provider == 'torch-cpu-native':
+    elif provider == 'torch-cpu-native' or provider == 'torch-cpu-2d-native':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(weight, x, out=output), quantiles=quantiles,
                                                      is_cpu=True)
-    elif provider == 'torch-cpu-compile':
+    elif provider == 'torch-cpu-compile' or provider == 'torch-cpu-2d-compile':
         compiled = torch.compile(torch.matmul)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled(weight, x, out=output), quantiles=quantiles,
                                                      is_cpu=True)
+    elif provider == 'torch-cpu-transpose-native':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(x, weight, out=output), quantiles=quantiles,
+                                                     is_cpu=True)
+    elif provider == 'torch-cpu-transpose-compile':
+        compiled = torch.compile(torch.matmul)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled(x, weight, out=output), quantiles=quantiles,
+                                                     is_cpu=True)
+    elif provider == 'torch-cpu-linear':
+        weight = torch.nn.Linear(N, M, bias=False, device=weight.device, dtype=weight.dtype)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: weight.forward(x), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu-single':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles, is_cpu=True)
     elif provider == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles, is_cpu=True)
+    elif provider == 'triton-cpu-linear':
+        # torch.nn.Linear.forward does not take preallocated output buffer, so we also do no provide output buffer for fair comparison
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, None), quantiles=quantiles, is_cpu=True)
     perf = lambda ms: 2 * M * N * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
