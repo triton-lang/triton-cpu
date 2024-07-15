@@ -1,5 +1,6 @@
 from .cuda import libdevice as cuda_libdevice
 from .hip import libdevice as hip_libdevice
+from .cpu import libdevice as cpu_libdevice
 from triton.language import core
 from functools import wraps
 from typing import TypeVar
@@ -18,6 +19,8 @@ def dispatch(fn: T) -> T:
             _curr_libdevice_module = cuda_libdevice
         elif _backend == 'hip':
             _curr_libdevice_module = hip_libdevice
+        elif _backend == 'cpu':
+            _curr_libdevice_module = cpu_libdevice
         else:
             raise RuntimeError('unknown backend')
 
