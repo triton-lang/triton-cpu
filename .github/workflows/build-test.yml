@@ -80,5 +80,6 @@ jobs:
         run: |
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_compile_errors.py
+          python -m pytest -s -n 32 --device cpu python/test/unit/runtime/test_bindings.py
           python -m pytest -s -n 32 --device cpu python/test/unit/runtime/test_cache.py
           python -m pytest -s -n 32 --device cpu python/test/unit/runtime/test_launch.py
