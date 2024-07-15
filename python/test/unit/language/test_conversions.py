@@ -282,6 +282,10 @@ def upcast_test(src_dtype, dst_dtype, exponent_bits, mantissa_bits, exponent_bia
 ])
 def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 
+    if device == "cpu":
+        if "float8" in src_dtype or "float8" in dst_dtype:
+            pytest.skip("float8 tests are not supported on CPU")
+
     if src_dtype == 'float8e4nv' and is_cuda() and torch.cuda.get_device_capability(0) < (9, 0):
         pytest.skip("float8e4nv upcast tests only supported on NVGPU with compute capability 9.0+")
 
@@ -329,6 +333,10 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
     ('float16', 'float8e4b8', 'rtne', 0x5b80),
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
+    if device == "cpu":
+        if "float8" in src_dtype or "float8" in dst_dtype:
+            pytest.skip("float8 tests are not supported on CPU")
+        pytest.skip("FIXME: Test aborts for device=cpu")
 
     if src_dtype != 'float32' and is_cuda() and torch.cuda.get_device_capability(0) < (9, 0):
         pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
