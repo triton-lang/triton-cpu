@@ -116,8 +116,7 @@ class CPUBackend(BaseBackend):
         pm.run(mod)
         return mod
 
-    @staticmethod
-    def make_llir(src, metadata, options):
+    def make_llir(self, src, metadata, options):
         # warp-specialization mutates num_warps
         num_warp_groups = src.get_int_attr("triton_gpu.num-warp-groups-per-cta")
         if num_warp_groups is not None:
@@ -133,6 +132,8 @@ class CPUBackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         cpu.passes.ttcpuir.add_triton_cpu_to_llvmir_pipeline(pm)
+        if self.cpu_arch == "x86_64" and "avx512f" in self.cpu_features:
+            cpu.passes.ttcpuir.add_math_to_libmvec(pm)
         passes.convert.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
         cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
