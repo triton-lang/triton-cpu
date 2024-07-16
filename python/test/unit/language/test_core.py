@@ -425,6 +425,7 @@ def _mod_operation_ill_conditioned(dtype_x, dtype_y) -> bool:
     ]
 
 
+@pytest.mark.cpu
 def test_dtype_codegen():
     for dtype in dtypes_with_bfloat16:
         full_name = f"triton.language.{dtype}"
@@ -1878,9 +1879,13 @@ def test_join_with_mma(device):
     torch.testing.assert_close(z, z_ref)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("debug", [False, True])
 def test_interleave(device, debug):
+
+    if device == "cpu" and debug:
+        pytest.skip("Test aborts for device=cpu and debug=True")
 
     @triton.jit(debug=debug)
     def kernel(Z, N: tl.constexpr):
