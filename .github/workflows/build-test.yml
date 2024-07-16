@@ -83,6 +83,8 @@ jobs:
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_compile_errors.py \
             python/test/unit/language/test_conversions.py \
+            python/test/unit/language/test_decorator.py \
+            python/test/unit/language/test_standard.py \
             python/test/unit/runtime/test_bindings.py \
             python/test/unit/runtime/test_cache.py \
             python/test/unit/runtime/test_launch.py \
