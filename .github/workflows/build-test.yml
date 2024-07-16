@@ -85,4 +85,5 @@ jobs:
             python/test/unit/language/test_conversions.py \
             python/test/unit/runtime/test_bindings.py \
             python/test/unit/runtime/test_cache.py \
-            python/test/unit/runtime/test_launch.py
+            python/test/unit/runtime/test_launch.py \
+            python/test/unit/runtime/test_subproc.py

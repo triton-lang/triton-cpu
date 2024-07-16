@@ -156,15 +156,6 @@ def test_changed_line_numbers_invalidate_cache():
     assert orig_cache_key != updated_cache_key
 
 
-@pytest.fixture
-def fresh_triton_cache():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            os.environ["TRITON_CACHE_DIR"] = tmpdir
-        finally:
-            os.environ.pop("TRITON_CACHE_DIR", None)
-
-
 def test_reuse(device, fresh_triton_cache):
     counter = 0
 
