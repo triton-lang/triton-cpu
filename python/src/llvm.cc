@@ -42,12 +42,10 @@ struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
 
 using namespace llvm;
 
-std::string translateLLVMIRToASM(llvm::Module &module,
-                                 const std::string &triple,
-                                 const std::string &proc,
-                                 const std::string &features,
-                                 const std::vector<std::string> &flags,
-                                 bool enable_fp_fusion, bool isObject) {
+std::string translateLLVMIRToASM(
+    llvm::Module &module, const std::string &triple, const std::string &proc,
+    const std::string &features, const std::vector<std::string> &flags,
+    bool enable_fp_fusion, bool isObject, bool enable_fast_math = false) {
   using namespace mlir;
   // options
   auto options = llvm::cl::getRegisteredOptions();
@@ -115,9 +113,19 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   llvm::TargetOptions opt;
   if (enable_fp_fusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
-  opt.UnsafeFPMath = false;
-  opt.NoInfsFPMath = false;
-  opt.NoNaNsFPMath = true;
+
+  if (enable_fast_math) {
+    opt.UnsafeFPMath = true;
+    opt.NoInfsFPMath = true;
+    opt.NoNaNsFPMath = true;
+    opt.NoTrappingFPMath = true;
+    opt.NoSignedZerosFPMath = true;
+    opt.ApproxFuncFPMath = true;
+  } else {
+    opt.UnsafeFPMath = false;
+    opt.NoInfsFPMath = false;
+    opt.NoNaNsFPMath = true;
+  }
   opt.TrapUnreachable = true;
   std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
       module.getTargetTriple(), proc, features, opt, llvm::Reloc::PIC_,
@@ -360,7 +368,8 @@ void init_triton_llvm(py::module &&m) {
 
   m.def(
       "translate_to_host_asm",
-      [](std::string llvmIR, bool enable_fp_fusion) -> py::object {
+      [](std::string llvmIR, bool enable_fp_fusion,
+         bool enable_fast_math) -> py::object {
         std::string res;
         {
           // when allow_threads goes out of scope, gil will be released
@@ -380,7 +389,7 @@ void init_triton_llvm(py::module &&m) {
           res =
               translateLLVMIRToASM(*module, llvm::sys::getDefaultTargetTriple(),
                                    llvm::sys::getHostCPUName().str(), "", {},
-                                   enable_fp_fusion, false);
+                                   enable_fp_fusion, false, enable_fast_math);
         }
         return py::str(res);
       },

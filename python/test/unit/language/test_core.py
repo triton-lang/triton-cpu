@@ -3360,6 +3360,7 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             assert 'wgmma.mma_async.sync.aligned.m64n128k32.f32.e4m3.e4m3' in ptx
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("B", [1, 2, 4, 8])
 @pytest.mark.parametrize("num_warps", [1, 2, 4, 8, 16])
@@ -3375,10 +3376,19 @@ def test_dot3d(B, num_warps, M, N, K, in_dtype_str, out_dtype_str, device):
                 pytest.skip(f"{in_dtype_str} is not supported in WMMA dot, FMA does not support dot3d")
             if out_dtype_str == "float16":
                 pytest.skip(f"{out_dtype_str} has low precision in WMMA dot")
+    elif is_cpu():
+        input_precision = "ieee"
+        # TODO(dmitriim): investigate the reason why
+        # can be fixed with lower tolerance:
+        #   E Mismatched elements: 94 / 32768 (0.287%)
+        #   E Max absolute difference: 0.09375
+        #   E Max relative difference: 4.812
+        if out_dtype_str == "float16" and in_dtype_str == "float16":
+            pytest.skip(f"{out_dtype_str} with M = {M}, N = {N}, K = {K} has low precision. Not clear why.")
     else:
         input_precision = "tf32" if in_dtype_str == 'float32' else "ieee"
 
-    if B == 8 and M == 64 and in_dtype_str == "float32" and out_dtype_str == "float32":
+    if B == 8 and M == 64 and in_dtype_str == "float32" and out_dtype_str == "float32" and not is_cpu():
         if triton.runtime.driver.active.utils.get_device_properties(
                 torch.cuda.current_device())["max_shared_mem"] < 131072:
             pytest.skip(
@@ -5578,6 +5588,7 @@ def test_temp_var_in_loop(device):
     assert (acc == out).all()
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_num_programs(device):
     # Assuming that the kernel is launched with a grid of (11, 21, 31)

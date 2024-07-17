@@ -1,18 +1,23 @@
 import functools
 import hashlib
 import os
+import tempfile
+from pathlib import Path
 
 from dataclasses import dataclass
 from typing import Any, Tuple
 
 from triton._C.libtriton import cpu, ir, llvm, passes
 from triton.backends.compiler import BaseBackend, GPUTarget
+from triton.runtime.build import _build
+import triton.backends.cpu.driver as cpu_driver
 
 
 @dataclass(frozen=True)
 class CPUOptions:
     # GPU-specific options are used in several places.
     # For now, we just provide dummy values.
+    backend_name: str = "cpu"
     num_warps: int = 0
     num_stages: int = 0
     num_ctas: int = 0
@@ -24,6 +29,7 @@ class CPUOptions:
     allow_fp8e4b15: bool = True
     enable_fp_fusion: bool = True
     max_num_imprecise_acc_default: int = 0
+    enable_fast_math: bool = False
 
     # TODO: We may introduce CPU-specific options like # of cores.
 
@@ -44,13 +50,15 @@ class CPUBackend(BaseBackend):
 
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
-        self.binary_ext = "asm"
+        self.binary_ext = "so"
         self.cpu_arch = llvm.get_cpu_tripple().split("-")[0]
         self.cpu_name = llvm.get_cpu_name()
         self.cpu_features = llvm.get_cpu_features()
 
     def parse_options(self, opts) -> Any:
         args = {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
+        if not "enable_fast_math" in args:
+            args["enable_fast_math"] = os.getenv("TRITON_CPU_FAST_MATH", "0") == "1"
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -127,7 +135,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_to_llvmir_pipeline(pm)
         passes.convert.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
-        cpu.passes.ttcpuir.add_vector_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
         passes.convert.add_arith_to_llvmir(pm)
         cpu.passes.ttcpuir.add_func_to_llvmir(pm)
@@ -161,7 +169,23 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_asm(src, metadata, options):
-        return llvm.translate_to_host_asm(src, options.enable_fp_fusion)
+        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+
+    @staticmethod
+    def make_so(src, metadata, options):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            asm_path = os.path.join(tmpdir, "kernel.s")
+            Path(asm_path).write_text(src)
+            so = _build(
+                "kernel",
+                asm_path,
+                tmpdir,
+                cpu_driver.library_dir,
+                cpu_driver.include_dir,
+                ["gcc", "m"],
+            )
+            with open(so, "rb") as f:
+                return f.read()
 
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
@@ -169,6 +193,7 @@ class CPUBackend(BaseBackend):
         stages["tttcir"] = lambda src, metadata: self.make_tttcir(src, metadata, options)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options)
         stages["asm"] = lambda src, metadata: self.make_asm(src, metadata, options)
+        stages["so"] = lambda src, metadata: self.make_so(src, metadata, options)
 
     @functools.lru_cache()
     def hash(self):
