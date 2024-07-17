@@ -14,7 +14,9 @@ from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", int_dtypes + uint_dtypes + float_dtypes + ["bfloat16"])
 @pytest.mark.parametrize("op", ["maximum", "minimum"])
-def test_maximum_minium(dtype, op, device):
+def test_maximum_minimum(dtype, op, device):
+    if device == "cpu" and dtype == "bfloat16":
+        pytest.skip("bfloat16 not supported on CPU yet")
     expr = f'tl.{op}(x, y)'
     numpy_expr = f'np.{op}(x, y)'
     _test_binary(dtype, dtype, expr, numpy_expr, device=device)

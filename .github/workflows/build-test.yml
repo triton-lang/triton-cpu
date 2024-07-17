@@ -79,3 +79,14 @@ jobs:
       - name: Run python unit tests
         run: |
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu \
+            python/test/unit/language/test_annotations.py \
+            python/test/unit/language/test_compile_errors.py \
+            python/test/unit/language/test_conversions.py \
+            python/test/unit/language/test_decorator.py \
+            python/test/unit/language/test_standard.py \
+            python/test/unit/runtime/test_bindings.py \
+            python/test/unit/runtime/test_cache.py \
+            python/test/unit/runtime/test_launch.py \
+            python/test/unit/runtime/test_subproc.py \
+            python/test/unit/test_debug_dump.py

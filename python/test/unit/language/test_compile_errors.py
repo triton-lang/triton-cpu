@@ -294,7 +294,9 @@ def test_global_type_alias_access():
     triton.compile(triton.compiler.ASTSource(fn=kernel, signature={}, constants={}))
 
 
-def test_global_access_in_fn_default_arg():
+def test_global_access_in_fn_default_arg(device):
+    if device == "cpu":
+        pytest.skip("Test aborts for device=cpu")
 
     @triton.jit
     def kernel(a=GLOBAL):
