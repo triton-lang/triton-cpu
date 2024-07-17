@@ -438,6 +438,7 @@ def _mod_operation_ill_conditioned(dtype_x, dtype_y) -> bool:
     ]
 
 
+@pytest.mark.cpu
 def test_dtype_codegen():
     for dtype in dtypes_with_bfloat16:
         full_name = f"triton.language.{dtype}"
@@ -3190,10 +3191,6 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         if in_dtype == 'bfloat16':
             pytest.skip("bfloat16 is not supported in the interpreter")
     elif is_cpu():
-        if input_precision != "ieee":
-            pytest.skip(f"{input_precision} not supported on CPU")
-        if in_dtype == 'float8e4nv' or in_dtype == 'float8e5':
-            pytest.skip("float8e4nv and float8e5 not supported on CPU")
         # This test kernel runs in a single thread and can take a long time
         # for bigger sizes with the current codegen on CPU. Limit input sizes
         # by default to get more reasonable tests execution time.
@@ -3893,6 +3890,7 @@ def test_masked_load_shared_memory(dtype, device):
     torch.testing.assert_close(out, reference_out, atol=1e-2, rtol=0)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("cache", ["", ".ca", ".cg"])
 def test_load_cache_modifier(cache, device):
@@ -3930,6 +3928,7 @@ def test_load_cache_modifier(cache, device):
         assert 'ld.global.cg' not in ptx
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("N", [16, 10, 11, 1024])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
@@ -3957,6 +3956,7 @@ def test_vectorization(N, num_ctas, device):
     torch.testing.assert_close(dst[:N], src[:N], atol=1e-6, rtol=0)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("has_hints", [False, True])
 def test_vectorization_hints(has_hints, device):
@@ -4010,6 +4010,7 @@ def test_assume(device):
 # ---------------
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("cache", ["", ".wb", ".cg", ".cs", ".wt"])
 def test_store_cache_modifier(cache, device):
@@ -4053,6 +4054,7 @@ def test_store_cache_modifier(cache, device):
         assert 'st.global.wt' in ptx
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("eviction_policy", ["", "evict_last", "evict_first"])
 def test_store_eviction_policy(eviction_policy, device):
