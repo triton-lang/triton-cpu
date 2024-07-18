@@ -121,7 +121,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 
     LINE_VALS += ['triton-gpu', 'torch-gpu']
     LINE_NAMES += ['TritonGPU', 'TorchGPU']
-    LINE_STYLES += [('yellow', '-'), ('red', '-')]
+    LINE_STYLES += [('pink', '-'), ('cyan', '-')]
 
 # %%
 # Seems like we're good to go!
