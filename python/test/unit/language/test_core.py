@@ -319,6 +319,13 @@ def test_empty_kernel(dtype_x, device):
     x = to_triton(numpy_random(SIZE, dtype_str=dtype_x), device=device, dst_type=dtype_x)
     kernel[(1, )](x, SIZE=SIZE, num_warps=4)
 
+@pytest.mark.cpu
+def test_empty_kernel_scalar_arg(device):
+    @triton.jit
+    def kernel(x):
+        pass
+
+    kernel[(1, )](2)
 
 def test_scalar_overflow(device):
 
