@@ -53,8 +53,7 @@ def test_tensor_math_fn(dtype_str, math_fn, size, device):
         num_vec_calls = 1
     if data_size > 64:
         num_vec_calls = data_size / 64
-    asm_str = meta.asm["asm"].decode("utf-8")
-    assert asm_str.count("_ZGV") == num_vec_calls
+    assert meta.asm["asm"].count("_ZGV") == num_vec_calls
 
 
 @pytest.mark.parametrize("dtype_str", float_dtypes)
@@ -94,5 +93,4 @@ def test_libdevice_math_fn(dtype_str, math_fn, size, device):
         num_vec_calls = 1
     if data_size > 64:
         num_vec_calls = data_size / 64
-    asm_str = meta.asm["asm"].decode("utf-8")
-    assert asm_str.count("_ZGV") == num_vec_calls
+    assert meta.asm["asm"].count("_ZGV") == num_vec_calls
