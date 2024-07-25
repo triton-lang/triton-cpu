@@ -13,7 +13,7 @@ public:
 
   TritonToTritonCPUTypeConverter();
 
-  Type convertTritonPointerType(triton::PointerType type);
+  Type convertTritonTensorType(RankedTensorType type);
 };
 
 #endif

@@ -8,11 +8,8 @@ using namespace mlir::triton::cpu;
 
 TritonToTritonCPUTypeConverter::TritonToTritonCPUTypeConverter() {
   addConversion([](Type type) { return type; });
-  addConversion([this](RankedTensorType tensorTy) -> Type {
-    Type elemTy = convertType(tensorTy.getElementType());
-    if (isa<triton::PointerType>(elemTy))
-      elemTy = IntegerType::get(tensorTy.getContext(), 64);
-    return VectorType::get(tensorTy.getShape(), elemTy);
+  addConversion([this](RankedTensorType type) -> std::optional<Type> {
+    return convertTritonTensorType(type);
   });
 
   // Converted ops produce vectors instead of tensors. Provide conversion
@@ -31,4 +28,12 @@ TritonToTritonCPUTypeConverter::TritonToTritonCPUTypeConverter() {
           .getResult(0);
     llvm_unreachable("Unexpected target materizalization");
   });
+}
+
+Type TritonToTritonCPUTypeConverter::convertTritonTensorType(
+    RankedTensorType type) {
+  Type elemTy = convertType(type.getElementType());
+  if (isa<triton::PointerType>(elemTy))
+    elemTy = IntegerType::get(type.getContext(), 64);
+  return VectorType::get(type.getShape(), elemTy);
 }
