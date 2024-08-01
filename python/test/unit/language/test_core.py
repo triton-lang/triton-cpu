@@ -2997,6 +2997,9 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
     if is_hip() and shape == (128, 128) and dtype_str == 'float32':
         pytest.skip("TODO Out of LDS for float32 with shape 128x128")
+    if is_cpu():
+        # FIXME: compilation time for big shapes is too long
+        shape = tuple(dim // 4 for dim in shape)
 
     # triton kernel
     @triton.jit
@@ -3153,9 +3156,9 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         # for bigger sizes with the current codegen on CPU. Limit input sizes
         # by default to get more reasonable tests execution time.
         if os.environ.get('TRITON_CPU_TEST_DOT_FULL_SIZE', '0') != '1':
-            M = min(M, 64)
-            N = min(N, 64)
-            K = min(K, 32)
+            M = min(M, 32 if epilogue == "chain-dot" else 64)
+            N = min(N, 32 if epilogue == "chain-dot" else 64)
+            K = min(K, 16 if epilogue == "chain-dot" else 32)
     else:
         if is_cuda():
             capability = torch.cuda.get_device_capability()
@@ -3389,6 +3392,8 @@ def test_dot3d(B, num_warps, M, N, K, in_dtype_str, out_dtype_str, device):
                 pytest.skip(f"{in_dtype_str} is not supported in WMMA dot, FMA does not support dot3d")
             if out_dtype_str == "float16":
                 pytest.skip(f"{out_dtype_str} has low precision in WMMA dot")
+    elif is_cpu():
+        pytest.skip("Test is skipped due to too long execution time on CPU")
     else:
         input_precision = "tf32" if in_dtype_str == 'float32' else "ieee"
 
@@ -3518,6 +3523,9 @@ def test_max_num_imprecise_acc(device):
         tl.store(Z + off_m[:, None] * BLOCK_N + off_n[None, :], z)
 
     M, N, K, num_warps, MAX_NUM_IMPRECISE_ACC = 128, 128, 128, 4, 64
+    if is_cpu():
+        # FIXME: Modify test and/or codegen to reduce test execution time for CPU
+        M, N, K, MAX_NUM_IMPRECISE_ACC = 32, 32, 32, 32
     x = torch.zeros((M, K), dtype=torch.float8_e5m2, device=device)
     y = torch.zeros((K, N), dtype=torch.float8_e5m2, device=device)
     z = torch.zeros((M, N), dtype=torch.float32, device=device)
