@@ -3046,6 +3046,9 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
     if is_hip() and shape == (128, 128) and dtype_str == 'float32':
         pytest.skip("TODO Out of LDS for float32 with shape 128x128")
+    if is_cpu():
+        # FIXME: compilation time for big shapes is too long
+        shape = tuple(dim // 4 for dim in shape)
 
     # triton kernel
     @triton.jit
@@ -3204,9 +3207,9 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         # for bigger sizes with the current codegen on CPU. Limit input sizes
         # by default to get more reasonable tests execution time.
         if os.environ.get('TRITON_CPU_TEST_DOT_FULL_SIZE', '0') != '1':
-            M = min(M, 64)
-            N = min(N, 64)
-            K = min(K, 32)
+            M = min(M, 32 if epilogue == "chain-dot" else 64)
+            N = min(N, 32 if epilogue == "chain-dot" else 64)
+            K = min(K, 16 if epilogue == "chain-dot" else 32)
     else:
         if is_cuda():
             capability = torch.cuda.get_device_capability()
@@ -3445,6 +3448,8 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
                 pytest.skip(f"{in_dtype_str} is not supported in WMMA dot, FMA does not support dot3d")
             if out_dtype_str == "float16":
                 pytest.skip(f"{out_dtype_str} has low precision in WMMA dot")
+    elif is_cpu():
+        pytest.skip("Test is skipped due to too long execution time on CPU")
     else:
         input_precision = "tf32" if in_dtype_str == 'float32' else "ieee"
 
@@ -5382,7 +5387,7 @@ def matmul_kernel(  #
 @pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (64, 64, 64)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (64, 64, 64)] if not is_cpu() else [(32, 32, 128), (32, 32, 32)])
 @pytest.mark.parametrize("in_type_str", ['float8e5', 'float8e4nv', 'float8e4b15'])
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
@@ -5390,7 +5395,6 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
         cc = torch.cuda.get_device_capability()
         if cc[0] >= 9 and in_type_str == "float8e4b15":
             pytest.skip("Dot op does not support fp8e4b15 on CUDA arch >= 90")
-<<<<<<< HEAD
     elif is_hip():
         if in_type_str != 'float8e5':
             pytest.skip('test_fp8_dot_acc for HIP currently broken in upstream.')
@@ -5400,33 +5404,16 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
             pytest.skip('BLOCK size (128, 256, 128) fails on MI300')
 
     check_type_supported(in_type_str, device)
-=======
-    # WARN "low_precision_acc is used only with float8e4b15, and currently ignored on CPU"
-
-    check_type_supported(in_type_str, device)
-    M, N, K = 128, 256, 256
-    if is_cpu():
-        block_m, block_n, block_k = 32, 32, 128
-    else:
-        block_m, block_n, block_k = M, N, K
-    BLOCK_M, BLOCK_N, BLOCK_K = block_m, block_n, block_k
->>>>>>> cc65f44eb ([FP8 tests] Enable several fp8 tests (#49))
     A = numpy_random((M, K), dtype_str=in_type_str)
     B = numpy_random((K, N), dtype_str=in_type_str)
     C = torch.empty((M, N), dtype=torch.float32, device=device)
     num_warps = 8
     a = to_triton(A, device=device, dst_type=in_type_str)
     b = to_triton(B, device=device, dst_type=in_type_str)
-<<<<<<< HEAD
-    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
     max_num_impressive_acc = low_precision_acc if low_precision_acc <= BLOCK_K else None
     h = matmul_kernel[grid](a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0),
                             C.stride(1), BLOCK_M, BLOCK_N, BLOCK_K, max_num_impressive_acc, num_warps=num_warps)
-=======
-    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
-    matmul_kernel[grid](a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0), C.stride(1),
-                        BLOCK_M, BLOCK_N, BLOCK_K, low_precision_acc, num_warps=num_warps)
->>>>>>> cc65f44eb ([FP8 tests] Enable several fp8 tests (#49))
     torch_a = torch.from_numpy(A).to(device=device)
     torch_b = torch.from_numpy(B).to(device=device)
     if is_cpu() and 'float8' in in_type_str:
