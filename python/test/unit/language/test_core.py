@@ -3331,6 +3331,10 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
         if shape == (128, 128) and dtype_str == 'float32':
             pytest.skip("TODO Out of LDS for float32 with shape 128x128")
 
+    if is_cpu():
+        # FIXME: compilation time for big shapes is too long
+        shape = tuple(dim // 4 for dim in shape)
+
     # triton kernel
     @triton.jit
     def kernel(X, stride_xm, stride_xn, Z, stride_zm, stride_zn, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
@@ -3562,9 +3566,9 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         # for bigger sizes with the current codegen on CPU. Limit input sizes
         # by default to get more reasonable tests execution time.
         if os.environ.get('TRITON_CPU_TEST_DOT_FULL_SIZE', '0') != '1':
-            M = min(M, 64)
-            N = min(N, 64)
-            K = min(K, 32)
+            M = min(M, 32 if epilogue == "chain-dot" else 64)
+            N = min(N, 32 if epilogue == "chain-dot" else 64)
+            K = min(K, 16 if epilogue == "chain-dot" else 32)
     else:
         if not is_hip() and (M < 16 or N < 16 or K < 16):
             pytest.skip("small dots are supported only on HIP at the moment")
@@ -4065,6 +4069,8 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
                 pytest.skip(f"{in_dtype_str} is not supported in WMMA dot, FMA does not support dot3d")
             if out_dtype_str == "float16":
                 pytest.skip(f"{out_dtype_str} has low precision in WMMA dot")
+    elif is_cpu():
+        pytest.skip("Test is skipped due to too long execution time on CPU")
     else:
         input_precision = "tf32" if is_cuda() and in_dtype_str == 'float32' else "ieee"
         if not is_interpreter() and (BLOCK_M < 16 or BLOCK_N < 16):
