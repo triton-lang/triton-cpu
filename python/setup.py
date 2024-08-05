@@ -689,6 +689,7 @@ def get_packages():
         "triton/compiler",
         "triton/language",
         "triton/language/extra",
+        "triton/language/extra/cpu",
         "triton/runtime",
         "triton/backends",
         "triton/tools",
