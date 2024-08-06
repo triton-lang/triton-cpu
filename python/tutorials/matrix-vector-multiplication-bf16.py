@@ -62,9 +62,9 @@ def gemv(
 
     if output is None:
         # Allocates output.
-        output = torch.empty((M, ), device=x.device, dtype=torch.bfloat16)
+        output = torch.empty((M, ), device=x.device, dtype=x.dtype)
     else:
-        assert output.shape == (M, ) and output.dtype == torch.bfloat16, "Incompatible output"
+        assert output.shape == (M, ) and output.dtype == x.dtype, "Incompatible output"
 
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), )
