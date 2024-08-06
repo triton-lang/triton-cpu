@@ -5,6 +5,7 @@ import triton.language as tl
 
 BLOCK_SIZE_M = 16
 BLOCK_SIZE_N = 64
+USE_GPU = False
 """
 Kernel for computing Y = A @ X, where A is a dense matrix with
 M rows and N columns.
@@ -98,6 +99,25 @@ LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-compile-single', 'tor
 LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (compile) 1', 'TorchCPU (compile)']
 LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
 
+if USE_GPU and triton.runtime.driver.get_active_gpus():
+    triton.runtime.driver.set_active_to_gpu()
+    weight = weight.to('cuda')
+    x = x.to('cuda')
+    triton_output = gemv(weight, x, None)
+    torch_output = torch.matmul(weight, x)
+    #print(f"triton_gpu_output_with_{weight.dtype}_inputs={triton_output}")
+    #print(f"torch_gpu_output_with_{weight.dtype}_inputs={torch_output}")
+    rtol = 0
+    if torch.allclose(triton_output, torch_output, atol=1e-4, rtol=rtol):
+        print("✅ TritonGPU and TorchGPU match")
+    else:
+        print("❌ TritonGPU and TorchGPU differ, the maximum difference is "
+              f'{torch.max(torch.abs(triton_output - torch_output))}')
+
+    LINE_VALS += ['triton-gpu', 'torch-gpu']
+    LINE_NAMES += ['TritonGPU', 'TorchGPU']
+    LINE_STYLES += [('pink', '-'), ('cyan', '-')]
+
 default_num_threads = torch.get_num_threads()
 
 # %%
@@ -143,7 +163,11 @@ def benchmark(M, N, provider):
         triton.runtime.driver.set_active_to_gpu()
 
     quantiles = [0.5, 0.2, 0.8]
-    if 'torch-cpu-compile' in provider:
+    if provider == 'torch-gpu':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(weight, x), quantiles=quantiles)
+    elif provider == 'triton-gpu':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles)
+    elif 'torch-cpu-compile' in provider:
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled_matmul(weight, x, out=output),
                                                      quantiles=quantiles, is_cpu=True)
     elif 'triton-cpu' in provider:
