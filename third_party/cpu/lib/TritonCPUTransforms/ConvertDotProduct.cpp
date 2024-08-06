@@ -28,6 +28,9 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+// TODO: support SVE and different vector width
+constexpr int vectorBitWidth = 128;
+
 bool isBf16DotProduct(vector::MultiDimReductionOp op, Value &matInput,
                       Value &vecInput, PatternRewriter &rewriter) {
   Value src = op.getSource();
@@ -37,7 +40,7 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, Value &matInput,
   auto resTy = cast<VectorType>(op.getType());
 
   auto srcRank = srcTy.getRank();
-  auto outDim = srcTy.getDimSize(0);
+  auto outNum = srcTy.getDimSize(0);
 
   if (resTy != accTy || srcRank != 2 || !isFp32(srcTy))
     return false;
@@ -67,19 +70,17 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, Value &matInput,
   if (!isBf16(lhsTy) || !isBf16(rhsTy))
     return false;
 
-  // TODO: support SVE
-  constexpr int vecLength = 128;
-
-  const int lanes = vecLength / lhsTy.getElementType().getIntOrFloatBitWidth();
+  const int lanes =
+      vectorBitWidth / lhsTy.getElementType().getIntOrFloatBitWidth();
   int64_t kVal = lhsTy.getDimSize(1);
 
-  if (outDim < 1)
+  if (outNum < 1)
     return false;
 
   if (kVal % lanes != 0)
     return false;
 
-  if (outDim == 1) {
+  if (outNum == 1) {
     matInput = lhs;
     vecInput = rhs;
   } else {
@@ -97,7 +98,7 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, Value &matInput,
   }
 
   if (cast<VectorType>(vecInput.getType()).getDimSize(0) != 1 ||
-      cast<VectorType>(matInput.getType()).getDimSize(0) != outDim)
+      cast<VectorType>(matInput.getType()).getDimSize(0) != outNum)
     return false;
 
   return true;
@@ -124,12 +125,10 @@ struct ConvertMulSumToDotHorizontalSum
     auto matInputTy = cast<VectorType>(matInput.getType());
     auto vecInputTy = cast<VectorType>(vecInput.getType());
 
-    constexpr int vecLength = 128;
-
     const int lanes =
-        vecLength / matInputTy.getElementType().getIntOrFloatBitWidth();
+        vectorBitWidth / matInputTy.getElementType().getIntOrFloatBitWidth();
     const int resLanes =
-        vecLength / resTy.getElementType().getIntOrFloatBitWidth();
+        vectorBitWidth / resTy.getElementType().getIntOrFloatBitWidth();
     int64_t kVal = matInputTy.getDimSize(1);
 
     const int numOfOuts = matInputTy.getDimSize(0);
