@@ -81,12 +81,11 @@ triton.runtime.driver.set_active_to_cpu()
 weight = torch.randn((512, 1024), device='cpu', dtype=torch.bfloat16)
 x = torch.randn((1024), device='cpu', dtype=torch.bfloat16)
 triton_output = gemv(weight, x, None)
-# torch.matmul for bf16 on Arm Linux will trigger error on old torch versions:
-# RuntimeError: could not create a primitive descriptor for a matmul primitive
-# So we use torch.compile for comparison.
-# We recommend using torch 2.4.0 onwards.
 compiled_matmul = torch.compile(torch.matmul)
-torch_output = compiled_matmul(weight, x)
+# Note: torch.matmul for bf16 on Arm Linux will trigger error on old torch versions:
+# RuntimeError: could not create a primitive descriptor for a matmul primitive
+# So we recommend using torch 2.4.0 onwards.
+torch_output = torch.matmul(weight, x)
 #print(f"triton_cpu_output_with_{weight.dtype}_inputs={triton_output}")
 #print(f"torch_cpu_output_with_{weight.dtype}_inputs={torch_output}")
 rtol = 0
