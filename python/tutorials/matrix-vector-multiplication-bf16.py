@@ -81,9 +81,10 @@ triton.runtime.driver.set_active_to_cpu()
 weight = torch.randn((512, 1024), device='cpu', dtype=torch.bfloat16)
 x = torch.randn((1024), device='cpu', dtype=torch.bfloat16)
 triton_output = gemv(weight, x, None)
-# torch.matmul for bf16 on Arm Linux will trigger error:
+# torch.matmul for bf16 on Arm Linux will trigger error on old torch versions:
 # RuntimeError: could not create a primitive descriptor for a matmul primitive
-# so we use torch.compile for comparison
+# So we use torch.compile for comparison.
+# We recommend using torch 2.4.0 onwards.
 compiled_matmul = torch.compile(torch.matmul)
 torch_output = compiled_matmul(weight, x)
 #print(f"triton_cpu_output_with_{weight.dtype}_inputs={triton_output}")
@@ -95,9 +96,14 @@ else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
 
-LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-compile-single', 'torch-cpu-compile']
-LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (compile) 1', 'TorchCPU (compile)']
-LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
+LINE_VALS = [
+    'triton-cpu-single', 'triton-cpu', 'torch-cpu-native-single', 'torch-cpu-native', 'torch-cpu-compile-single',
+    'torch-cpu-compile'
+]
+LINE_NAMES = [
+    'TritonCPU 1', 'TritonCPU', 'TorchCPU (native) 1', 'TorchCPU (native)', 'TorchCPU (compile) 1', 'TorchCPU (compile)'
+]
+LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-'), ('red', '--'), ('red', '-')]
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
@@ -167,6 +173,9 @@ def benchmark(M, N, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(weight, x), quantiles=quantiles)
     elif provider == 'triton-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles)
+    elif 'torch-cpu-native' in provider:
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(weight, x, out=output), quantiles=quantiles,
+                                                     is_cpu=True)
     elif 'torch-cpu-compile' in provider:
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled_matmul(weight, x, out=output),
                                                      quantiles=quantiles, is_cpu=True)
