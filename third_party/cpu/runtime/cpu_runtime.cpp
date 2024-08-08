@@ -65,6 +65,7 @@ std::pair<int, bool> computeDigitInfo(void *vec, int32_t isInt,
 
 FormatInfo getFormatInfo(void *vec, bool isInt, int32_t bitWidth,
                          int64_t numElem) {
+  // Compute the max/min widths for pretty printing.
   int maxIntDigits = 0;
   int minIntDigits = std::numeric_limits<int>::max();
   bool hasNegative = false;
@@ -74,7 +75,7 @@ FormatInfo getFormatInfo(void *vec, bool isInt, int32_t bitWidth,
     maxIntDigits = std::max(maxIntDigits, digits);
     minIntDigits = std::min(minIntDigits, digits);
   }
-  // Fallback to scientific case for certain cases.
+  // Fallback to the scientific format for certain cases.
   bool scientific;
   if (isInt) {
     scientific = false;
@@ -116,6 +117,7 @@ void printElement(std::stringstream &ss, const void *vec, size_t index,
       printElementHelper<int16_t>(ss, vec, index);
       break;
     case 8:
+      // TODO: Seems like not working well. Need to fix it.
       printElementHelper<int8_t>(ss, vec, index);
       break;
     default:
