@@ -57,7 +57,7 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     if src.endswith(".cpp") or src.endswith(".cc"):
         cc_cmd += ["-std=c++17", "-fopenmp"]
     if src.endswith(".s"):
-        cc_cmd += ["-gdwarf-5"]
+        # cc_cmd += ["-gdwarf-5"]
         if system == "Linux" and machine in ("aarch64", "arm64"):
             # On Arm backend, some CPU (neoverse-v2) needs to be specified through -mcpu
             cc_cmd += ["-mcpu=native"]

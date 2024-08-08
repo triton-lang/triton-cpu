@@ -111,6 +111,9 @@ std::string translateLLVMIRToASM(
   auto target =
       llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
   llvm::TargetOptions opt;
+  opt.DebugStrictDwarf = true;
+  opt.ForceDwarfFrameSection = true;
+  opt.MCOptions.DwarfVersion = 5;
   if (enable_fp_fusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
 
