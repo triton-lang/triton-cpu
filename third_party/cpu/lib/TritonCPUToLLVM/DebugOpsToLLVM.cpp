@@ -4,6 +4,7 @@
 #include "cpu/include/TritonCPUToLLVM/Passes.h"
 
 #include "mlir/Dialect/GPU/IR/GPUOps.h.inc"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -48,35 +49,80 @@ LLVM::LLVMFuncOp getPrintfDeclaration(ConversionPatternRewriter &rewriter) {
   ConversionPatternRewriter::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-  auto op = rewriter.create<LLVM::LLVMFuncOp>(UnknownLoc::get(context),
-                                              funcName, funcType);
-  return op;
+  return rewriter.create<LLVM::LLVMFuncOp>(UnknownLoc::get(context), funcName,
+                                           funcType);
 }
 
-void emitPrintf(ConversionPatternRewriter &rewriter, Value formatStrStart,
-                int /*formatStrByteCount*/, ValueRange args) {
+LLVM::LLVMFuncOp getVectorPrintDeclation(ConversionPatternRewriter &rewriter) {
+  auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();
+  StringRef funcName("triton_vector_print");
+  Operation *funcOp = moduleOp.lookupSymbol(funcName);
+  if (funcOp)
+    return cast<LLVM::LLVMFuncOp>(*funcOp);
+
+  auto *context = rewriter.getContext();
+
+  SmallVector<Type> argsType{i32_ty,          i32_ty, i32_ty, ptr_ty(context),
+                             ptr_ty(context), i32_ty, i32_ty, i64_ty};
+  auto funcType = LLVM::LLVMFunctionType::get(void_ty(context), argsType);
+
+  ConversionPatternRewriter::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  return rewriter.create<LLVM::LLVMFuncOp>(UnknownLoc::get(context), funcName,
+                                           funcType);
+}
+
+void emitPrintCall(ConversionPatternRewriter &rewriter,
+                   LLVM::LLVMFuncOp funcDecl, Value formatStrStart,
+                   int /*formatStrByteCount*/, ValueRange args) {
   auto loc = UnknownLoc::get(rewriter.getContext());
   SmallVector<Value> formatStrAndArgs{formatStrStart};
   for (auto arg : args) {
     formatStrAndArgs.push_back(arg);
   }
+  call(funcDecl, formatStrAndArgs);
+}
+
+void llPrintf(StringRef formatStr, std::array<Value, 3> pid,
+              std::optional<Value> arg, ConversionPatternRewriter &rewriter) {
+  assert(!formatStr.empty() && "printf with empty string not supported");
+  auto loc = UnknownLoc::get(rewriter.getContext());
+
+  llvm::SmallString<64> formatStrNewline(formatStr);
+  formatStrNewline.push_back('\n');
+  formatStrNewline.push_back('\0');
+  Value formatStrValue =
+      LLVM::addStringToModule(loc, rewriter, "printfFormat_", formatStrNewline);
+
+  SmallVector<Value> formatStrAndArgs{formatStrValue};
+  for (auto elem : pid)
+    formatStrAndArgs.push_back(elem);
+  if (*arg)
+    formatStrAndArgs.push_back(arg.value());
   call(getPrintfDeclaration(rewriter), formatStrAndArgs);
 }
 
-Value llPrintf(StringRef msg, ValueRange args,
-               ConversionPatternRewriter &rewriter,
-               int *formatStrByteCount = nullptr) {
-  assert(!msg.empty() && "printf with empty string not supported");
-  llvm::SmallString<64> msgNewline(msg);
-  msgNewline.push_back('\n');
-  msgNewline.push_back('\0');
-  Value msgValue =
-      LLVM::addStringToModule(UnknownLoc::get(rewriter.getContext()), rewriter,
-                              "printfFormat_", msgNewline);
-  emitPrintf(rewriter, msgValue, msgNewline.size_in_bytes(), args);
-  if (formatStrByteCount)
-    *formatStrByteCount = msgNewline.size_in_bytes();
-  return msgValue;
+void llVectorPrint(std::array<Value, 3> pid, StringRef prefix, Value ptr,
+                   bool isInteger, uint32_t bitWidth, int64_t numElem,
+                   ConversionPatternRewriter &rewriter) {
+  assert(!prefix.empty());
+  auto loc = UnknownLoc::get(rewriter.getContext());
+
+  llvm::SmallString<64> pefixStr(prefix);
+  pefixStr.push_back('\0');
+  Value prefixValue =
+      LLVM::addStringToModule(loc, rewriter, "vectorPrintPrefix_", pefixStr);
+
+  SmallVector<Value> allArgs;
+  for (auto elem : pid)
+    allArgs.push_back(elem);
+  allArgs.push_back(prefixValue);
+  allArgs.push_back(ptr);
+  allArgs.push_back(i32_val(isInteger));
+  allArgs.push_back(i32_val(bitWidth));
+  allArgs.push_back(i64_val(numElem));
+  call(getVectorPrintDeclation(rewriter), allArgs);
 }
 
 // TODO: This code is the same as the GPU-backend code. Consider refactoring.
@@ -123,44 +169,67 @@ std::string getFormatSubstr(Value value, bool hex = false,
   return "";
 }
 
-// TritonCPU's device_print prints all values in the same line unlike GPUs
-// and interpreter where each value is printed in a separate line.
-struct PrintOpConversion : public ConvertOpToLLVMPattern<triton::PrintOp> {
-  explicit PrintOpConversion(LLVMTypeConverter &typeConverter)
-      : mlir::ConvertOpToLLVMPattern<triton::PrintOp>(typeConverter) {}
+bool usePrintf(triton::cpu::PrintOp op) {
+  // Simply use printf if no operand or the operand is scalar.
+  if (op.getNumOperands() == 0)
+    return true;
+
+  // tt.print is already decomposed to triton_cpu.print per value.
+  assert(op.getNumOperands() == 1);
+  Type oprType = op.getOperands()[0].getType();
+  return (oprType.isIntOrIndexOrFloat() || isa<triton::PointerType>(oprType));
+}
+
+struct PrintOpConversion : public ConvertOpToLLVMPattern<triton::cpu::PrintOp> {
+  using ConvertOpToLLVMPattern<triton::cpu::PrintOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
-  matchAndRewrite(triton::PrintOp op, OpAdaptor adaptor,
+  matchAndRewrite(triton::cpu::PrintOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
 
     auto getPid = [&](int axis) {
       return getProgramId(op->getParentOfType<LLVM::LLVMFuncOp>(), axis);
     };
-    SmallVector<Value> values = {getPid(0), getPid(1), getPid(2)};
+    std::array<Value, 3> pid = {getPid(0), getPid(1), getPid(2)};
 
     std::string formatStr;
     llvm::raw_string_ostream os(formatStr);
-    os << "(" << getFormatSubstr(values[0]) << ", "
-       << getFormatSubstr(values[1]) << ", " << getFormatSubstr(values[2])
-       << ")" << op.getPrefix();
+    os << "(" << getFormatSubstr(pid[0]) << ", " << getFormatSubstr(pid[1])
+       << ", " << getFormatSubstr(pid[2]) << ")" << op.getPrefix();
 
-    for (size_t i = 0; i < op.getNumOperands(); i++) {
-      auto elems = unpackLLElements(loc, adaptor.getOperands()[i], rewriter);
-      if (dyn_cast<RankedTensorType>(op.getOperand(i).getType())) {
-        llvm_unreachable("Not implemented for tensor types");
+    if (usePrintf(op)) {
+      if (op.getNumOperands() == 0) {
+        llPrintf(formatStr, pid, nullptr, rewriter);
+      } else {
+        Value llOpr = adaptor.getOperands()[0];
+        os << getFormatSubstr(llOpr, op.getHex());
+        llPrintf(formatStr, pid, llOpr, rewriter);
       }
+    } else {
+      Value llOpr = adaptor.getOperands()[0];
+      auto vecShapedType = cast<ShapedType>(llOpr.getType());
+      // Currently, we only support 1D vector printing.
+      if (vecShapedType.getRank() == 1) {
 
-      // Only support scalars for now.
-      assert(elems.size() == 1);
-      if (i != 0) {
-        os << ", ";
+        // To get the pointer of the vector, create an alloca and store it.
+        auto ptrType = ptr_ty(rewriter.getContext());
+        auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrType,
+                                                   llOpr.getType(), i32_val(1));
+        rewriter.create<LLVM::StoreOp>(loc, llOpr, ptr);
+
+        llVectorPrint(pid, op.getPrefix(), ptr,
+                      vecShapedType.getElementType().isInteger(),
+                      vecShapedType.getElementTypeBitWidth(),
+                      vecShapedType.getNumElements(), rewriter);
+      } else {
+        std::string msg;
+        llvm::raw_string_ostream os(msg);
+        os << "not implemented for " << llOpr.getType();
+        llvm_unreachable(msg.c_str());
       }
-      os << getFormatSubstr(elems[0], op.getHex());
-      values.push_back(elems[0]);
     }
 
-    llPrintf(formatStr, values, rewriter);
     rewriter.eraseOp(op);
     return success();
   }
