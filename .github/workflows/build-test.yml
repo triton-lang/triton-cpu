@@ -83,6 +83,10 @@ jobs:
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_block_pointer.py \
             python/test/unit/language/test_conversions.py \
+            python/test/unit/language/test_compile_errors.py \
+            python/test/unit/language/test_decorator.py \
+            python/test/unit/language/test_pipeliner.py \
+            python/test/unit/test_random.py \
             python/test/unit/cpu/test_libdevice.py \
             python/test/unit/cpu/test_libmvec.py \
             python/test/unit/cpu/test_opt.py \
