@@ -43,7 +43,9 @@ def test_metadata() -> None:
     assert used_hook
 
 
-def test_memory_leak() -> None:
+def test_memory_leak(device) -> None:
+    if device is None:
+        device = 'cuda'
 
     @triton.jit
     def kernel(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr):
@@ -57,8 +59,8 @@ def test_memory_leak() -> None:
 
     tracemalloc.start()
     try:
-        inp = torch.randn(10, device='cuda')
-        out = torch.randn(10, device='cuda')
+        inp = torch.randn(10, device=device)
+        out = torch.randn(10, device=device)
         kernel[(10, )](inp, out, 10, XBLOCK=16)
         gc.collect()
         begin, _ = tracemalloc.get_traced_memory()

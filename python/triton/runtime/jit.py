@@ -751,6 +751,8 @@ class JITFunction(KernelInterface[T]):
         import json
         import triton.language as tl
         device = driver.active.get_current_device()
+        target = driver.active.get_current_target()
+        device_key = f"{target.backend}:{device}"
         deserialized_obj = json.loads(specialization_data)
         if deserialized_obj['name'] != self.fn.__name__:
             raise RuntimeError(
@@ -767,7 +769,7 @@ class JITFunction(KernelInterface[T]):
         }
         key = deserialized_obj['key']
         kernel = compile(src, None, options)
-        self.cache[device][key] = kernel
+        self.cache[device_key][key] = kernel
         return kernel
 
     # we do not parse `src` in the constructor because
