@@ -3,7 +3,7 @@ import pytest
 import torch
 import triton.language as tl
 
-from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy_random
+from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy_random, is_cpu
 
 # ---------------
 # test maximum/minimum ops
@@ -17,6 +17,8 @@ from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy
 def test_maximum_minium(dtype, op, device):
     expr = f'tl.{op}(x, y)'
     numpy_expr = f'np.{op}(x, y)'
+    if is_cpu() and dtype == "bfloat16":
+        pytest.skip('bfloat16 is not supported natively, and issueing undefined symbol: __truncsfbf2')
     _test_binary(dtype, dtype, expr, numpy_expr, device=device)
 
 
