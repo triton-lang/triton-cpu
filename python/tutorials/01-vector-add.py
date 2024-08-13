@@ -62,9 +62,10 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 # and (2) enqueue the above kernel with appropriate grid/block sizes:
 
 
-def add(x: torch.Tensor, y: torch.Tensor, is_cpu):
-    # We need to preallocate the output.
-    output = torch.empty_like(x)
+def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, device):
+    if output is None:
+        # We need to preallocate the output.
+        output = torch.empty_like(x)
     assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
@@ -75,7 +76,7 @@ def add(x: torch.Tensor, y: torch.Tensor, is_cpu):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if is_cpu else GPU_BLOCK_SIZE)
+    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if device == 'cpu' else GPU_BLOCK_SIZE)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
@@ -89,7 +90,7 @@ triton.runtime.driver.set_active_to_cpu()
 x = torch.rand(size, device=DEVICE)
 y = torch.rand(size, device=DEVICE)
 output_torch_cpu = torch.add(x, y)
-output_triton_cpu = add(x, y, None, is_cpu=True)
+output_triton_cpu = add(x, y, None, device='cpu')
 print(output_torch_cpu)
 print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
@@ -103,12 +104,12 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
     x = x.to(DEVICE)
     y = y.to(DEVICE)
-    output_torch = x + y
-    output_triton = add(x, y)
-    print(output_torch)
-    print(output_triton)
+    output_torch_gpu = x + y
+    output_triton_gpu = add(x, y, None, device=DEVICE)
+    print(output_torch_gpu)
+    print(output_triton_gpu)
     print(f'The maximum difference between torch and triton is '
-          f'{torch.max(torch.abs(output_torch - output_triton))}')
+          f'{torch.max(torch.abs(output_torch_gpu - output_triton_gpu))}')
 
     LINE_VALS += ['triton-gpu', 'torch-gpu']
     LINE_NAMES += ['TritonGPU', 'TorchGPU']
@@ -146,31 +147,30 @@ def benchmark(size, provider):
     y = torch.rand(size, device=DEVICE, dtype=torch.float32)
 
     if DEVICE == 'cpu':
-        is_cpu = True
         triton.runtime.driver.set_active_to_cpu()
     else:
-        is_cpu = False
         triton.runtime.driver.set_active_to_gpu()
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, is_cpu=is_cpu)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles, device_type=DEVICE)
     elif provider == 'triton-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles, is_cpu=is_cpu)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles,
+                                                     device_type=DEVICE)
     elif provider == 'torch-cpu':
         # Note that we preallocate the output buffer here to only measure the kernel performance
         # without a large chunk of memory allocation.
         output = torch.empty_like(x)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.add(x, y, out=output), quantiles=quantiles,
-                                                     is_cpu=is_cpu)
+                                                     device_type=DEVICE)
     elif provider == 'triton-cpu-single':
         output = torch.empty_like(x)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles,
-                                                     is_cpu=is_cpu)
+                                                     device_type=DEVICE)
     elif provider == 'triton-cpu':
         output = torch.empty_like(x)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, True), quantiles=quantiles,
-                                                     is_cpu=is_cpu)
+                                                     device_type=DEVICE)
     gbps = lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
