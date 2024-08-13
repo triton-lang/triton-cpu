@@ -9,6 +9,7 @@ from typing import Dict
 from ..testing import do_bench, do_bench_cudagraph
 from .jit import KernelInterface
 from .errors import OutOfResources
+from .driver import driver
 
 
 class Autotuner(KernelInterface):
@@ -127,7 +128,9 @@ class Autotuner(KernelInterface):
         try:
             if self.use_cuda_graph:
                 return do_bench_cudagraph(kernel_call, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
-            return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
+            device = driver.active.get_current_target().backend
+            return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8),
+                            device_type=device)
         except (OutOfResources, CompileTimeAssertionFailure):
             return [float("inf"), float("inf"), float("inf")]
 
