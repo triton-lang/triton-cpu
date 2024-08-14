@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.tools.experimental_descriptor
+from test_core import is_cpu
 
 
 def is_cuda():
@@ -127,7 +128,10 @@ def test_pipeline_matmul(device):
         handler = matmul_kernel[grid](a, b, output, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1),
                                       output.stride(0), output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K,
                                       NUM_STAGES=NUM_STAGES)
-    ref_out = torch.matmul(a, b)
+    if is_cpu():
+        ref_out = torch.matmul(a.to(torch.float32), b.to(torch.float32)).to(torch.float16)
+    else:
+        ref_out = torch.matmul(a, b)
     atol = 1e-2 if is_hip_mi200() else None
     # Bigger tolerance for AMD MI200 devices.
     # MI200 devices use reduced precision fp16 and bf16 and flush input and
