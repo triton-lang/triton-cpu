@@ -50,10 +50,11 @@ struct PrintOpConversion : public OpConversionPattern<triton::PrintOp> {
       rewriter.create<triton::cpu::PrintOp>(loc, op.getPrefix(), op.getHex(),
                                             ValueRange{});
     } else {
-      // triton_cpu.print can take up to one vector or scalar operand. It
-      // prints each value as a separate print call like GPU and the interpreter.
+      // triton_cpu.print takes up to one vector or scalar operand. It prints
+      // each value as a separate print call like the GPU and interpreter.
       for (size_t i = 0; i < op.getNumOperands(); i++) {
         Value opr = op.getOperands()[i];
+        // TODO: Consider using memrefs for general N-dimensional vectors.
         rewriter.create<triton::cpu::PrintOp>(loc, op.getPrefix(), op.getHex(),
                                               rewriter.getRemappedValue(opr));
       }
