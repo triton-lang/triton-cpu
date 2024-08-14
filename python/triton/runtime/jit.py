@@ -439,6 +439,12 @@ for v in list(type_canonicalisation_dict.values()):
     type_canonicalisation_dict[v] = v
 
 
+def get_device_key():
+    target = driver.active.get_current_target()
+    device = driver.active.get_current_device()
+    return f"{target.backend}:{device}"
+
+
 class JITFunction(KernelInterface[T]):
     # Hook for inspecting compiled functions and modules
     cache_hook = None
@@ -614,7 +620,7 @@ class JITFunction(KernelInterface[T]):
         bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = self.binder(*args, **kwargs)
 
         # compute cache key
-        device_key = f"{target.backend}:{device}"
+        device_key = get_device_key()
         key = ''.join(sig_and_spec) + str((constexpr_vals, excess_kwargs))
         kernel = self.cache[device_key].get(key, None)
 
@@ -767,7 +773,7 @@ class JITFunction(KernelInterface[T]):
         from ..compiler import AttrsDescriptor, compile, ASTSource
         import json
         import triton.language as tl
-        device = driver.active.get_current_device()
+        device_key = get_device_key()
         deserialized_obj = json.loads(specialization_data)
         if deserialized_obj['name'] != self.fn.__name__:
             raise RuntimeError(
@@ -784,7 +790,7 @@ class JITFunction(KernelInterface[T]):
         }
         key = deserialized_obj['key']
         kernel = compile(src, None, options)
-        self.cache[device][key] = kernel
+        self.cache[device_key][key] = kernel
         return kernel
 
     # we do not parse `src` in the constructor because
