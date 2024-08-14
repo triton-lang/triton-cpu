@@ -188,6 +188,7 @@ struct ConvertMulSumToDotHorizontalSum
         loc, outResTy, rewriter.getZeroAttr(outResTy));
     for (int64_t outIdx = 0; outIdx < numOfOutputChannels; outIdx += 1) {
       outRes[outIdx] = zeroRes;
+      // Intermediate array to store each row of the input matrix.
       mats[outIdx] = rewriter.create<vector::ExtractOp>(loc, matInput, outIdx);
     }
 
