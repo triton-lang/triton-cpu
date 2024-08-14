@@ -53,7 +53,7 @@ LLVM::LLVMFuncOp getPrintfDeclaration(ConversionPatternRewriter &rewriter) {
                                            funcType);
 }
 
-LLVM::LLVMFuncOp getVectorPrintDeclation(ConversionPatternRewriter &rewriter) {
+LLVM::LLVMFuncOp getVectorPrintDeclaration(ConversionPatternRewriter &rewriter) {
   auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();
   StringRef funcName("triton_vector_print");
   Operation *funcOp = moduleOp.lookupSymbol(funcName);
@@ -109,7 +109,7 @@ void llVectorPrint(std::array<Value, 3> pid, StringRef prefix, Value ptr,
   assert(!prefix.empty());
   auto loc = UnknownLoc::get(rewriter.getContext());
 
-  llvm::SmallString<64> pefixStr(prefix);
+  llvm::SmallString<64> prefixStr(prefix);
   pefixStr.push_back('\0');
   Value prefixValue =
       LLVM::addStringToModule(loc, rewriter, "vectorPrintPrefix_", pefixStr);
