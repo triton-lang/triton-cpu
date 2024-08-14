@@ -53,7 +53,8 @@ LLVM::LLVMFuncOp getPrintfDeclaration(ConversionPatternRewriter &rewriter) {
                                            funcType);
 }
 
-LLVM::LLVMFuncOp getVectorPrintDeclaration(ConversionPatternRewriter &rewriter) {
+LLVM::LLVMFuncOp
+getVectorPrintDeclaration(ConversionPatternRewriter &rewriter) {
   auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();
   StringRef funcName("triton_vector_print");
   Operation *funcOp = moduleOp.lookupSymbol(funcName);
@@ -110,9 +111,9 @@ void llVectorPrint(std::array<Value, 3> pid, StringRef prefix, Value ptr,
   auto loc = UnknownLoc::get(rewriter.getContext());
 
   llvm::SmallString<64> prefixStr(prefix);
-  pefixStr.push_back('\0');
+  prefixStr.push_back('\0');
   Value prefixValue =
-      LLVM::addStringToModule(loc, rewriter, "vectorPrintPrefix_", pefixStr);
+      LLVM::addStringToModule(loc, rewriter, "vectorPrintPrefix_", prefixStr);
 
   SmallVector<Value> allArgs;
   for (auto elem : pid)
@@ -122,7 +123,7 @@ void llVectorPrint(std::array<Value, 3> pid, StringRef prefix, Value ptr,
   allArgs.push_back(i32_val(isInteger));
   allArgs.push_back(i32_val(bitWidth));
   allArgs.push_back(i64_val(numElem));
-  call(getVectorPrintDeclation(rewriter), allArgs);
+  call(getVectorPrintDeclaration(rewriter), allArgs);
 }
 
 // TODO: This code is the same as the GPU-backend code. Consider refactoring.
