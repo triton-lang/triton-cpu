@@ -429,6 +429,12 @@ for v in list(type_canonicalisation_dict.values()):
     type_canonicalisation_dict[v] = v
 
 
+def get_device_key():
+    target = driver.active.get_current_target()
+    device = driver.active.get_current_device()
+    return f"{target.backend}:{device}"
+
+
 class JITFunction(KernelInterface[T]):
     # Hook for inspecting compiled functions and modules
     cache_hook = None
@@ -668,7 +674,7 @@ class JITFunction(KernelInterface[T]):
         from ..compiler import compile, ASTSource
         import json
         import triton.language as tl
-        device = driver.active.get_current_device()
+        device_key = get_device_key()
         deserialized_obj = json.loads(specialization_data)
         if deserialized_obj['name'] != self.fn.__name__:
             raise RuntimeError(
