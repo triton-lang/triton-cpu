@@ -86,16 +86,18 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, bool useHorizontalSum,
 
   const int lanes =
       vectorBitWidth / lhsTy.getElementType().getIntOrFloatBitWidth();
-  const int resLanes =
+  const int resultLanes =
       vectorBitWidth / resTy.getElementType().getIntOrFloatBitWidth();
   int64_t kVal = lhsTy.getDimSize(1);
 
   if (outNum < 1)
     return false;
 
-  // TODO: masking is not currrently supported
-  if (!useHorizontalSum && (outNum % resLanes != 0))
-    return false;
+  if (!useHorizontalSum) {
+    // TODO: masking is not currrently supported
+    if (outNum % resultLanes != 0)
+      return false;
+  }
 
   // TODO: masking is not currrently supported
   if (kVal % lanes != 0)
@@ -139,7 +141,8 @@ struct ConvertMulSumToDotHorizontalSum
     Value matInput;
     Value vecInput;
 
-    bool isMatch = isBf16DotProduct(op, true, matInput, vecInput, rewriter);
+    bool isMatch = isBf16DotProduct(op, /*useHorizontalSum=*/true, matInput,
+                                    vecInput, rewriter);
     if (!isMatch)
       return failure();
 
@@ -173,7 +176,7 @@ struct ConvertMulSumToDotHorizontalSum
 
     const int lanes =
         vectorBitWidth / matInputTy.getElementType().getIntOrFloatBitWidth();
-    const int resLanes =
+    const int resultLanes =
         vectorBitWidth / resTy.getElementType().getIntOrFloatBitWidth();
     int64_t kVal = matInputTy.getDimSize(1);
 
@@ -189,7 +192,7 @@ struct ConvertMulSumToDotHorizontalSum
     SmallVector<Value> outRes(numOfOutputChannels);
     SmallVector<Value> mats(numOfOutputChannels);
 
-    Type outResTy = VectorType::get(resLanes, resTy.getElementType());
+    Type outResTy = VectorType::get(resultLanes, resTy.getElementType());
 
     Value zeroRes = rewriter.create<arith::ConstantOp>(
         loc, outResTy, rewriter.getZeroAttr(outResTy));
@@ -261,7 +264,8 @@ struct ConvertMulSumToDotPack
     Value matInput;
     Value vecInput;
 
-    bool isMatch = isBf16DotProduct(op, false, matInput, vecInput, rewriter);
+    bool isMatch = isBf16DotProduct(op, /*useHorizontalSum=*/false, matInput,
+                                    vecInput, rewriter);
     if (!isMatch)
       return failure();
 
@@ -285,31 +289,62 @@ struct ConvertMulSumToDotPack
     // We will also share the vector input across the output channels.
     // For example, if we dot product a size 8x8 matrix with a size 8 vector,
     // the generated pseudo code will be:
+    // Dimension:
+    //            N:  the output channel dimension
+    //            n0: the number of SIMD registers needed to store the output
+    //                -- N / 4 (2 in this case)
+    //            n1: the number of outputs stored per SIMD register
+    //                -- 4
+    //            K:  the reduction dimension
+    //            k0: the number of SIMD registers needed for the input vector
+    //                -- K / 8 (1 in this case)
+    //            k1: the number of lanes per SIMD register
+    //                -- 4
+    //            k2: the number of bf16 elements per SIMD lane
+    //                -- 2
     // matrix = shapecast(matrix, 8x4x2)
+    //          shape: NxK -> Nx(k0xk1)xk2
     // matrix = tranpose(matrix, 1, 0, 2) : 8x4x2xbf16 -> 4x8x2xbf16
-    // matrix = shapecast(matrix, 4x2x4x2xbf16)
-    // vector = shapecast(vector, 4x2)
+    //          shape: Nx(k0xk1)xk2 -> (k0xk1)xNxk2
+    // matrix = shapecast(matrix, 1x4x2x4x2xbf16)
+    //          shape: (k0xk1)xNxk2 -> k0xk1xn0xn1xk2
+    // vector = shapecast(vector, 1x4x2)
+    //          shape: K -> k0xk1xk2
     // out    = zeros(2x4, fp32)
-    // subvec = broadcast(vector[0]) : 2xbf16 -> 4x2xbf16
-    // out[0] = bfdot(out[0], matrix[0][0], subvec)
-    // out[1] = bfdot(out[1], matrix[0][1], subvec)
-    // subvec = broadcast(vector[1]) : 2xbf16 -> 4x2xbf16
-    // out[0] = bfdot(out[0], matrix[1][0], subvec)
-    // out[1] = bfdot(out[1], matrix[1][1], subvec)
-    // subvec = broadcast(vector[2]) : 2xbf16 -> 4x2xbf16
-    // out[0] = bfdot(out[0], matrix[2][0], subvec)
-    // out[1] = bfdot(out[1], matrix[2][1], subvec)
-    // subvec = broadcast(vector[3]) : 2xbf16 -> 4x2xbf16
-    // out[0] = bfdot(out[0], matrix[3][0], subvec)
-    // out[1] = bfdot(out[1], matrix[3][1], subvec)
-    // out = shapecast(out, 8) : 2x4xfp32 -> 8xfp32
+    //          shape: n0xn1
+    // subvec = broadcast(vector[0][0]) : 2xbf16 -> 4x2xbf16
+    //          shape: k2 -> k1xk2
+    // out[0] = bfdot(out[0], matrix[0][0][0], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // out[1] = bfdot(out[1], matrix[0][0][1], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // subvec = broadcast(vector[0][1]) : 2xbf16 -> 4x2xbf16
+    //          shape: k2 -> k1xk2
+    // out[0] = bfdot(out[0], matrix[0][1][0], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // out[1] = bfdot(out[1], matrix[0][1][1], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // subvec = broadcast(vector[0][2]) : 2xbf16 -> 4x2xbf16
+    //          shape: k2 -> k1xk2
+    // out[0] = bfdot(out[0], matrix[0][2][0], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // out[1] = bfdot(out[1], matrix[0][2][1], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // subvec = broadcast(vector[0][3]) : 2xbf16 -> 4x2xbf16
+    //          shape: k2 -> k1xk2
+    // out[0] = bfdot(out[0], matrix[0][3][0], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // out[1] = bfdot(out[1], matrix[0][3][1], subvec)
+    //          shape: (n1, n1xk2, k1xk2) -> n1
+    // out    = shapecast(out, 8) : 2x4xfp32 -> 8xfp32
+    //          shape: n0xn1 -> N
 
     auto matInputTy = cast<VectorType>(matInput.getType());
     auto vecInputTy = cast<VectorType>(vecInput.getType());
 
     const int lanes =
         vectorBitWidth / matInputTy.getElementType().getIntOrFloatBitWidth();
-    const int resLanes =
+    const int resultLanes =
         vectorBitWidth / resTy.getElementType().getIntOrFloatBitWidth();
     int64_t kVal = matInputTy.getDimSize(1);
 
@@ -317,18 +352,18 @@ struct ConvertMulSumToDotPack
     const int numOfOutputChannels = matInputTy.getDimSize(0);
     // numOfOutputRegs is the number of SIMD registers needed to store the
     // output.
-    const int numOfOutputRegs = numOfOutputChannels / resLanes;
+    const int numOfOutputRegs = numOfOutputChannels / resultLanes;
     // numOfVecRegs is the number of SIMD registers needed for the
     // input vector.
     const int numOfVecRegs = kVal / lanes;
     // numOfVecPairs is the number of pairs (pair of bf16 elements) for the
     // input vector.
-    const int numOfVecPairs = numOfVecRegs * resLanes;
+    const int numOfVecPairs = numOfVecRegs * resultLanes;
 
     VectorType fullResTy =
-        VectorType::get({numOfOutputRegs, resLanes}, resTy.getElementType());
+        VectorType::get({numOfOutputRegs, resultLanes}, resTy.getElementType());
 
-    VectorType subResTy = VectorType::get(resLanes, resTy.getElementType());
+    VectorType subResTy = VectorType::get(resultLanes, resTy.getElementType());
 
     acc = shapeCast(loc, acc, fullResTy, rewriter);
 
@@ -336,11 +371,12 @@ struct ConvertMulSumToDotPack
     // Integer type for a pair of bf16 elements
     Type pairTy = IntegerType::get(ctx, 32);
 
-    vecInput = shapeCast(loc, vecInput, {numOfVecRegs, resLanes, 2}, rewriter);
+    vecInput =
+        shapeCast(loc, vecInput, {numOfVecRegs, resultLanes, 2}, rewriter);
     // We bitcast here because we are pulling pairs of bf16 each time.
     vecInput = rewriter.create<vector::BitCastOp>(
-        loc, VectorType::get({numOfVecRegs, resLanes, 1}, pairTy), vecInput);
-    vecInput = shapeCast(loc, vecInput, {numOfVecRegs, resLanes}, rewriter);
+        loc, VectorType::get({numOfVecRegs, resultLanes, 1}, pairTy), vecInput);
+    vecInput = shapeCast(loc, vecInput, {numOfVecRegs, resultLanes}, rewriter);
 
     matInput = shapeCast(loc, matInput, {numOfOutputChannels, numOfVecPairs, 2},
                          rewriter);
@@ -354,9 +390,9 @@ struct ConvertMulSumToDotPack
     // the output channel is continuous
     matInput = rewriter.create<vector::TransposeOp>(
         loc, matInput, SmallVector<int64_t, 2>{1, 0});
-    matInput = shapeCast(loc, matInput,
-                         {numOfVecRegs, resLanes, numOfOutputRegs, resLanes},
-                         rewriter);
+    matInput = shapeCast(
+        loc, matInput,
+        {numOfVecRegs, resultLanes, numOfOutputRegs, resultLanes}, rewriter);
 
     Value res = rewriter.create<arith::ConstantOp>(
         loc, fullResTy, rewriter.getZeroAttr(fullResTy));
@@ -371,9 +407,9 @@ struct ConvertMulSumToDotPack
     }
     for (int64_t idx = 0; idx < numOfVecRegs; idx += 1) {
       Value fullVec = rewriter.create<vector::ExtractOp>(loc, vecInput, idx);
-      for (int64_t vecIdx = 0; vecIdx < resLanes; vecIdx += 1) {
+      for (int64_t vecIdx = 0; vecIdx < resultLanes; vecIdx += 1) {
         // shuffle mask used to broadcast the 'vecIdx'th lane of fullVec
-        SmallVector<int64_t> shuffleMask(resLanes, vecIdx);
+        SmallVector<int64_t> shuffleMask(resultLanes, vecIdx);
         // Broadcasting the 'vecIdx'th lane of fullVec
         Value subVec = rewriter.create<vector::ShuffleOp>(loc, fullVec, fullVec,
                                                           shuffleMask);
