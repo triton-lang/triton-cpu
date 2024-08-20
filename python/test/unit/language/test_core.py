@@ -3047,9 +3047,6 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
     if is_hip() and shape == (128, 128) and dtype_str == 'float32':
         pytest.skip("TODO Out of LDS for float32 with shape 128x128")
-    if is_cpu():
-        # FIXME: compilation time for big shapes is too long
-        shape = tuple(dim // 4 for dim in shape)
 
     # triton kernel
     @triton.jit
