@@ -579,4 +579,5 @@ def test_hooks(fresh_triton_cache) -> None:
     kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
     assert specialization_data is not None and specialization_data_compiled == specialization_data
     assert is_warmup is True
-    assert key in kernel_add.cache[torch.cuda.current_device()]
+    device_key = get_device_key()
+    assert key in kernel_add.cache[device_key]
