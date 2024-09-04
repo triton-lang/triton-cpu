@@ -35,10 +35,12 @@ def kernel_print(X, Y, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def kernel_device_print_scalar(SCALAR):
+def kernel_device_print_scalars(SCALAR, INT, FLOAT):
     x = tl.load(SCALAR)
     # Triton should add a space after this prefix.
     print("x:", x)
+    print("int:", INT)
+    print("float:", FLOAT)
 
 
 @triton.jit
@@ -99,19 +101,21 @@ def kernel_print_2d_tensor(X, Y, BLOCK_SIZE_X: tl.constexpr, BLOCK_SIZE_Y: tl.co
 
 
 def test_print(func: str, data_type: str, device: str):
-    N = 128  # This value should match with test_print in test_subprocess.py.
+    N = 128 # This value should match with test_print in test_subprocess.py.
+    SCALAR = 42
+
     # TODO(antiagainst): Currently the warp count is chosen to make sure we don't have multiple
     # threads printing duplicated messages due to broadcasting. Improve print op lowering logic
     # to filter out duplicated data range.
-    num_warps = N // get_current_target_warp_size()
+    num_warps = N // (get_current_target_warp_size() if device != "cpu" else 1)
 
     x = torch.arange(0, N, dtype=torch.int32, device=device).to(getattr(torch, data_type))
     y = torch.zeros((N, ), dtype=x.dtype, device=device)
     if func == "device_print":
         kernel_device_print[(1, )](x, y, num_warps=num_warps, BLOCK=N)
-    elif func == "device_print_scalar":
-        scalar = torch.tensor(42, dtype=x.dtype, device=device)
-        kernel_device_print_scalar[(1, )](scalar, num_warps=num_warps)
+    elif func == "device_print_scalars":
+        scalar = torch.tensor(SCALAR, dtype=x.dtype, device=device)
+        kernel_device_print_scalars[(1, )](scalar, SCALAR, 3.14, num_warps=num_warps)
     elif func == "device_print_negative":
         x = -x
         kernel_device_print[(1, )](x, y, num_warps=num_warps, BLOCK=N)
@@ -143,16 +147,16 @@ def test_print(func: str, data_type: str, device: str):
         kernel_print_2d_tensor[(1, )](x_2d_tensor, y, num_warps=num_warps, BLOCK_SIZE_X=BLOCK_SIZE_X,
                                       BLOCK_SIZE_Y=BLOCK_SIZE_Y)
     else:
-        assert f"Unknown kernel: {func}"
-
+        assert False, f"Unknown kernel: {func}"
     if func != "print_no_arg" and func != "no_arg_print" and func != "device_print_large" and \
        func != "print_multiple_args" and func != "device_print_multiple_args" and \
-       func != "device_print_pointer" and func != "device_print_scalar" and func != "device_print_2d_tensor":
+       func != "device_print_pointer" and func != "device_print_scalars" and func != "device_print_2d_tensor":
         assert_close(y, x)
 
     # Wait until driver complete all the jobs for the device_print, especially test_subprocess
     # require this which captures stdout when child exits.
-    getattr(torch, device).synchronize()
+    if device != "cpu":
+        torch.cuda.synchronize()
 
 
 if __name__ == "__main__":
