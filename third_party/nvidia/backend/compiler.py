@@ -192,6 +192,9 @@ class CUDABackend(BaseBackend):
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
+        if self.cpu_mode:
+            from triton.language.extra.cpu import libdevice
+            return {"triton.language.extra.libdevice": libdevice}
         from triton.language.extra.cuda import libdevice
         return {"triton.language.extra.libdevice": libdevice}
 
