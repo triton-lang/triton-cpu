@@ -455,5 +455,5 @@ class CudaDriver(GPUDriver):
 
     @staticmethod
     def is_active():
-        # For the new CPU mode, always return True. Check the CUDA availability in __init__.
-        return True
+        import torch
+        return torch.cuda.is_available() and (torch.version.hip is None)
