@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import functools
 import os
+import time
 
 
 @dataclass
@@ -297,6 +298,7 @@ def compile(src, target=None, options=None):
         filter_traceback(e)
         raise
     use_ir_loc = os.environ.get("USE_IR_LOC", None)
+    start_time = time.time()
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
         ir_filename = f"{file_name}.{ext}"
@@ -322,6 +324,8 @@ def compile(src, target=None, options=None):
     # lead to child crash or hang.
     context.disable_multithreading()
     # return handle to compiled kernel
+    elapsed_time = time.time() - start_time
+    print(f"Compilation completed in {elapsed_time:.2f} seconds")
     return CompiledKernel(src, metadata_group, hash)
 
 

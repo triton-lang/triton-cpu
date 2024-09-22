@@ -123,7 +123,14 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
   unsigned maxContig =
       std::min(valInfo.getContiguity(order[0]), shapePerCTA[order[0]]);
   unsigned alignment = std::min(maxMultiple, maxContig);
-  unsigned currPerThread = std::min(alignment, 128 / elemNumBits);
+
+  // For CPU, we give a sufficiently large vector size.
+  unsigned maxVectorBit =
+      triton::gpu::TritonGPUDialect::isCPUMode(op->getParentOfType<ModuleOp>())
+          ? 65536
+          : 128;
+
+  unsigned currPerThread = std::min(alignment, maxVectorBit / elemNumBits);
   LDBG("elemNumBytes: " << elemNumBytes
                         << ", divisibility: " << maxMultipleBytes
                         << ", contig: " << valInfo.getContiguity(order[0])

@@ -104,6 +104,9 @@ def make_launcher(constants, signature, ids):
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    arg_decls_expr = ', ' + arg_decls if len(arg_decls) > 0 else ''
+    args = ', '.join(f"arg{i}" for i, ty in signature.items())
+    args_expr = ', ' + args if len(args) > 0 else ''
 
     def _extracted_type(ty):
         if ty[0] == '*':
@@ -127,12 +130,12 @@ def make_launcher(constants, signature, ids):
         }[ty]
 
     args_format = ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
-    format = "iiiOKOOOO" + args_format
+    format = "IIIIIOKOOOO" + args_format
     arg_ptrs_list = ', '.join(f"&arg{i}" for i, ty in signature.items())
     kernel_fn_args = [i for i in signature.keys() if i not in constants]
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
-    kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
-
+    kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 8)
+    kernel_fn_args_expr = kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''
     # generate glue code
     src = f"""
 #include <algorithm>
@@ -227,11 +230,29 @@ static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gri
   return grids;
 }}
 
-static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kernel_ptr_t kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+inline static void run_kernel(uint32_t x, uint32_t y, uint32_t z,
+                              uint32_t gridX, uint32_t gridY, uint32_t gridZ,
+                              uint32_t warpSize, uint32_t numWarp,
+                              kernel_ptr_t kernel_ptr {arg_decls_expr}) {{
+  // TODO: This is not corrrect; only works for kernels that don't need any
+  // computations across CUDA threads in a warp, or warps in a block.
+  // This is simply to show we could introduce a similar concept of multiple
+  // threads in a warp, or multiple warps in a block.
+
+  // We could also try warpSize > 1, but that's a future work.
+  assert(warpSize == 1);
+  for (int tid = 0; tid < warpSize * numWarp; tid++) {{
+    (*kernel_ptr)({kernel_fn_args_expr} x, y, z, gridX, gridY, gridZ, tid % numWarp, tid / numWarp);
+  }}
+}}
+
+static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ,
+                            uint32_t warpSize, uint32_t numWarp,
+                            kernel_ptr_t kernel_ptr {arg_decls_expr}) {{
   // TODO: Consider using omp collapse(3) clause for simplicity?
   size_t N = gridX * gridY * gridZ;
   if (N == 1) {{
-      (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} 0, 0, 0, 1, 1, 1);
+      (*kernel_ptr)({kernel_fn_args_expr} 0, 0, 0, 1, 1, 1, 0, 0);
       return;
   }}
 
@@ -242,7 +263,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
 
     for (size_t i = 0; i < N; ++i) {{
       const auto [x, y, z] = all_grids[i];
-      (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
+      run_kernel(x, y, z, gridX, gridY, gridZ, warpSize, numWarp, kernel_ptr {args_expr});
     }}
     return;
   }}
@@ -260,12 +281,13 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, kern
 #pragma omp parallel for schedule(static) num_threads(max_threads.value())
   for (size_t i = 0; i < N; ++i) {{
     const auto [x, y, z] = all_grids[i];
-    (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
+    run_kernel(x, y, z, gridX, gridY, gridZ, warpSize, numWarp, kernel_ptr {args_expr});
   }}
 }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
-  int gridX, gridY, gridZ;
+  uint32_t gridX, gridY, gridZ;
+  uint32_t warpSize, numWarp;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
   PyObject *kernel_metadata = NULL;
@@ -274,7 +296,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   void* pKrnl;
 
   {' '.join([f"{_extracted_type(ty)} arg{i}; " for i, ty in signature.items()])}
-  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &py_obj_stream, &pKrnl,
+  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &warpSize, &numWarp, &py_obj_stream, &pKrnl,
                                        &kernel_metadata, &launch_metadata,
                                        &launch_enter_hook, &launch_exit_hook {', ' + arg_ptrs_list if len(signature) > 0 else ''})) {{
     return NULL;
@@ -293,7 +315,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  run_omp_kernels(gridX, gridY, gridZ, kernel_ptr {',' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''});
+  run_omp_kernels(gridX, gridY, gridZ, warpSize, numWarp, kernel_ptr {',' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);

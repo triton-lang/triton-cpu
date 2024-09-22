@@ -691,6 +691,15 @@ class JITFunction(KernelInterface[T]):
 
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *non_constexpr_vals)
+            if target.backend == "cpu" or target.backend == "cpu_v2":
+                warp_size = kernel.metadata.warp_size
+                num_warps = kernel.metadata.num_warps
+                # For CPU, we also pass number of threads in a warp, and number of warps.
+                kernel.run(grid_0, grid_1, grid_2, warp_size, num_warps, stream, kernel.function,
+                           kernel.packed_metadata, launch_metadata, self.CompiledKernel.launch_enter_hook,
+                           self.CompiledKernel.launch_exit_hook, *non_constexpr_vals)
+                return kernel
+
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
                        self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook, *non_constexpr_vals)
         return kernel

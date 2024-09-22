@@ -47,7 +47,12 @@ def get_arch():
 
 def is_cpu():
     return not is_interpreter() and \
-        triton.runtime.driver.active.get_current_target().backend == "cpu"
+        triton.runtime.driver.active.get_current_target().backend in ["cpu", "cpu_v2"]
+
+
+def is_new_cpu():
+    return not is_interpreter() and \
+        triton.runtime.driver.active.get_current_target().backend == "cpu_v2"
 
 
 def numpy_random(shape, dtype_str, rs: Optional[RandomState] = None, low=None, high=None):

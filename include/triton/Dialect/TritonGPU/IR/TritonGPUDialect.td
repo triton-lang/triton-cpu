@@ -40,9 +40,17 @@ def TritonGPU_Dialect : Dialect {
     static int getThreadsPerWarp(ModuleOp mod) {
       Attribute threadsPerWarp = mod->getDiscardableAttr("triton_gpu.threads-per-warp");
       if(!threadsPerWarp) {
-        return 32;
+        return isCPUMode(mod) ? 1 : 32;
       }
       return cast<IntegerAttr>(threadsPerWarp).getInt();
+    }
+
+    static bool isCPUMode(ModuleOp mod) {
+      Attribute cpuMode = mod->getDiscardableAttr("triton_gpu.cpu-mode");
+      if(!cpuMode) {
+        return false;
+      }
+      return cast<BoolAttr>(cpuMode).getValue();
     }
   }];
 

@@ -177,6 +177,10 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // TODO: Don't promote to vector of size 1?
+    bool isForCPU = triton::gpu::isCPUMode();
+    int vecLength = 0;
+
     auto resultTy = op.getType();
     Location loc = op->getLoc();
     // element type
@@ -188,9 +192,20 @@ public:
       auto subOperands = unpackLLElements(loc, operand, rewriter);
       subOperands = unpackI32(subOperands, argTy, rewriter, loc,
                               this->getTypeConverter());
-      allOperands.resize(subOperands.size());
-      for (auto v : llvm::enumerate(subOperands))
-        allOperands[v.index()].push_back(v.value());
+      if (isForCPU && subOperands.size() > 1) {
+        // Note: For a quick PoC, we quickly promote struct-based elements to a
+        // vector type. The Op will take vector operands. This is inefficient.
+        // We'd want to directly haved vector-converted types via TypeConverter.
+        assert(vecLength == 0 || vecLength == subOperands.size());
+        vecLength = subOperands.size();
+        Value vecSubOperand = packLLVector(loc, subOperands, rewriter);
+        allOperands.resize(1);
+        allOperands[0].push_back(vecSubOperand);
+      } else {
+        allOperands.resize(subOperands.size());
+        for (auto v : llvm::enumerate(subOperands))
+          allOperands[v.index()].push_back(v.value());
+      }
     }
     if (allOperands.size() == 0)
       allOperands.push_back({});
@@ -198,7 +213,9 @@ public:
     SmallVector<Value> resultVals;
     for (auto it = allOperands.begin(), end = allOperands.end(); it != end;) {
       auto curr = static_cast<const ConcreteT *>(this)->createDestOps(
-          op, adaptor, rewriter, elemTy, MultipleOperandsRange(it, end), loc);
+          op, adaptor, rewriter,
+          vecLength > 0 ? LLVM::getVectorType(elemTy, vecLength) : elemTy,
+          MultipleOperandsRange(it, end), loc);
       if (curr.size() == 0)
         return failure();
       for (auto v : curr) {
@@ -208,6 +225,15 @@ public:
       }
       it += curr.size();
     }
+
+    if (isForCPU && vecLength > 0) {
+      // The result is also a vector. Unpack the vector and repack to the struct
+      // type. Again, this is highly inefficient, should be optimized.
+      assert(resultVals.size() == 1 &&
+             LLVM::isCompatibleVectorType(resultVals[0].getType()));
+      resultVals = unpackLLVector(loc, resultVals[0], rewriter);
+    }
+
     if (op->getNumOperands() > 0) {
       auto argTy = op->getOperand(0).getType();
       resultVals = reorderValues(resultVals, argTy, resultTy);

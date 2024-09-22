@@ -1,5 +1,5 @@
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton._C.libtriton import ir, passes, llvm, nvidia
+from triton._C.libtriton import ir, passes, llvm, nvidia, cpu
 
 from dataclasses import dataclass
 import functools
@@ -15,6 +15,8 @@ from pathlib import Path
 
 
 def min_dot_size(target: GPUTarget):
+    if target.backend == "cpu_v2":
+        return lambda lhsType, rhsType: (4, 4, 4)
     return lambda lhsType, rhsType: (16, 32, 16) if lhsType.is_int8() else (16, 16, 16)
 
 
@@ -88,6 +90,7 @@ class CUDAOptions:
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 3
+    warp_size: int = 32
     # maxnreg corresponds to the ptx parameter .maxnreg, which controls the
     # maximum number of 32-bit registers used by one thread.
     maxnreg: Optional[int] = None
@@ -102,6 +105,8 @@ class CUDAOptions:
     extern_libs: dict = None
     debug: bool = False
     backend_name: str = 'cuda'
+    enable_fast_math: bool = True
+    divisibility: int = 16
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
@@ -123,10 +128,16 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'cuda'
+        # TODO: I know it's ugly, but for now, we just have two modes here.
+        return target.backend in ['cuda', 'cpu_v2']
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
+        self.cpu_mode = target.backend == "cpu_v2"
+        if self.cpu_mode:
+            self.capability = 0
+            self.binary_ext = "so"
+            return
         self.capability = target.arch
         assert isinstance(self.capability, int)
         self.binary_ext = "cubin"
@@ -146,6 +157,17 @@ class CUDABackend(BaseBackend):
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
         args["max_num_imprecise_acc_default"] = 2**30 if self.capability == 90 else 0
+        if self.cpu_mode:
+            args["backend_name"] = "cpu_v2"
+            args["warp_size"] = 1
+            # Unlike GPU, the default num_warps is 1 for CPU.
+            if not "num_warps" in args:
+                args["num_warps"] = 1
+            # Nvidia has 16, meaning 128-bit is the maximum of the vectorization width.
+            # For CPU, we give a sufficiently high number for vector<8192 x ?>.
+            args["divisibility"] = 8192
+            if not "enable_fast_math" in args:
+                args["enable_fast_math"] = os.getenv("TRITON_CPU_FAST_MATH", "1") == "1"
         return CUDAOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -165,6 +187,8 @@ class CUDABackend(BaseBackend):
             cuda.convert_custom_float8_sm80 if self.capability >= 80 else cuda.convert_custom_float8_sm70,
             "min_dot_size": min_dot_size(self.target)
         }
+        if self.target.backend == "cpu_v2":
+            codegen_fns["support_atomic_fmin_fmax"] = lambda: True
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -205,7 +229,7 @@ class CUDABackend(BaseBackend):
         # TTIR -> TTGIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
+        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas, False)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         if capability // 10 >= 8:
@@ -366,8 +390,121 @@ class CUDABackend(BaseBackend):
                 os.remove(fbin)
         return cubin
 
+    @staticmethod
+    def make_ttmir(mod, metadata, opt, capability):
+        # TODO: We want to refactor the common part as TTMIR, Machine or Mid-level IR.
+        # Ideally, it would be TTIR -> TTMIR -> TTCIR or TTGIR.
+
+        # Set up Diagnostic
+        if os.environ.get("MLIR_ENABLE_REMARK", "0") == "1":
+            srcMgr = llvm.source_mgr()
+            diag = ir.source_mgr_diag(srcMgr, mod.context)
+            mod.context.printOpOnDiagnostic(True)
+
+        pm = ir.pass_manager(mod.context)
+        pm.enable_debug()
+        if opt.num_ctas != 1:
+            print(f"WARNING: num_ctas is set to 1, but got {opt.num_ctas}")
+
+        # Experimental
+        if os.environ.get("TRITON_CPU_ALLOW_MULTI_WARPS", "0") == "1":
+            num_warps = opt.num_warps
+        else:
+            if opt.num_warps != 1:
+                print(f"WARNING: num_warps is set to 1, but got {opt.num_warps}")
+            num_warps = 1
+        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", num_warps, opt.warp_size, opt.num_ctas, True)
+
+        passes.ttgpuir.add_coalesce(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.common.add_cse(pm)
+        passes.common.add_symbol_dce(pm)
+        passes.common.add_canonicalizer(pm)
+        pm.run(mod)
+        return mod
+
+    @staticmethod
+    def make_llir_cpu(src, metadata, options, capability):
+        # warp-specialization mutates num_warps
+        num_warp_groups = src.get_int_attr("triton_gpu.num-warp-groups-per-cta")
+        if num_warp_groups is not None:
+            metadata["num_warps"] *= num_warp_groups
+
+        mod = src
+        # TritonGPU -> LLVM-IR (MLIR)
+        pm = ir.pass_manager(mod.context)
+        pm.enable_debug()
+        # Set up Diagnostic
+        if os.environ.get("MLIR_ENABLE_REMARK", "0") == "1":
+            srcMgr = llvm.source_mgr()
+            diag = ir.source_mgr_diag(srcMgr, mod.context)
+            mod.context.printOpOnDiagnostic(True)
+        nvidia.passes.ttgpuir.add_decompose_unsupported_conversions(pm)
+        passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+        passes.convert.add_scf_to_cf(pm)
+        passes.convert.add_index_to_llvmir(pm)
+        passes.ttgpuir.add_allocate_shared_memory(pm)
+        nvidia.passes.ttgpuir.add_to_llvmir(pm, capability)
+        nvidia.passes.ttnvgpuir.add_nvgpu_to_llvm(pm)
+        passes.convert.add_arith_to_llvmir(pm)
+        passes.common.add_canonicalizer(pm)
+        passes.common.add_cse(pm)
+        passes.common.add_symbol_dce(pm)
+        if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
+            passes.llvmir.add_di_scope(pm)
+        pm.run(mod)
+
+        # Find kernel fn
+        kernel_names = cpu.find_kernel_names(mod)
+        assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
+
+        # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+        llvm.init_targets()
+        context = llvm.context()
+
+        llvm_mod = llvm.to_module(mod, context)
+        if llvm_mod is None:
+            raise RuntimeError("Failed to convert LLVM IR")
+
+        llvm.set_host_target(llvm_mod)
+        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+
+        # Get some metadata
+        metadata["shared"] = 0
+        metadata["name"] = kernel_names[0]
+        ret = str(llvm_mod)
+        del llvm_mod
+        del context
+        return ret
+
+    @staticmethod
+    def make_asm(src, metadata, options):
+        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+
+    @staticmethod
+    def make_so(src, metadata, options):
+        from triton.runtime.build import _build
+        import triton.backends.cpu.driver as cpu_driver
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            asm_path = os.path.join(tmpdir, "kernel.s")
+            Path(asm_path).write_text(src)
+            lib_dirs = cpu_driver.library_dirs
+            libs = ["gcc", "m", "TritonCPURuntime", "sleef"]
+            so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)
+            with open(so, "rb") as f:
+                return f.read()
+
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
+
+        if self.cpu_mode:
+            stages["ttmir"] = lambda src, metadata: self.make_ttmir(src, metadata, options, self.capability)
+            stages["llir"] = lambda src, metadata: self.make_llir_cpu(src, metadata, options, self.capability)
+            stages["asm"] = lambda src, metadata: self.make_asm(src, metadata, options)
+            stages["so"] = lambda src, metadata: self.make_so(src, metadata, options)
+            return
+
         stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options, self.capability)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options, self.capability)
         stages["ptx"] = lambda src, metadata: self.make_ptx(src, metadata, options, self.capability)

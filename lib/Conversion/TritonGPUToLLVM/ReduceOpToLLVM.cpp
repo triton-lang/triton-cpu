@@ -41,7 +41,8 @@ public:
     // Then reduce across threads within a warp.
     reduceWithinWarps(helper, accs, rewriter);
 
-    if (helper.isWarpSynchronous()) {
+    // The current CPU mode only needs reduceWithinThreads. Stop here.
+    if (targetInfo.isCPUMode() || helper.isWarpSynchronous()) {
       // If all the values to be reduced are within the same warp there is
       // nothing left to do.
       packResults(helper, accs, rewriter);
