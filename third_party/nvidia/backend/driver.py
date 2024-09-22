@@ -440,6 +440,9 @@ class CudaDriver(GPUDriver):
             self.utils = CudaUtils()  # TODO: make static
             self.launcher_cls = CudaLauncher
         super().__init__()
+        if self.cpu_mode:
+            self.get_current_device = lambda: 0
+            self.get_current_stream = lambda _: 0
 
     def get_current_target(self):
         if self.cpu_mode:
