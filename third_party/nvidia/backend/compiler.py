@@ -11,6 +11,7 @@ import tempfile
 import signal
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -157,17 +158,28 @@ class CUDABackend(BaseBackend):
         if "enable_fp_fusion" not in args:
             args["enable_fp_fusion"] = os.getenv("TRITON_DEFAULT_FP_FUSION", "1") == "1"
         args["max_num_imprecise_acc_default"] = 2**30 if self.capability == 90 else 0
+
         if self.cpu_mode:
             args["backend_name"] = "cpu_v2"
             args["warp_size"] = 1
-            # Unlike GPU, the default num_warps is 1 for CPU.
+            # The default num_warps is 1 for CPU.
             if not "num_warps" in args:
                 args["num_warps"] = 1
+
+            # Highly experimental
+            if os.environ.get("TRITON_CPU_ALLOW_MULTI_WARPS", "0") != "1" and args["num_warps"] != 1:
+                print(f"num_warps is fixed to 1, but got {args['num_warps']}", file=sys.stderr)
+                args["num_warps"] = 1
+
+            if "num_ctas" in args and args["num_ctas"] != 1:
+                print(f"num_ctas is fixed to 1, but got {args['num_ctas']}", file=sys.stderr)
+
             # Nvidia has 16, meaning 128-bit is the maximum of the vectorization width.
             # For CPU, we give a sufficiently high number for vector<8192 x ?>.
             args["divisibility"] = 8192
             if not "enable_fast_math" in args:
                 args["enable_fast_math"] = os.getenv("TRITON_CPU_FAST_MATH", "1") == "1"
+
         return CUDAOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -406,17 +418,7 @@ class CUDABackend(BaseBackend):
 
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        if opt.num_ctas != 1:
-            print(f"WARNING: num_ctas is set to 1, but got {opt.num_ctas}")
-
-        # Experimental
-        if os.environ.get("TRITON_CPU_ALLOW_MULTI_WARPS", "0") == "1":
-            num_warps = opt.num_warps
-        else:
-            if opt.num_warps != 1:
-                print(f"WARNING: num_warps is set to 1, but got {opt.num_warps}")
-            num_warps = 1
-        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", num_warps, opt.warp_size, opt.num_ctas, True)
+        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, opt.warp_size, opt.num_ctas, True)
 
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)

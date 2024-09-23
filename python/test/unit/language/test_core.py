@@ -224,7 +224,7 @@ def test_empty_kernel_scalar_arg(device):
 
 # generic test functions
 def _test_unary(dtype_x, expr, numpy_expr=None, device='cuda', num_ctas=1):
-    if is_new_cpu() and (dtype_x == 'bfloat16'):
+    if is_new_cpu() and dtype_x == 'bfloat16':
         pytest.skip("experimental cpu: bfloat16 not implemented yet")
 
     check_type_supported(dtype_x, device)  # early return if dtype_x is not supported
@@ -1216,9 +1216,6 @@ def make_ptr_str(name, shape):
                                              for d in ['int32', 'uint32', 'uint16']])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_index1d(expr, dtype_str, num_ctas, device):
-    if is_new_cpu() and ('None, :, :' in expr or ':, :, None' in expr):
-        pytest.skip("experimental cpu: too long compilation time")
-
     rank_x = expr.count(':')
     rank_y = expr.count(',') + 1
     shape_x = [32 for _ in range(rank_x)]
@@ -1515,9 +1512,6 @@ def test_atomic_rmw_predicate(num_ctas, device):
                           for num_ctas in num_ctas_list
                           for dtype_x_str in ['float32', 'uint64', 'int64', 'float64']])
 def test_tensor_atomic_rmw(shape, axis, num_ctas, dtype_x_str, device):
-    if is_new_cpu() and shape in ((32, 32), (64, 64)):
-        pytest.skip("experimental cpu: too long compilation time")
-
     shape0, shape1 = shape
     # triton kernel
 
@@ -2256,9 +2250,6 @@ def test_reduce(op, dtype_str, shape, axis, keep_dims, num_ctas, device):
     if is_new_cpu() and dtype_str == 'bfloat16':
         pytest.skip("experimental cpu: bfloat16 not implemented yet")
 
-    if is_new_cpu() and any(s >= 128 for s in shape):
-        pytest.skip("experimental cpu: too long compilation time")
-
     @triton.jit
     def kernel(X, Z, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, IS_3D: tl.constexpr,
                AXIS: tl.constexpr, KEEP_DIMS: tl.constexpr, USE_I1: tl.constexpr):
@@ -2398,8 +2389,10 @@ def roll(a1, b1_last, b1_cur, a2, b2_last, b2_cur):
 @pytest.mark.parametrize("op, dtype_str, shape, axis, reverse, num_warps", scan_configs + negative_config)
 def test_scan2d(op, dtype_str, shape, axis, reverse, num_warps, device):
     check_type_supported(dtype_str, device)
-    if is_new_cpu() and shape[0] >= 128 or shape[1] >= 128:
-        pytest.skip("experimental cpu: too long compilation time")
+
+    # TODO: Takes ~20 mins to compile. Need to improve it. Mostly spent in LLVM vectorizer
+    # if is_new_cpu() and (shape[0] >= 128 or shape[1] >= 128):
+    #     pytest.skip("experimental cpu: too long compilation time")
 
     if dtype_str == 'bfloat16':
         if is_new_cpu():
@@ -2567,7 +2560,7 @@ scan_layouts = [
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N", [[2048, 2], [1024, 8], [1024, 128], [256, 512], [32, 512], [8, 512], [8, 2]])
 def test_histogram(M, N, device):
-    if is_new_cpu() and (M, N) in ((1024, 128), (256, 512), (1024, 8), (32, 512)):
+    if is_new_cpu() and (M, N) in ((1024, 128), (256, 512)):
         pytest.skip("experimental cpu: too long compilation time")
 
     @triton.jit
@@ -2596,8 +2589,6 @@ def test_histogram(M, N, device):
 @pytest.mark.parametrize("N", [512, 1024, 2048])
 @pytest.mark.parametrize("num_pid_n", [2, 4])
 def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
-    if is_new_cpu():
-        pytest.skip("experimental cpu: too long compilation time")
 
     @triton.jit
     def kernel(X, Y, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, NUM_PID_N: tl.constexpr):
@@ -3081,9 +3072,6 @@ def test_permute(dtype_str, shape, perm, num_ctas, device):
     if is_hip():
         if shape == (128, 128) and dtype_str == 'float32':
             pytest.skip("TODO Out of LDS for float32 with shape 128x128")
-
-    if is_new_cpu():
-        pytest.skip("experimental cpu: too long compilation time")
 
     # triton kernel
     @triton.jit
@@ -4480,8 +4468,6 @@ def vecmul_kernel(ptr, n_elements, rep, type: tl.constexpr):
 @pytest.mark.parametrize("type", ["inline", "noinline"])
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_call(type, num_ctas, device):
-    if is_new_cpu() and type == "inline":
-        pytest.skip("experimental cpu: too long compilation time")
 
     @triton.jit
     def kernel(ptr, n_elements, num1, num2, type: tl.constexpr):
@@ -5081,6 +5067,9 @@ def test_nested_while(device):
 def test_num_threads(device):
     if is_hip():
         pytest.skip("test_num_threads is not supported in HIP")
+
+    if is_new_cpu():
+        pytest.skip("Use TRITON_CPU_ALLOW_MULTI_WARPS=1")
 
     @triton.jit
     def kernel(Out):

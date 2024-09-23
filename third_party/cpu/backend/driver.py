@@ -252,7 +252,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ,
   // TODO: Consider using omp collapse(3) clause for simplicity?
   size_t N = gridX * gridY * gridZ;
   if (N == 1) {{
-      (*kernel_ptr)({kernel_fn_args_expr} 0, 0, 0, 1, 1, 1, 0, 0);
+      run_kernel(0, 0, 0, 1, 1, 1, warpSize, numWarp, kernel_ptr {args_expr});
       return;
   }}
 
