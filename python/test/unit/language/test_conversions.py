@@ -334,6 +334,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
     if is_cpu() and dst_dtype not in ['float8e5', 'float8e4nv', 'float8e5b16']:
+        # TODO check if 'float8e4b15' downcast is fine for cpu if it will enable in this test
         pytest.skip(f"Conversion from {src_dtype} to {dst_dtype} is not supported on CPU")
 
     if src_dtype != 'float32' and is_cuda() and torch.cuda.get_device_capability(0) < (9, 0):
