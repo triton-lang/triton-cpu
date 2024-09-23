@@ -126,7 +126,8 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
 
   // For CPU, we give a sufficiently large vector size.
   unsigned maxVectorBit =
-      triton::gpu::TritonGPUDialect::isCPUMode(op->getParentOfType<ModuleOp>())
+      triton::gpu::TritonGPUDialect::getTarget(op->getParentOfType<ModuleOp>())
+                  .substr(0, 3) == "cpu"
           ? 65536
           : 128;
 

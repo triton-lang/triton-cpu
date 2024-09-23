@@ -17,16 +17,13 @@ constexpr static char AttrTargetName[] = "triton_gpu.target";
 
 constexpr static char AttrNumThreadsPerWarp[] = "triton_gpu.threads-per-warp";
 
-constexpr static char AttrCPUModeName[] = "triton_gpu.cpu-mode";
-
 // Create the pass with numWarps passed from cl::opt.
 std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonToTritonGPUPass();
 
 // Create the pass with numWarps set explicitly.
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonToTritonGPUPass(const std::string &target, int numWarps,
-                                   int threadsPerWarp = 32, int numCTAs = 1,
-                                   bool cpuMode = false);
+                                   int threadsPerWarp = 32, int numCTAs = 1);
 
 } // namespace triton
 } // namespace mlir

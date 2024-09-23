@@ -108,8 +108,9 @@ struct ConvertTritonGPUToLLVM
     ModuleOp mod = getOperation();
 
     const bool cpuMode =
-        cast<BoolAttr>(mod->getDiscardableAttr("triton_gpu.cpu-mode"))
-            .getValue();
+        cast<StringAttr>(mod->getDiscardableAttr("triton_gpu.target"))
+            .getValue()
+            .starts_with("cpu");
     triton::gpu::setCPUMode(cpuMode);
 
     mlir::LowerToLLVMOptions option(context);
