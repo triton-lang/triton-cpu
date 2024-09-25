@@ -6,6 +6,18 @@ namespace {
 using namespace mlir;
 using namespace mlir::triton;
 
+Value getNumPrograms(mlir::FunctionOpInterface funcOp, int axis) {
+  auto args = funcOp.getArguments();
+  assert(funcOp && args.size() >= 8);
+  assert(axis >= 0 && axis < 3);
+
+  // The first three of the last 8 args are x, y, z program ids.
+  auto argIdx = args.size() - 5 + axis;
+  assert(argIdx < args.size() && "out-of-bounds arg index");
+  assert(args[argIdx].getType().isInteger(32) && "unexpected arg type");
+  return args[argIdx];
+}
+
 struct GetNumProgramsOpConversion
     : public ConvertOpToLLVMPattern<triton::GetNumProgramsOp> {
   using ConvertOpToLLVMPattern<
@@ -14,6 +26,13 @@ struct GetNumProgramsOpConversion
   LogicalResult
   matchAndRewrite(triton::GetNumProgramsOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (triton::gpu::isCPUMode()) {
+      auto funcOp = op->getParentOfType<FunctionOpInterface>();
+      assert(funcOp && "expected LLVM::FuncOp as a parent of GetProgramIdOp");
+      rewriter.replaceOp(op, getNumPrograms(funcOp, op.getAxisAsInt()));
+      return success();
+    }
+
     // It is not easy to get the compute capability here, so we use numCTAs to
     // decide the semantic of GetNumProgramsOp. If numCTAs = 1, then
     // GetNumProgramsOp is converted to "%nctaid", otherwise it is converted to

@@ -62,13 +62,32 @@ public:
   explicit TritonLLVMConversionTarget(MLIRContext &ctx)
       : ConversionTarget(ctx) {
     addLegalDialect<LLVM::LLVMDialect>();
-    addLegalDialect<NVVM::NVVMDialect>();
     addLegalDialect<mlir::triton::nvgpu::NVGPUDialect>();
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
+    if (!triton::gpu::isCPUMode())
+      addLegalDialect<NVVM::NVVMDialect>();
+    else
+      addIllegalDialect<NVVM::NVVMDialect>();
+  }
+};
+
+// Copied from the CPU fork.
+struct CPUBarrierOpConversion
+    : public ConvertOpToLLVMPattern<mlir::gpu::BarrierOp> {
+  using BarrierOp = mlir::gpu::BarrierOp;
+  explicit CPUBarrierOpConversion(LLVMTypeConverter &typeConverter)
+      : mlir::ConvertOpToLLVMPattern<BarrierOp>(typeConverter) {}
+
+  LogicalResult
+  matchAndRewrite(BarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Just make it a no-op for now
+    rewriter.eraseOp(op);
+    return success();
   }
 };
 
@@ -88,6 +107,12 @@ struct ConvertTritonGPUToLLVM
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
+    const bool cpuMode =
+        cast<StringAttr>(mod->getDiscardableAttr("triton_gpu.target"))
+            .getValue()
+            .starts_with("cpu");
+    triton::gpu::setCPUMode(cpuMode);
+
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);
     TritonGPUToLLVMTypeConverter typeConverter(context, option);
@@ -97,9 +122,11 @@ struct ConvertTritonGPUToLLVM
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
     // Allocate shared memory and set barrier
-    ModuleAllocation allocation(mod);
-    ModuleMembarAnalysis membarPass(&allocation, NVIDIA::canSkipBarSync);
-    membarPass.run();
+    if (!cpuMode) {
+      ModuleAllocation allocation(mod);
+      ModuleMembarAnalysis membarPass(&allocation, NVIDIA::canSkipBarSync);
+      membarPass.run();
+    }
 
     // Lower functions
     {
@@ -119,12 +146,13 @@ struct ConvertTritonGPUToLLVM
     // initSharedMemory is run before the conversion of call and ret ops,
     // because the call op has to know the shared memory base address of each
     // function
-    initSharedMemory(typeConverter);
+    if (!cpuMode)
+      initSharedMemory(typeConverter);
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
     OpBuilder::InsertPoint indexInsertPoint;
 
     RewritePatternSet patterns(context);
-    TargetInfo targetInfo(computeCapability);
+    TargetInfo targetInfo(computeCapability, cpuMode);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMOptimizedPatterns(
         typeConverter, targetInfo, patterns,
@@ -146,7 +174,10 @@ struct ConvertTritonGPUToLLVM
                                                  targetInfo, benefit);
     mlir::triton::populateScanOpToLLVMPatterns(typeConverter, patterns,
                                                targetInfo, benefit);
-    populateBarrierOpToLLVMPatterns(typeConverter, patterns, benefit);
+    if (!cpuMode)
+      populateBarrierOpToLLVMPatterns(typeConverter, patterns, benefit);
+    else
+      patterns.add<CPUBarrierOpConversion>(typeConverter);
     populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns, benefit);
     populateClusterOpsToLLVMPatterns(typeConverter, patterns, benefit);
     mlir::triton::populateHistogramOpToLLVMPatterns(typeConverter, patterns,

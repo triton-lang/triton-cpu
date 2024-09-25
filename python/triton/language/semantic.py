@@ -1305,6 +1305,13 @@ def atomic_max(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
         else:
             return tl.tensor(
                 builder.create_atomic_rmw(ir.ATOMIC_OP.UMAX, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
+
+    # CPUs support fmin/fmax. No need to generate two integer atomic rmws.
+    check_fmax = builder.codegen_fns.get("support_atomic_fmin_fmax")
+    if sca_ty in {tl.float32, tl.float64} and check_fmax and check_fmax():
+        return tl.tensor(builder.create_atomic_rmw(ir.ATOMIC_OP.MAX, ptr.handle, val.handle, mask.handle, sem, scope),
+                         val.type)
+
     # for float
     # return atomic_smax(i_ptr, i_val) if val >= 0
     # return atomic_umin(i_ptr, i_val) if val < 0
@@ -1344,6 +1351,12 @@ def atomic_min(ptr: tl.tensor, val: tl.tensor, mask: tl.tensor, sem: str, scope:
         else:
             return tl.tensor(
                 builder.create_atomic_rmw(ir.ATOMIC_OP.UMIN, ptr.handle, val.handle, mask.handle, sem, scope), val.type)
+
+    check_fmin = builder.codegen_fns.get("support_atomic_fmin_fmax")
+    if sca_ty in {tl.float32, tl.float64} and check_fmin and check_fmin():
+        return tl.tensor(builder.create_atomic_rmw(ir.ATOMIC_OP.MIN, ptr.handle, val.handle, mask.handle, sem, scope),
+                         val.type)
+
     # for float
     # return atomic_smin(i_ptr, i_val) if val >= 0
     # return atomic_umax(i_ptr, i_val) if val < 0

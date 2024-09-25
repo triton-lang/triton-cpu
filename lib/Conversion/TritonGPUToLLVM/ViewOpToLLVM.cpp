@@ -26,6 +26,10 @@ struct SplatOpConversion : public ConvertOpToLLVMPattern<triton::SplatOp> {
     auto srcType = typeConverter->convertType(tensorTy);
     if (auto structTy = dyn_cast<LLVM::LLVMStructType>(srcType))
       srcType = structTy.getBody()[0];
+    else if (auto vecTy = dyn_cast<VectorType>(srcType))
+      srcType = vecTy.getElementType();
+    else if (auto vecTy = dyn_cast<LLVM::LLVMFixedVectorType>(srcType))
+      srcType = vecTy.getElementType();
     // If the type sizes don't match we need to pack constants.
     if (srcType.isIntOrFloat() && constVal.getType().getIntOrFloatBitWidth() !=
                                       srcType.getIntOrFloatBitWidth()) {

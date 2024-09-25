@@ -1285,7 +1285,9 @@ def ast_to_ttir(fn, specialization, context, options, codegen_fns, module_map):
     function_name = fn.repr(specialization)
     tys = list(specialization.signature.values())
     new_constants = {k: True if k in tys and tys[k] == "i1" else 1 for k in attrs.equal_to_1}
-    new_attrs = {k: [("tt.divisibility", 16)] for k in attrs.divisible_by_16}
+    # 16 (bytes) is from the default Nvidia's vectorization limit.
+    divisibility = options.divisibility if "divisibility" in options.__dict__ else 16
+    new_attrs = {k: [("tt.divisibility", divisibility)] for k in attrs.divisible_by_16}
 
     all_constants = constants.copy()
     all_constants.update(new_constants)

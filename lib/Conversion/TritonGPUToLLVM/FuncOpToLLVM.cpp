@@ -37,6 +37,44 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     }
   }
 
+  triton::FuncOp amendFuncOpForCPU(triton::FuncOp funcOp,
+                                   ConversionPatternRewriter &rewriter) const {
+    // Add arguments for program id, number of programs, and thread id.
+    auto loc = funcOp.getLoc();
+    auto ctx = funcOp->getContext();
+    auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
+    // 1. Modify the function type to add the new argument.
+    auto funcTy = funcOp.getFunctionType();
+    auto amendedInputTy = llvm::to_vector<8>(funcTy.getInputs());
+
+    // 3 for program ids, 3 for number of programs, and thread/block ids.
+    for (int i = 0; i < 8; ++i)
+      amendedInputTy.push_back(ui32_ty);
+
+    auto amendedFuncTy = FunctionType::get(funcTy.getContext(), amendedInputTy,
+                                           funcTy.getResults());
+    // 2. Modify the argument attributes to add the new argument.
+    SmallVector<NamedAttribute> amendedAttrs;
+    filterFuncAttributes(funcOp, /*filterArgAttrs=*/true, amendedAttrs);
+    if (funcOp.getAllArgAttrs()) {
+      auto amendedArgAttrs = llvm::to_vector<8>(funcOp.getAllArgAttrs());
+      for (int i = 0; i < 8; ++i)
+        amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
+      amendedAttrs.push_back(
+          rewriter.getNamedAttr(funcOp.getArgAttrsAttrName(),
+                                rewriter.getArrayAttr(amendedArgAttrs)));
+    }
+    // 3. Add a new argument to the region
+    auto amendedFuncOp = rewriter.create<triton::FuncOp>(
+        funcOp.getLoc(), funcOp.getName(), amendedFuncTy, amendedAttrs);
+    auto &region = funcOp.getBody();
+    for (int i = 0; i < 8; ++i)
+      region.addArgument(ui32_ty, loc);
+    rewriter.inlineRegionBefore(region, amendedFuncOp.getBody(),
+                                amendedFuncOp.end());
+    return amendedFuncOp;
+  }
+
   triton::FuncOp amendFuncOp(triton::FuncOp funcOp,
                              ConversionPatternRewriter &rewriter) const {
     // Push back a variable that indicates the current stack pointer of shared
@@ -108,14 +146,24 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
                   ConversionPatternRewriter &rewriter) const override {
     // Prevent LLVM's inliner to inline this function
     auto amendedFuncOp = funcOp;
-    if (!LLVM::isKernel(funcOp))
+    if (!triton::gpu::isCPUMode() && !LLVM::isKernel(funcOp))
       amendedFuncOp = amendFuncOp(funcOp, rewriter);
+    else if (triton::gpu::isCPUMode() && LLVM::isKernel(funcOp))
+      // TODO: Not sure why CPU and GPU had different visibility?
+      amendedFuncOp = amendFuncOpForCPU(funcOp, rewriter);
 
     FailureOr<LLVM::LLVMFuncOp> maybeNewFuncOp =
         mlir::convertFuncOpToLLVMFuncOp(amendedFuncOp, rewriter,
                                         *getTypeConverter());
     if (failed(maybeNewFuncOp)) {
       return failure();
+    }
+
+    if (triton::gpu::isCPUMode()) {
+      if (LLVM::isKernel(funcOp))
+        rewriter.eraseOp(amendedFuncOp);
+      rewriter.eraseOp(funcOp);
+      return success();
     }
 
     LLVM::LLVMFuncOp newFuncOp = *maybeNewFuncOp;

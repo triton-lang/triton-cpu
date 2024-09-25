@@ -120,7 +120,9 @@ struct LoadStoreConversionBase {
     LDBG("getVectorSize contiguity = " << contiguity << " pointeeBitWidth = "
                                        << pointeeBitWidth);
     // The maximum vector size is 128 bits on NVIDIA GPUs.
-    return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
+    // CPUs can have a sufficiently large vector size.
+    unsigned maxVectorBit = triton::gpu::isCPUMode() ? 65536 : 128;
+    return std::min<unsigned>(maxVectorBit / pointeeBitWidth, contiguity);
   }
 
   unsigned getMaskAlignment(Value mask) const {
@@ -170,7 +172,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     if (llMask) {
       LLVM_DEBUG(DBGS() << "vec = " << vec
                         << " mask_alignment = " << getMaskAlignment(mask));
-      vec = std::min<size_t>(vec, getMaskAlignment(mask));
+      // Note: PTX's predicate register is 1 bit, even for a vectorized load.
+      // So, the constancy of the mask limits the vectorization size in PTX.
+      // But, AVX512 has wider mask registers. We don't need to limit the
+      // vectorization size like GPU. (Hopefully, I'm correct.)
+      if (!triton::gpu::isCPUMode())
+        vec = std::min<size_t>(vec, getMaskAlignment(mask));
       LLVM_DEBUG(llvm::dbgs() << " vec = " << vec << '\n');
     }
 
@@ -218,6 +225,45 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                               << " valueElemNBits = " << valueElemNBits << " "
                               << op.getType());
     SmallVector<Value> loadedVals;
+    if (triton::gpu::isCPUMode()) {
+      for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
+        // TODO: if vec == 1, no need to use vector type?
+        auto vecTy = LLVM::getFixedVectorType(valueElemTy, vec);
+        Value vecLoadVal;
+        if (mask) {
+          // TODO: We should optimize back-to-back unpacking and packing.
+          Value preds =
+              packLLVectorRange(loc, maskElems, vecStart, vec, rewriter);
+
+          mlir::Attribute zeroAttr = rewriter.getZeroAttr(valueElemTy);
+          auto denseValue =
+              DenseElementsAttr::get(cast<mlir::ShapedType>(vecTy), zeroAttr);
+          Value zeroVal =
+              rewriter.create<LLVM::ConstantOp>(loc, vecTy, denseValue);
+
+          Value falseVal = zeroVal;
+          // If we need to mask the loaded value with other elements
+          if (!otherElems.empty())
+            falseVal =
+                packLLVectorRange(loc, otherElems, vecStart, vec, rewriter);
+
+          vecLoadVal = rewriter.create<LLVM::MaskedLoadOp>(
+              loc, vecTy, ptrElems[vecStart], preds, falseVal, vec);
+        } else {
+          vecLoadVal =
+              rewriter.create<LLVM::LoadOp>(loc, vecTy, ptrElems[vecStart]);
+        }
+        auto unpacked = unpackLLVector(loc, vecLoadVal, rewriter);
+        loadedVals.append(unpacked);
+      } // end vec
+
+      Type llvmResultStructTy = typeConverter->convertType(op.getType());
+      Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
+                                          rewriter, llvmResultStructTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
+    }
+
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
       // TODO: optimization when ptr is GEP with constant offset
       size_t in_off = 0;
@@ -397,8 +443,10 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       maskElems = unpackLLElements(loc, llMask, rewriter);
       assert(valueElems.size() == maskElems.size());
 
-      unsigned maskAlign = getMaskAlignment(mask);
-      vec = std::min(vec, maskAlign);
+      if (!triton::gpu::isCPUMode()) {
+        unsigned maskAlign = getMaskAlignment(mask);
+        vec = std::min(vec, maskAlign);
+      }
     }
 
     if (vec == 1 && elemsPerThread > 1) {
@@ -409,12 +457,29 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
                        << mask << "\n";
     }
 
+    const int numVecs = elemsPerThread / vec;
+    if (triton::gpu::isCPUMode()) {
+      for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
+        Value llWord =
+            packLLVectorRange(loc, valueElems, vecStart, vec, rewriter);
+        auto address = ptrElems[vecStart];
+        if (llMask) {
+          auto maskWord =
+              packLLVectorRange(loc, maskElems, vecStart, vec, rewriter);
+          rewriter.create<LLVM::MaskedStoreOp>(loc, llWord, address, maskWord,
+                                               vec);
+        } else {
+          rewriter.create<LLVM::StoreOp>(loc, llWord, address);
+        }
+      }
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     Value mask = redundantDataMask(valueTy, rewriter, loc, targetInfo);
     const size_t dtsize =
         std::max<int>(1, valueElemTy.getIntOrFloatBitWidth() / 8);
     const size_t valueElemNBits = dtsize * 8;
-
-    const int numVecs = elemsPerThread / vec;
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
       // TODO: optimization when ptr is AddPtr with constant offset
       size_t in_off = 0;
@@ -500,6 +565,52 @@ void createBarrier(ConversionPatternRewriter &rewriter, Location loc,
   }
 }
 
+// Copied from TritonCPU fork.
+LLVM::AtomicOrdering getOrdering(MemSemantic sem) {
+  switch (sem) {
+  case MemSemantic::RELAXED:
+    return LLVM::AtomicOrdering::monotonic;
+  case MemSemantic::ACQUIRE:
+    return LLVM::AtomicOrdering::acquire;
+  case MemSemantic::RELEASE:
+    return LLVM::AtomicOrdering::release;
+  case MemSemantic::ACQUIRE_RELEASE:
+    return LLVM::AtomicOrdering::acq_rel;
+  default:
+    llvm_unreachable("Unexpected atomic mem semantic");
+  }
+}
+
+// Copied from TritonCPU fork.
+LLVM::AtomicBinOp getAtomicBinOp(RMWOp op, Type type) {
+  switch (op) {
+  case RMWOp::AND:
+    return LLVM::AtomicBinOp::_and;
+  case RMWOp::OR:
+    return LLVM::AtomicBinOp::_or;
+  case RMWOp::XOR:
+    return LLVM::AtomicBinOp::_xor;
+  case RMWOp::ADD:
+    return LLVM::AtomicBinOp::add;
+  case RMWOp::FADD:
+    return LLVM::AtomicBinOp::fadd;
+  case RMWOp::MAX:
+    return type.isIntOrIndex() ? LLVM::AtomicBinOp::max
+                               : LLVM::AtomicBinOp::fmax;
+  case RMWOp::MIN:
+    return type.isIntOrIndex() ? LLVM::AtomicBinOp::min
+                               : LLVM::AtomicBinOp::fmin;
+  case RMWOp::UMAX:
+    return LLVM::AtomicBinOp::umax;
+  case RMWOp::UMIN:
+    return LLVM::AtomicBinOp::umin;
+  case RMWOp::XCHG:
+    return LLVM::AtomicBinOp::xchg;
+  default:
+    llvm_unreachable("Unexpected atomic op");
+  }
+}
+
 struct AtomicCASOpConversion
     : public ConvertOpToLLVMPattern<triton::AtomicCASOp>,
       public LoadStoreConversionBase {
@@ -548,6 +659,36 @@ struct AtomicCASOpConversion
       op->emitRemark() << "Warning: vectorization fails vec = " << vec
                        << " origin vec = " << vecOrig
                        << " elemsPerThread = " << elemsPerThread << "\n";
+
+    if (triton::gpu::isCPUMode()) {
+      SmallVector<Value> resultVals(elemsPerThread);
+      auto successOrdering = getOrdering(op.getSem());
+      auto failureOrdering = successOrdering != LLVM::AtomicOrdering::monotonic
+                                 ? LLVM::AtomicOrdering::acquire
+                                 : successOrdering;
+      // Obviously, x86 cmpxchg doesn't take SIMD registers. No vector types.
+      Value oldVal;
+      for (size_t i = 0; i < elemsPerThread; i++) {
+        auto ptr = ptrElements[i];
+        auto cmp = cmpElements[i];
+        auto val = valElements[i];
+        auto ret = rewriter.create<LLVM::AtomicCmpXchgOp>(
+            loc, ptr, cmp, val, successOrdering, failureOrdering);
+        oldVal = rewriter.create<LLVM::ExtractValueOp>(loc, ret, 0);
+        if (tensorTy)
+          resultVals[i] = oldVal;
+      }
+
+      if (tensorTy) {
+        Type structTy = getTypeConverter()->convertType(tensorTy);
+        Value resultStruct = packLLElements(loc, getTypeConverter(), resultVals,
+                                            rewriter, structTy);
+        rewriter.replaceOp(op, {resultStruct});
+      } else {
+        rewriter.replaceOp(op, oldVal);
+      }
+      return success();
+    }
 
     Value mask = redundantDataMask(valueTy, rewriter, loc, targetInfo);
     auto vecTy = vec_ty(valueElemTy, vec);
@@ -681,6 +822,34 @@ struct AtomicRMWOpConversion
                        << " origin vec = " << vecOrig
                        << " numElems = " << numElems;
 
+    if (triton::gpu::isCPUMode()) {
+      SmallVector<Value> resultVals(elemsPerThread);
+      auto ordering = getOrdering(op.getSem());
+      auto binOp = getAtomicBinOp(atomicRmwAttr, valueTy);
+      auto scope = stringifyMemSyncScope(op.getScope()).str();
+      // TODO: llvm.atomicrmw takes vectors (really?) for fadd/fsub/fmax/fmin.
+      // We could try it to see generated x86/ARM code?
+      for (size_t i = 0; i < elemsPerThread; i++) {
+        auto ptr = ptrElements[i];
+        auto val = valElements[i];
+        auto mask = llMask ? maskElements[i] : llMask;
+        auto ret = lowerScalarMaskToCF(loc, binOp, ptr, val, mask, ordering,
+                                       scope, rewriter);
+        // TODO: Not sure we need to do this?
+        if (tensorTy)
+          resultVals[i] = ret;
+      }
+      if (tensorTy) {
+        Type structTy = getTypeConverter()->convertType(tensorTy);
+        Value resultStruct = packLLElements(loc, getTypeConverter(), resultVals,
+                                            rewriter, structTy);
+        rewriter.replaceOp(op, {resultStruct});
+      } else {
+        rewriter.eraseOp(op);
+      }
+      return success();
+    }
+
     Value mask = redundantDataMask(valueTy, rewriter, loc, targetInfo);
 
     auto vecTy = vec_ty(valueElemTy, vec);
@@ -790,6 +959,44 @@ struct AtomicRMWOpConversion
       rewriter.replaceOp(op, {resultStruct});
     }
     return success();
+  }
+
+  // Based on the CPU fork.
+  Value lowerScalarMaskToCF(Location loc, LLVM::AtomicBinOp binOp, Value ptr,
+                            Value val, Value mask,
+                            LLVM::AtomicOrdering ordering, StringRef scope,
+                            ConversionPatternRewriter &rewriter) const {
+    // Check for constant mask.
+    // TODO: Is it necessary? Can compiler optimize it?
+    if (auto maskDef = mask.getDefiningOp<arith::ConstantOp>()) {
+      auto maskVal = cast<IntegerAttr>(maskDef.getValue());
+      if (maskVal.getValue().isZero()) {
+        return rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getZeroAttr(val.getType()));
+      } else {
+        return rewriter.create<LLVM::AtomicRMWOp>(loc, binOp, ptr, val,
+                                                  ordering, scope);
+      }
+    }
+
+    // There's no predicate support for x86 atomic ops. Need a branch.
+    Block *headerBlock = rewriter.getBlock();
+    Value zero = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getZeroAttr(val.getType()));
+    Block *condBlock =
+        rewriter.splitBlock(headerBlock, rewriter.getInsertionPoint());
+    rewriter.setInsertionPointToStart(condBlock);
+    Value resVal = rewriter.create<LLVM::AtomicRMWOp>(loc, binOp, ptr, val,
+                                                      ordering, scope);
+    Block *footerBlock =
+        rewriter.splitBlock(condBlock, rewriter.getInsertionPoint());
+    Value res = footerBlock->addArgument(resVal.getType(), resVal.getLoc());
+    rewriter.setInsertionPointToEnd(headerBlock);
+    rewriter.create<cf::CondBranchOp>(loc, mask, condBlock, footerBlock, zero);
+    rewriter.setInsertionPointToEnd(condBlock);
+    rewriter.create<cf::BranchOp>(loc, footerBlock, resVal);
+    rewriter.setInsertionPointToStart(footerBlock);
+    return res;
   }
 };
 

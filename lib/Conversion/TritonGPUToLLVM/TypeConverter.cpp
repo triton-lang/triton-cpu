@@ -110,6 +110,11 @@ Type TritonGPUToLLVMTypeConverter::convertTritonTensorType(
 
   unsigned numElementsPerThread = getTotalElemsPerThread(type);
   SmallVector<Type, 4> types(numElementsPerThread, eltType);
+  // Experimental: Try to use vector if the struct has >= 8 elements. It seems
+  // working okay, but it didn't reduce the compilation time. We need to reduce
+  // conversions between llvm struct and vector.
+  if (false && triton::gpu::isCPUMode() && numElementsPerThread >= 8)
+    return LLVM::getVectorType(eltType, numElementsPerThread);
   return LLVM::LLVMStructType::getLiteral(ctx, types);
 }
 

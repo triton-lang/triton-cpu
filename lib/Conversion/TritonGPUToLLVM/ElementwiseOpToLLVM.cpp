@@ -290,6 +290,9 @@ struct MulhiUIOpConversion
                                    ConversionPatternRewriter &rewriter,
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
+    if (triton::gpu::isCPUMode())
+      return {
+          rewriter.create<arith::MulUIExtendedOp>(loc, operands[0]).getHigh()};
 
     Type resultElementTy = getElementTypeOrSelf(op.getResult().getType());
     assert(resultElementTy.isInteger(32) || resultElementTy.isInteger(64));
@@ -776,17 +779,34 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
   POPULATE_UNARY_OP(arith::ExtUIOp, LLVM::ZExtOp)
   POPULATE_UNARY_OP(arith::FPToUIOp, LLVM::FPToUIOp)
   POPULATE_UNARY_OP(arith::UIToFPOp, LLVM::UIToFPOp)
-  POPULATE_UNARY_OP(math::FloorOp, math::FloorOp)
-  POPULATE_UNARY_OP(math::CeilOp, math::CeilOp)
-  POPULATE_UNARY_OP(math::LogOp, math::LogOp)
-  POPULATE_UNARY_OP(math::Log2Op, math::Log2Op)
-  POPULATE_UNARY_OP(math::CosOp, math::CosOp)
-  POPULATE_UNARY_OP(math::SinOp, math::SinOp)
-  POPULATE_UNARY_OP(math::SqrtOp, math::SqrtOp)
-  POPULATE_UNARY_OP(math::RsqrtOp, math::RsqrtOp)
-  POPULATE_UNARY_OP(math::ExpOp, math::ExpOp)
-  POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
-  POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
+
+  if (triton::gpu::isCPUMode()) {
+    POPULATE_UNARY_OP(math::FloorOp, LLVM::FFloorOp)
+    POPULATE_UNARY_OP(math::CeilOp, LLVM::FCeilOp)
+    POPULATE_UNARY_OP(math::LogOp, LLVM::LogOp)
+    POPULATE_UNARY_OP(math::Log2Op, LLVM::Log2Op)
+    POPULATE_UNARY_OP(math::CosOp, LLVM::CosOp)
+    POPULATE_UNARY_OP(math::SinOp, LLVM::SinOp)
+    POPULATE_UNARY_OP(math::SqrtOp, LLVM::SqrtOp)
+    // TODO: Implement as a fdiv 1.0, sqrt.
+    // POPULATE_UNARY_OP(math::RsqrtOp, math::RsqrtOp)
+    POPULATE_UNARY_OP(math::ExpOp, LLVM::ExpOp)
+    POPULATE_UNARY_OP(math::Exp2Op, LLVM::Exp2Op)
+    // TODO: Use libmvec or sleef.
+    // POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
+  } else {
+    POPULATE_UNARY_OP(math::FloorOp, math::FloorOp)
+    POPULATE_UNARY_OP(math::CeilOp, math::CeilOp)
+    POPULATE_UNARY_OP(math::LogOp, math::LogOp)
+    POPULATE_UNARY_OP(math::Log2Op, math::Log2Op)
+    POPULATE_UNARY_OP(math::CosOp, math::CosOp)
+    POPULATE_UNARY_OP(math::SinOp, math::SinOp)
+    POPULATE_UNARY_OP(math::SqrtOp, math::SqrtOp)
+    POPULATE_UNARY_OP(math::RsqrtOp, math::RsqrtOp)
+    POPULATE_UNARY_OP(math::ExpOp, math::ExpOp)
+    POPULATE_UNARY_OP(math::Exp2Op, math::Exp2Op)
+    POPULATE_UNARY_OP(math::ErfOp, math::ErfOp)
+  }
   POPULATE_UNARY_OP(triton::BitcastOp, LLVM::BitcastOp)
   POPULATE_UNARY_OP(triton::IntToPtrOp, LLVM::IntToPtrOp)
   POPULATE_UNARY_OP(triton::PtrToIntOp, LLVM::PtrToIntOp)

@@ -7,6 +7,11 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "llvm/ADT/STLExtras.h"
 
+namespace {
+// TODO: I don't like it. This is a quick hack for PoC.
+std::optional<bool> cpuMode = std::nullopt;
+} // namespace
+
 namespace SharedToDotOperandMMAv1 {
 using CoordTy = SmallVector<Value>;
 using ValueTable = std::map<std::pair<int, int>, std::pair<Value, Value>>;
@@ -142,6 +147,13 @@ LLVM::LLVMFuncOp appendOrGetExternFuncOp(RewriterBase &rewriter, Operation *op,
                               StringAttr::get(op->getContext(), libpath));
   return ret;
 }
+
+bool isCPUMode() {
+  assert(cpuMode.has_value() && "cpuMode is not set");
+  return cpuMode.value();
+}
+
+void setCPUMode(bool mode) { cpuMode = mode; }
 } // namespace triton::gpu
 
 SmallVector<std::pair<StringAttr, Value>>
