@@ -7,7 +7,8 @@ namespace mlir::triton::NVIDIA {
 
 class TargetInfo : public mlir::triton::TargetInfoBase {
 public:
-  TargetInfo(int computeCapability) : computeCapability(computeCapability) {}
+  TargetInfo(int computeCapability, bool cpuMode)
+      : computeCapability(computeCapability), cpuMode(cpuMode) {}
 
   bool supportMaximumMinimum() const override;
 
@@ -61,8 +62,11 @@ public:
   void assertFail(RewriterBase &rewriter, Location loc, StringRef message,
                   StringRef file, StringRef func, int line) const override;
 
+  bool isCPUMode() const override { return cpuMode; }
+
 private:
   int computeCapability;
+  bool cpuMode;
 };
 
 } // namespace mlir::triton::NVIDIA

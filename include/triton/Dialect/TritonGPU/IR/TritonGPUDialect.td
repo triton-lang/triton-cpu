@@ -40,9 +40,16 @@ def TritonGPU_Dialect : Dialect {
     static int getThreadsPerWarp(ModuleOp mod) {
       Attribute threadsPerWarp = mod->getDiscardableAttr("triton_gpu.threads-per-warp");
       if(!threadsPerWarp) {
-        return 32;
+        return getTarget(mod).substr(0, 3) == "cpu" ? 1 : 32;
       }
       return cast<IntegerAttr>(threadsPerWarp).getInt();
+    }
+
+    static std::string getTarget(ModuleOp mod) {
+      if (!mod->hasAttr("triton_gpu.target"))
+        llvm::report_fatal_error(
+            "TritonGPU module should contain a triton_gpu.target attribute");
+      return cast<StringAttr>(mod->getAttr("triton_gpu.target")).getValue().str();
     }
   }];
 

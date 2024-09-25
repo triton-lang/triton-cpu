@@ -428,12 +428,28 @@ class CudaLauncher(object):
 
 class CudaDriver(GPUDriver):
 
-    def __init__(self):
-        self.utils = CudaUtils()  # TODO: make static
-        self.launcher_cls = CudaLauncher
+    def __init__(self, cpu_mode=False):
+        self.cpu_mode = cpu_mode
+        if cpu_mode:
+            import triton.backends.cpu.driver as cpu_driver
+            self.utils = cpu_driver.CPUUtils()
+            self.launcher_cls = cpu_driver.CPULauncher
+        else:
+            import torch
+            assert torch.cuda.is_available() and (torch.version.hip is None)
+            self.utils = CudaUtils()  # TODO: make static
+            self.launcher_cls = CudaLauncher
         super().__init__()
+        if self.cpu_mode:
+            self.get_current_device = lambda: 0
+            self.get_current_stream = lambda _: 0
 
     def get_current_target(self):
+        if self.cpu_mode:
+            # threadsPerWarp is set to 1 for the CPU mode.
+            warp_size = 1
+            return GPUTarget("cpu_v2", 0, warp_size)
+
         device = self.get_current_device()
         capability = self.get_device_capability(device)
         capability = capability[0] * 10 + capability[1]

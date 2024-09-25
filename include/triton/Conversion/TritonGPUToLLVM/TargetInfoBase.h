@@ -90,6 +90,8 @@ public:
                           int line) const = 0;
 
   virtual ~TargetInfoBase() {}
+
+  virtual bool isCPUMode() const = 0;
 };
 } // namespace mlir::triton
 #endif // TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFOBASE_H

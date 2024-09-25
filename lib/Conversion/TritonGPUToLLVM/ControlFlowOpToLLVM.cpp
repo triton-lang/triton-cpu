@@ -80,6 +80,9 @@ private:
     auto promotedOperands = this->getTypeConverter()->promoteOperands(
         callOp.getLoc(), /*opOperands=*/callOp->getOperands(),
         adaptor.getOperands(), rewriter);
+    if (triton::gpu::isCPUMode())
+      return promotedOperands;
+
     if (!caller->hasAttr("allocation.offset")) {
       auto base = LLVM::getStackPointer(rewriter, caller);
       promotedOperands.push_back(base);

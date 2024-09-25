@@ -5,10 +5,14 @@ from ..backends import DriverBase
 
 
 def _create_driver():
-    if os.getenv("TRITON_CPU_BACKEND", "0") == "1":
+    cpu = int(os.getenv("TRITON_CPU_BACKEND", "0"))
+    if cpu >= 1:
         if "cpu" not in backends:
             raise RuntimeError("TRITON_CPU_BACKEND is set, but CPU backend is unavailable.")
-        return backends["cpu"].driver()
+        if cpu == 1:
+            return backends["cpu"].driver()
+        elif cpu >= 2:
+            return backends["nvidia"].driver(cpu_mode=True)
 
     actives = [x.driver for x in backends.values() if x.driver.is_active()]
     if len(actives) >= 2 and backends["cpu"].driver.is_active():
@@ -66,10 +70,15 @@ class DriverConfig:
     def reset_active(self):
         self.active = self.default
 
-    def set_active_to_cpu(self):
+    def set_active_to_cpu(self, experimental=False):
         if "cpu" not in backends:
             raise RuntimeError("CPU backend is unavailable")
-        self.active = backends["cpu"].driver()
+        if not experimental:
+            self.active = backends["cpu"].driver()
+        else:
+            if "nvidia" not in backends:
+                raise RuntimeError("New CPU mode is implemented on Nvidia backend")
+            self.active = backends["nvidia"].driver(cpu_mode=True)
 
     def set_active_to_gpu(self):
         active_gpus = [(name, backend.driver)
@@ -77,7 +86,7 @@ class DriverConfig:
                        if backend.driver.is_active() and name != "cpu"]
         if len(active_gpus) != 1:
             raise RuntimeError(f"{len(active_gpus)} active GPU drivers ({active_gpus}). There should only be one GPU.")
-        self.active = active_gpus[0][1]()
+        self.active = active_gpus[0][1](cpu_mode=False)
         return active_gpus[0][0]
 
     def get_active_gpus(self):

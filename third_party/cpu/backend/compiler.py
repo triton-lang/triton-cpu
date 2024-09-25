@@ -27,9 +27,9 @@ class CPUOptions:
     # GPU-specific options are used in several places.
     # For now, we just provide dummy values.
     backend_name: str = "cpu"
-    num_warps: int = 0
+    num_warps: int = 1
     num_stages: int = 0
-    num_ctas: int = 0
+    num_ctas: int = 1
     cluster_dims: tuple = (1, 1, 1)
     extern_libs: dict = None
     debug: bool = False
@@ -42,6 +42,7 @@ class CPUOptions:
     max_num_imprecise_acc_default: int = 0
     enable_fast_math: bool = True
     vec_lib: Optional[str] = 'libsleef'
+    warp_size: int = 1
 
     # TODO: We may introduce CPU-specific options like # of cores.
 
