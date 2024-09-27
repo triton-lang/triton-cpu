@@ -689,6 +689,7 @@ public:
   llvm::MapVector<StringAttr, int32_t> getFreeVariableMasks() const;
 
   std::string toString() const;
+  void dump() const;
 
   friend bool operator==(LinearLayout lhs, LinearLayout rhs);
   friend bool operator!=(LinearLayout lhs, LinearLayout rhs) {

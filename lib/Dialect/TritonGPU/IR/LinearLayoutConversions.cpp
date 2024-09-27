@@ -720,7 +720,41 @@ SliceEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
 // TODO: DotOperandEncoding doesn't support LinearLayout conversion yet.
 std::optional<LinearLayout>
 DotOperandEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
-  return std::nullopt;
+  BlockedEncodingAttr parent = mlir::cast<BlockedEncodingAttr>(getParent());
+  std::optional<LinearLayout> parentLL =
+      triton::gpu::toLinearLayout(shape, parent);
+  if (getOpIdx() == 0) {
+    // Extremely hacky. Only works for 2D tensors with certain sizePerThreads.
+    MLIRContext *ctx = parentLL->getInDimNames().begin()->getContext();
+    StringAttr kRegister = S("register");
+    StringAttr kLane = S("lane");
+    StringAttr kWarp = S("warp");
+    StringAttr kBlock = S("block");
+    int rank = shape.size();
+    SmallVector<unsigned> order = triton::gpu::getOrder(*this);
+    int colDim = order[0];
+    int rowDim = order[1];
+    int numCols = shape[colDim];
+    int numRows = shape[rowDim];
+    // TODO: Need to support high dimension cases.
+    assert(rank == 2);
+    std::vector<std::vector<int>> bases2D;
+    for (int logRow = 0; logRow < llvm::Log2_32(numRows); logRow++) {
+      int row = 1 << logRow;
+      bases2D.push_back({row, 0});
+    }
+    for (int logCol = 0; logCol < llvm::Log2_32(numCols); logCol++) {
+      int col = 1 << logCol;
+      bases2D.push_back({0, col});
+    }
+    SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
+    auto ll = LinearLayout(
+        {{kRegister, bases2D}, {kLane, {}}, {kWarp, {}}, {kBlock, {}}},
+        outDimNames);
+
+    return combineCtaCgaWithShape(ll, parent.getCTALayout(), shape);
+  }
+  return parentLL;
 }
 
 std::optional<LinearLayout>
