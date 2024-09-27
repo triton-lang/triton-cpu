@@ -1121,4 +1121,6 @@ std::string LinearLayout::toString() const {
   return ret;
 }
 
+void LinearLayout::dump() const { llvm::outs() << toString() << "\n"; }
+
 } // namespace mlir::triton

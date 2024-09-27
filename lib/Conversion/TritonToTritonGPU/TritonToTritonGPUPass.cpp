@@ -227,14 +227,32 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     auto rank = origShape.size();
     SmallVector<unsigned> retSizePerThread(rank, 1);
     auto numElements = product<int64_t>(origShape);
-    if (numElements / (numWarps * threadsPerWarp) >= 4) {
-      retSizePerThread[rank - 1] = 2;
-      retSizePerThread[rank - 2] = 2;
-    }
-    if (numElements / (numWarps * threadsPerWarp) >= 16) {
-      retSizePerThread[rank - 1] = 4;
-      retSizePerThread[rank - 2] = 4;
-    }
+
+    // TODO: For CPU, where larger vectorization is possible, we can incrase it.
+    // But right now, the hacky linear layout conversion only correctly supports
+    // size=[1, 1]. So commented out for now.
+    //
+    // if (numElements / (numWarps * threadsPerWarp) >= 4) {
+    //   retSizePerThread[rank - 1] = 2;
+    //   retSizePerThread[rank - 2] = 2;
+    // }
+    // if (numElements / (numWarps * threadsPerWarp) >= 16) {
+    //   retSizePerThread[rank - 1] = 4;
+    //   retSizePerThread[rank - 2] = 4;
+    // }
+    // if (numElements / (numWarps * threadsPerWarp) >= 64) {
+    //   retSizePerThread[rank - 1] = 8;
+    //   retSizePerThread[rank - 2] = 8;
+    // }
+    // if (numElements / (numWarps * threadsPerWarp) >= 256) {
+    //   retSizePerThread[rank - 1] = 16;
+    //   retSizePerThread[rank - 2] = 16;
+    // }
+    // if (numElements / (numWarps * threadsPerWarp) >= 1024) {
+    //   retSizePerThread[rank - 1] = 32;
+    //   retSizePerThread[rank - 2] = 32;
+    // }
+
     SmallVector<unsigned> retOrder(rank);
     for (unsigned i = 0; i < rank; ++i)
       retOrder[i] = rank - 1 - i;

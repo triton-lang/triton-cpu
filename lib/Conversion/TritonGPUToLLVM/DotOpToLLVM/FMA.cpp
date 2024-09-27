@@ -90,6 +90,8 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
             int z = isCRow
                         ? mIdx * N / nShapePerCTATile * mSizePerThread + nIdx
                         : nIdx * M / mShapePerCTATile * nSizePerThread + mIdx;
+            // TODO: It's a scalar fmad. But LLVM vectorizes it easily. Try to
+            // directly use vector types.
             ret[z] = rewriter.create<LLVM::FMulAddOp>(loc, has[{m + mm, k}],
                                                       hbs[{n + nn, k}], ret[z]);
           }

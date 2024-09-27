@@ -148,7 +148,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         return _summarize_statistics(torch.tensor(ret), quantiles, return_mode)
 
 
-def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, fast_flush=True, return_mode="mean",
+def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, fast_flush=True, return_mode="median",
              device_type="cuda", measure_time_with_hooks=False):
     """
     Benchmark the runtime of the provided function. By default, return the median runtime of :code:`fn` along with
