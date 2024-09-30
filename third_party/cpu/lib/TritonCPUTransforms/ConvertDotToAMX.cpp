@@ -38,6 +38,8 @@ namespace {
 struct AmxBuffer {
   Value memRef;
   SmallVector<Value, 2> indices;
+
+  bool empty() const { return !memRef; }
 };
 
 // This structure is used to hold candidates for conversion to AMX
@@ -70,6 +72,12 @@ struct AmxDotOpCandidate {
   // If we want to keep accumulator in tiles but it's too big, then we might
   // keep it bufferized instead.
   bool keepAccInBuf = false;
+  // If resulting tiles are not required to be trasfered to vectors and can be
+  // directly stored to the output memory instead, then this field holds a
+  // buffer to use.
+  AmxBuffer outBuf;
+  // If output buffer is used then keep the original vector store here.
+  Operation *origStore = nullptr;
 };
 
 bool checkIdxMap(Attribute attr, unsigned int v1, unsigned int v2) {
@@ -251,6 +259,15 @@ bool isLoopCarriedAcc(Value acc) {
   return true;
 }
 
+// Return a value that holds the resulting loop carried accumulator value.
+// It's one of ForOp results.
+Value getResValueForLoopCarriedAcc(vector::ContractionOp op) {
+  Value updAcc = op.getResult();
+  auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+  auto &use = *updAcc.getUses().begin();
+  return forOp.getResult(use.getOperandNumber());
+}
+
 // Choose tile and block sizes for the candidate. Tile sizes are determined
 // by input shapes and types. Block sizes are chosen to minimize number of
 // tile loads/stores including tile register spills.
@@ -283,6 +300,30 @@ void setupBlockAndTileSizes(ArrayRef<int64_t> lhsShape,
   candidate.tileK = tileK;
   candidate.tilesInBlockM = accBlocksM;
   candidate.tilesInBlockN = accBlocksN;
+}
+
+// Check if vector transfer read/write operation uses a mask
+// or involves a bounds check.
+template <typename T> bool hasMaskOrBoundsCheck(T op) {
+  auto inBounds = op.getInBounds();
+  Value mask = op.getMask();
+  bool hasBoundsCheck =
+      std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
+        return !cast<mlir::BoolAttr>(attr).getValue();
+      });
+  return hasBoundsCheck || mask;
+}
+
+// Check if a value is used only for a store and that this store can be
+// replaced with tile stores. In this case fill appropriate fields in the
+// candidate structure.
+void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
+  if (val.hasOneUse()) {
+    auto store = dyn_cast<vector::TransferWriteOp>(*val.user_begin());
+    if (store && !hasMaskOrBoundsCheck(store))
+      candidate.outBuf = AmxBuffer{store.getSource(), store.getIndices()};
+    candidate.origStore = store;
+  }
 }
 
 // Check if specified ContractionOp can be lowered to AMX operations.
@@ -326,6 +367,8 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
            "insterad.");
       candidate.keepAccOnTiles = false;
       candidate.keepAccInBuf = true;
+    } else {
+      findOutputBuffer(getResValueForLoopCarriedAcc(op), candidate);
     }
 
     // TODO: fix LLVM bug and remove this code.
@@ -334,6 +377,9 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
     LDBG("Keep accumulator bufferized instead.");
     candidate.keepAccOnTiles = false;
     candidate.keepAccInBuf = true;
+    candidate.outBuf = AmxBuffer{};
+  } else {
+    findOutputBuffer(op.getResult(), candidate);
   }
 
   return true;
@@ -375,25 +421,16 @@ VectorType getSwizzledRhsTileType(VectorType origTileType) {
   return origTileType.cloneWith(shape, origTileType.getElementType());
 }
 
-Value allocateTmpBuffer(Location loc, VectorType vecTy, Operation *allocaPoint,
-                        PatternRewriter &rewriter) {
+AmxBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
+                            Operation *allocaPoint, PatternRewriter &rewriter) {
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(allocaPoint);
   auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
-  return rewriter.create<memref::AllocaOp>(
+  Value memRef = rewriter.create<memref::AllocaOp>(
       loc, memRefTy, rewriter.getIntegerAttr(rewriter.getI64Type(), 64));
-}
-
-// Check if vector transfer read/write operation uses a mask
-// or involves a bounds check.
-template <typename T> bool hasMaskOrBoundsCheck(T op) {
-  auto inBounds = op.getInBounds();
-  Value mask = op.getMask();
-  bool hasBoundsCheck =
-      std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
-        return !cast<mlir::BoolAttr>(attr).getValue();
-      });
-  return hasBoundsCheck || mask;
+  Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  SmallVector<Value, 2> indices(2, zeroIdx);
+  return {memRef, indices};
 }
 
 // In AMX, element values shoud be packed to 32-bit groups that would be
@@ -466,24 +503,36 @@ AmxBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
   auto vecTy = cast<VectorType>(val.getType());
   if (interleave)
     vecTy = getSwizzledRhsTileType(vecTy);
-  Value buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
-  Value zeroIdx;
-  {
-    // Create zero index at the same place as a buffer allocation to
-    // dominate all buffer usages.
-    OpBuilder::InsertionGuard g(rewriter);
-    rewriter.setInsertionPoint(allocaPoint);
-    zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  }
-  SmallVector<Value, 2> indices(vecTy.getRank(), zeroIdx);
+  AmxBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
 
   if (interleave) {
-    interleaveAndStore(loc, val, buf, rewriter);
+    interleaveAndStore(loc, val, buf.memRef, rewriter);
   } else {
-    rewriter.create<vector::TransferWriteOp>(loc, val, buf, indices);
+    rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
   }
 
-  return {buf, indices};
+  return buf;
+}
+
+// Return a buffer where the final result should be stored. If result can
+// be directly stored to the output memory, then it is used as an output
+// buffer. Otherwise, re-use accumulator buffer or create a new one.
+AmxBuffer prepareResultBuffer(Location loc, Value val, const AmxBuffer &accBuf,
+                              const AmxBuffer &outBuf, Operation *allocaPoint,
+                              PatternRewriter &rewriter) {
+  if (!outBuf.empty()) {
+    LDBG("Output memory will be used for direct tile stores.");
+    return outBuf;
+  }
+
+  if (!accBuf.empty()) {
+    LDBG("Result will be stored to accumulator buffer.");
+    return accBuf;
+  }
+
+  LDBG("Allocating buffer for the result.");
+  return allocateTmpBuffer(loc, cast<VectorType>(val.getType()), allocaPoint,
+                           rewriter);
 }
 
 Value shiftIndex(Location loc, Value index, int64_t offs,
@@ -543,8 +592,11 @@ loadBlockTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
   SmallVector<SmallVector<Value>> res(tilesInBlockM);
   for (int64_t m = 0; m < tilesInBlockM; ++m) {
     for (int64_t n = 0; n < tilesInBlockN; ++n) {
-      res[m].push_back(loadTile(loc, tileTy, buf, tilesInBlockM, tilesInBlockN,
-                                blockM, blockN, m, n, rewriter));
+      Value tile = buf.memRef
+                       ? loadTile(loc, tileTy, buf, tilesInBlockM,
+                                  tilesInBlockN, blockM, blockN, m, n, rewriter)
+                       : rewriter.create<amx::TileZeroOp>(loc, tileTy);
+      res[m].push_back(tile);
     }
   }
   return res;
@@ -557,18 +609,8 @@ moveLoopAccToTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
                    int64_t tilesInBlockM, int64_t tilesInBlockN,
                    PatternRewriter &rewriter) {
   LDBG("Loading accumulator to tiles before the loop.");
-  if (buf.memRef)
-    return loadBlockTiles(loc, tileTy, buf, tilesInBlockM, tilesInBlockN, 0, 0,
-                          rewriter);
-
-  // No buffer for accumulator means tiles are zero-initialized.
-  LDBG("  Using zero tiles for accumulator tiles initialization.");
-  SmallVector<SmallVector<Value>> res(tilesInBlockM);
-  for (int64_t m = 0; m < tilesInBlockM; ++m) {
-    for (int64_t n = 0; n < tilesInBlockM; ++n) {
-      res[m].push_back(rewriter.create<amx::TileZeroOp>(loc, tileTy));
-    }
-  }
+  auto res = loadBlockTiles(loc, tileTy, buf, tilesInBlockM, tilesInBlockN, 0,
+                            0, rewriter);
 
   // TODO: add new block args into ForOp and return them instead.
   // Yield directly uses them for now and will be patched after mul
@@ -670,27 +712,34 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       accTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileN}),
                       candidate.accTileElemTy);
 
-  // Cast input data if required.
-  Value lhs = maybeCast(loc, op.getLhs(), candidate.lhsTileElemTy, rewriter);
-  Value rhs = maybeCast(loc, op.getRhs(), candidate.rhsTileElemTy, rewriter);
-  Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
+  // If we don't work with a loop and want to directly store tiles into output
+  // memory, then use the original store as insertion point to have its buffer
+  // values available for generated code.
+  if (!candidate.keepAccInBuf && !candidate.keepAccOnTiles &&
+      !candidate.outBuf.empty())
+    rewriter.setInsertionPoint(candidate.origStore);
 
   Operation *allocaPoint = op;
   while (!isa<triton::FuncOp>(allocaPoint->getParentOp()))
     allocaPoint = allocaPoint->getParentOp();
 
+  // Cast input data if required and prepare input buffer. It might be temporary
+  // buffers with stored vectors or the original input memory.
+  Value lhs = maybeCast(loc, op.getLhs(), candidate.lhsTileElemTy, rewriter);
+  AmxBuffer lhsBuf =
+      prepareTensorBuffer(loc, lhs, false, false, true, allocaPoint, rewriter);
+
+  Value rhs = maybeCast(loc, op.getRhs(), candidate.rhsTileElemTy, rewriter);
+  AmxBuffer rhsBuf =
+      prepareTensorBuffer(loc, rhs, true, false, true, allocaPoint, rewriter);
+
+  Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
   scf::ForOp forOp;
   if (candidate.keepAccInBuf || candidate.keepAccOnTiles) {
     forOp = cast<scf::ForOp>(op->getParentOp());
     accToStore = getInitAccValue(acc);
   }
-  // Prepare input buffers. It might be temporary buffers with stored
-  // vectors or the original tensor memory where vectors came from.
-  AmxBuffer lhsBuf =
-      prepareTensorBuffer(loc, lhs, false, false, true, allocaPoint, rewriter);
-  AmxBuffer rhsBuf =
-      prepareTensorBuffer(loc, rhs, true, false, true, allocaPoint, rewriter);
   AmxBuffer accBuf;
   {
     // If accumulator is bufferized then we should move initial values before
@@ -699,9 +748,12 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     if (candidate.keepAccInBuf)
       rewriter.setInsertionPoint(forOp);
     accBuf =
-        prepareTensorBuffer(loc, accToStore, false, candidate.keepAccOnTiles,
+        prepareTensorBuffer(loc, accToStore, false, !candidate.keepAccInBuf,
                             false, allocaPoint, rewriter);
   }
+
+  AmxBuffer resBuf = prepareResultBuffer(
+      loc, op.getResult(), accBuf, candidate.outBuf, allocaPoint, rewriter);
 
   SmallVector<SmallVector<Value>> accTiles;
   if (candidate.keepAccOnTiles)
@@ -733,12 +785,12 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
         // the smallest block on tiles.
         if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
           multiplyBlocksPreloadLhs(
-              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, accBuf,
+              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
               blockM, blockN, blocK, candidate.tilesInBlockM,
               candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
         else
           multiplyBlocksPreloadRhs(
-              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, accBuf,
+              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
               blockM, blockN, blocK, candidate.tilesInBlockM,
               candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
       }
@@ -759,20 +811,24 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPointAfter(forOp);
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), accBuf.memRef, accBuf.indices);
+        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, accTy.getElementType(), rewriter);
     rewriter.replaceAllUsesWith(loopRes, newVal);
     // For now, just use init value for unused ForOp result instead of
     // its removal.
     rewriter.replaceOp(op, op.getAcc());
-  } else {
+  } else if (candidate.outBuf.empty()) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), accBuf.memRef, accBuf.indices);
+        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, accTy.getElementType(), rewriter);
     rewriter.replaceOp(op, newVal);
+  } else {
+    LDBG("Removing original operation and its use.");
+    rewriter.eraseOp(*op.getResult().user_begin());
+    rewriter.eraseOp(op);
   }
 
   return success();
@@ -812,6 +868,7 @@ struct ConvertDotToAMX
           LDBG("  TilesInBlockN: " << candidate.tilesInBlockN);
           LDBG("  KeepAccOnTiles: " << candidate.keepAccOnTiles);
           LDBG("  KeepAccInBuf: " << candidate.keepAccInBuf);
+          LDBG("  Has output buffer: " << !candidate.outBuf.empty());
         });
         candidates.push_back(candidate);
       }
