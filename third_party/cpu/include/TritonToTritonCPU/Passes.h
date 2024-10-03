@@ -96,18 +96,6 @@ template <class OpTy,
 std::tuple<Value, Value> getMemoryBaseOffset(OpTy op) {
   Value ptr = op.getPtr();
 
-  if (isa<triton::StoreOp>(op)) {
-    // vector.scatter only supports 1D index vec.
-    mlir::Type type = getMemoryOpType(op);
-    if (!hasShape(type)) {
-      return std::make_tuple(nullptr, nullptr);
-    }
-    auto shape = getShape(type);
-    if (shape.size() != 1) {
-      return std::make_tuple(nullptr, nullptr);
-    }
-  }
-
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp)
     return std::make_tuple(nullptr, nullptr);
@@ -116,16 +104,17 @@ std::tuple<Value, Value> getMemoryBaseOffset(OpTy op) {
   Value offset = nullptr;
 
   if (auto splatOp = addPtrOp->getOperand(0).getDefiningOp<triton::SplatOp>()) {
-    basePtr = splatOp.getOperand();
-    offset = addPtrOp.getOperand(1);
-  } else if (auto splatOp =
-                 addPtrOp->getOperand(1).getDefiningOp<triton::SplatOp>()) {
-    basePtr = splatOp.getOperand();
-    offset = addPtrOp.getOperand(0);
+    if (isa<PointerType>(splatOp.getOperand().getType())) {
+      basePtr = splatOp.getOperand();
+      offset = addPtrOp.getOperand(1);
+    }
   }
 
-  if (!isa<PointerType>(basePtr.getType())) {
-    return std::make_tuple(nullptr, nullptr);
+  if (auto splatOp = addPtrOp->getOperand(1).getDefiningOp<triton::SplatOp>()) {
+    if (!basePtr && isa<PointerType>(splatOp.getOperand().getType())) {
+      basePtr = splatOp.getOperand();
+      offset = addPtrOp.getOperand(0);
+    }
   }
 
   return std::make_tuple(basePtr, offset);

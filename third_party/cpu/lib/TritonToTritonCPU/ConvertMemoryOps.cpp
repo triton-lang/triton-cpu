@@ -457,26 +457,40 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
     if (!basePtr || !offset)
       return failure();
 
-    auto pointeeType =
-        dyn_cast<PointerType>(basePtr.getType()).getPointeeType();
+    auto strides = computeStrides(shape);
+    int64_t numElems = vecTy.getNumElements();
+    Type memRefTy = MemRefType::get(shape.back(), vecTy.getElementType());
+    Value mask = storeOp.getMask()
+                     ? rewriter.getRemappedValue(storeOp.getMask())
+                     : nullptr;
 
-    auto scatterBase = rewriter.create<triton::cpu::PtrToMemRefOp>(
-        loc, MemRefType::get({}, pointeeType), basePtr);
-    auto scatterIndices = SmallVector<Value>();
-    auto scatterIndexVec = rewriter.getRemappedValue(offset);
+    for (int64_t idx = 0; idx < numElems; idx += shape.back()) {
+      auto indices = delinearize(idx, strides);
+      indices.pop_back();
 
-    Value scatterMask;
-    if (auto storeMask = storeOp.getMask()) {
-      scatterMask = rewriter.getRemappedValue(storeMask);
-    } else {
-      auto maskType = VectorType::get(shape, rewriter.getI1Type());
-      scatterMask = rewriter.create<arith::ConstantOp>(
-          loc, maskType, DenseElementsAttr::get(maskType, true));
+      auto val = rewriter.create<vector::ExtractOp>(loc, vals, indices);
+      auto indexVec = rewriter.create<vector::ExtractOp>(
+          loc, rewriter.getRemappedValue(offset), indices);
+      Value scatterMask;
+
+      if (mask) {
+        scatterMask = rewriter.create<vector::ExtractOp>(loc, mask, indices);
+      } else {
+        // Create a mask with all true values if no mask is provided.
+        auto maskType = VectorType::get({shape.back()}, rewriter.getI1Type());
+        scatterMask = rewriter.create<arith::ConstantOp>(
+            loc, maskType, DenseElementsAttr::get(maskType, true));
+      }
+
+      auto scatterBase = rewriter.create<triton::cpu::PtrToMemRefOp>(
+          loc, MemRefType::get({}, vecTy.getElementType()), basePtr);
+      auto scatterIndices = SmallVector<Value>();
+
+      rewriter.create<vector::ScatterOp>(loc, scatterBase, scatterIndices,
+                                         indexVec, scatterMask, val);
     }
 
-    auto scatterOp = rewriter.create<vector::ScatterOp>(
-        loc, scatterBase, scatterIndices, scatterIndexVec, scatterMask, vals);
-    rewriter.replaceOp(storeOp, scatterOp);
+    rewriter.eraseOp(storeOp);
     return success();
   }
 
