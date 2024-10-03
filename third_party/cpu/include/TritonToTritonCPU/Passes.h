@@ -2,6 +2,7 @@
 #define TRITONTOTRITONCPU_CONVERSION_PASSES_H
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -95,6 +96,18 @@ template <class OpTy,
 std::tuple<Value, Value> getMemoryBaseOffset(OpTy op) {
   Value ptr = op.getPtr();
 
+  if (isa<triton::StoreOp>(op)) {
+    // vector.scatter only supports 1D index vec.
+    mlir::Type type = getMemoryOpType(op);
+    if (!hasShape(type)) {
+      return std::make_tuple(nullptr, nullptr);
+    }
+    auto shape = getShape(type);
+    if (shape.size() != 1) {
+      return std::make_tuple(nullptr, nullptr);
+    }
+  }
+
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp)
     return std::make_tuple(nullptr, nullptr);
@@ -109,6 +122,10 @@ std::tuple<Value, Value> getMemoryBaseOffset(OpTy op) {
                  addPtrOp->getOperand(1).getDefiningOp<triton::SplatOp>()) {
     basePtr = splatOp.getOperand();
     offset = addPtrOp.getOperand(0);
+  }
+
+  if (!isa<PointerType>(basePtr.getType())) {
+    return std::make_tuple(nullptr, nullptr);
   }
 
   return std::make_tuple(basePtr, offset);
