@@ -124,7 +124,7 @@ def TTC_PrintOp : TTC_Op<"print", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
   let arguments = (ins
     StrAttr:$prefix,
     BoolAttr:$hex,
-    Variadic<AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>>:$val,
+    Variadic<AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector, AnyRankedOrUnrankedMemRef]>>:$val,
     DenseI32ArrayAttr:$isSigned
   );
 
