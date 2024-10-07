@@ -167,6 +167,7 @@ PAD_B_ONLY = True
 USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
 USE_GPU = False
+USE_BLOCK_POINTERS = False
 
 
 @triton.jit
@@ -216,6 +217,9 @@ def matmul_kernel(
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + (pid % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
+    if USE_BLOCK_POINTERS:
+        block_offset_m = pid_m * BLOCK_SIZE_M
+        block_offset_n = pid_n * BLOCK_SIZE_N
 
     # ----------------------------------------------------------
     # Create pointers for the first blocks of A and B.
@@ -329,6 +333,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K:
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
         num_threads=num_threads,  #
+        USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
     )
     return c
 
