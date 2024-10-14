@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -50,7 +51,9 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
                              TypedValue<Type> operand) {
   Location loc = op->getLoc();
   MLIRContext *ctx = op->getContext();
-  OpBuilder::InsertionGuard g(rewriter);
+
+  if (isa<MemRefType>(operand.getType()))
+    return operand;
 
   if (auto readOp =
           dyn_cast_or_null<vector::TransferReadOp>(operand.getDefiningOp())) {
@@ -62,6 +65,7 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
         getAsIndexOpFoldResult(ctx, strides));
   }
 
+  OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(op);
 
   auto vecTy = dyn_cast<VectorType>(operand.getType());
@@ -74,6 +78,73 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
       rewriter.create<vector::TransferWriteOp>(loc, operand, alloca, indices);
 
   return alloca;
+}
+
+// Helper to move accumulation buffer outside of GEMM reduction loop.
+// Returns new accumulation buffer or std::nullopt, otherwise.
+//
+// Rewrites the following pattern:
+//   %acc = ... vector<...>
+//   %0 = scf.for ... iter_args(%acc)
+//     %res = GEMM(%A, %B, %acc) -> vector<...>
+//     scf.yield %res
+//   consumer(%0)
+// into:
+//   %hoisted = ... memref<...>
+//   %unused = %scf.for ... iter_args(%acc)
+//     %res = GEMM(%A, %B, %acc)
+//     scf.yield %acc
+//   %0 = load(%hoisted) -> vector<...>
+//   consumer(%0)
+//
+// This rewrite should be used as a part of contraction to memref conversion.
+static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
+                                                    Operation *op,
+                                                    TypedValue<Type> operand) {
+  Location loc = op->getLoc();
+
+  // Expect the contraction op to still be in vector abstraction.
+  auto vecTy = dyn_cast<VectorType>(operand.getType());
+  if (!vecTy)
+    return std::nullopt;
+
+  // Check if there is any loop around the contraction and if the operand
+  // comes from loop's arguments.
+  auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+  BlockArgument blockArg = dyn_cast<BlockArgument>(operand);
+  if (!forOp || !blockArg)
+    return std::nullopt;
+
+  // The accumulation iter_arg can be safely moved outside the loop only
+  // for the following chain: iter_arg -> contraction -> yield
+  // and there are no other users.
+  Value res = op->getResults()[0];
+  if (!operand.hasOneUse() || !res.hasOneUse() ||
+      !isa<scf::YieldOp>(*res.getUsers().begin()))
+    return std::nullopt;
+
+  // Create a buffer outside the loop.
+  // In scf.for, iter_args are positioned after induction variable.
+  unsigned argIdx = blockArg.getArgNumber() - forOp.getNumInductionVars();
+  Value accBuf = getMemrefSource(rewriter, forOp, forOp.getInitArgs()[argIdx]);
+
+  // For simplicity, feed the iter_arg directly into loop yield terminator.
+  // Canonicalizer will folded them away later.
+  rewriter.replaceAllUsesWith(res, operand);
+
+  // Replace the corresponding loop result with the latest value read from the
+  // accumulation buffer.
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPointAfter(forOp);
+
+  Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  SmallVector<Value> indices(dyn_cast<MemRefType>(accBuf.getType()).getRank(),
+                             zeroIdx);
+  auto readOp =
+      rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
+  rewriter.replaceAllUsesWith(forOp.getResults()[argIdx], readOp.getResult());
+
+  return accBuf;
 }
 
 struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
@@ -95,7 +166,11 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
     SmallVector<Attribute> flags;
     Value lhsBuf = getMemrefSource(rewriter, contractOp, lhs);
     Value rhsBuf = getMemrefSource(rewriter, contractOp, rhs);
-    Value accBuf = getMemrefSource(rewriter, contractOp, acc);
+    std::optional<Value> hoistedAcc =
+        hoistAccumulationBuffer(rewriter, contractOp, acc);
+    Value accBuf =
+        hoistedAcc ? *hoistedAcc : getMemrefSource(rewriter, contractOp, acc);
+
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
     SmallVector<Value> outputs{nullptr};
     auto brgemmInfo =
@@ -110,13 +185,19 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
         rewriter, contractOp, ValueRange{lhsBuf, rhsBuf, accBuf}, *brgemmInfo,
         flags);
 
-    Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    SmallVector<Value> indices(dyn_cast<MemRefType>(accBuf.getType()).getRank(),
-                               zeroIdx);
-    auto readOp =
-        rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
-
-    rewriter.replaceOp(contractOp, readOp);
+    if (hoistedAcc) {
+      // Hoisting already updated all uses correctly.
+      // Only remove the original contraction.
+      rewriter.eraseOp(contractOp);
+    } else {
+      // Load back the result to bring it back to vector semantics.
+      Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      SmallVector<Value> indices(
+          dyn_cast<MemRefType>(accBuf.getType()).getRank(), zeroIdx);
+      auto readOp =
+          rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
+      rewriter.replaceOp(contractOp, readOp);
+    }
 
     return success();
   }
