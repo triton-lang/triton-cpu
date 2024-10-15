@@ -128,7 +128,7 @@ bool isDotOp(vector::ContractionOp op) {
 }
 
 // Check if input and output types can be handled by AMX (possibly, using
-// additional casts for input/output). Returns tru if AMX usage is possible.
+// additional casts for input/output). Returns true if AMX usage is possible.
 // In this case, tile element type fields of the candidate structure are
 // filled with actual types to be used in lowering.
 bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -175,7 +175,8 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
     return false;
   }
 
-  // Try to find common input type.
+  // Try to find a common input type. There is currently no support
+  // for FP8 types, so promote them to FP16/BF16.
   Type commonInputElemTy;
   if (lhsElemTy.getIntOrFloatBitWidth() == 16) {
     commonInputElemTy = lhsElemTy;
@@ -260,7 +261,7 @@ bool isLoopCarriedAcc(Value acc) {
 }
 
 // Return a value that holds the resulting loop carried accumulator value.
-// It's one of ForOp results.
+// It's one of ForOp's results.
 Value getResValueForLoopCarriedAcc(vector::ContractionOp op) {
   Value updAcc = op.getResult();
   auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
@@ -386,8 +387,8 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
 }
 
 // Cast vector to a specified element type using ext or trunc
-// operations. Return the originl value if it already matches
-// required element type.
+// operations. Return the original value if it already matches
+// the required element type.
 Value maybeCast(Location loc, Value val, Type dstElemTy,
                 PatternRewriter &rewriter) {
   VectorType srcTy = cast<VectorType>(val.getType());
@@ -479,7 +480,7 @@ void interleaveAndStore(Location loc, Value val, Value buf,
 // use it instead. Return empty buffer if source value is all zeros and
 // skipForZeros is set.
 //
-// If interleave flag is set, then pre-pack RHS before sotring. See
+// If interleave flag is set, then pre-pack RHS before store. See
 // interleaveAndStore for more details.
 AmxBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
                               bool skipForZeros, bool readOnly,
