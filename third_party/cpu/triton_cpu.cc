@@ -8,11 +8,13 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/AMX/AMXToLLVMIRTranslation.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/TargetSelect.h"
 
@@ -86,6 +88,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
                                       bool useHorizontalSum) {
     pm.addPass(mlir::triton::cpu::createConvertDotProduct(useHorizontalSum));
   });
+  m.def("add_loop_invariant_code_motion", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+  });
+  m.def("add_convert_dot_to_onednn", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToOneDNN());
+  });
   m.def("add_convert_dot_to_amx", [](mlir::PassManager &pm, bool convertInt8,
                                      bool convertFp16, bool convertBf16) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
@@ -136,6 +144,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   });
   m.def("add_debug_ops_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createDebugOpsToLLVMPass());
+  });
+  m.def("add_onednn_ops_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createOneDNNOpsToLLVMPass());
+  });
+  m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
   });
   m.def("add_vector_to_llvmir",
         [](mlir::PassManager &pm, bool reassoc_fp_reduction) {

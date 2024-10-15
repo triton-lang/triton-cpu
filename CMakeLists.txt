@@ -16,6 +16,7 @@ project(triton CXX C)
 include(CTest)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+set(DNNLROOT "/home/jovyan/intel/oneapi/dnnl/2024.1")
 
 # Options
 option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
@@ -150,12 +151,12 @@ else()
 endif()
 
 include_directories(".")
-include_directories(${MLIR_INCLUDE_DIRS})
-include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include) # Tablegen'd files
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
-include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
+include_directories(SYSTEM ${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
 add_subdirectory(include)

@@ -27,6 +27,10 @@ include_dirs = []
 library_dirs = [_triton_C_dir]
 libraries = ["stdc++"]
 
+# include_dirs = [os.path.join(_dirname, "include")]
+# library_dirs = [os.path.join(_dirname, "lib"), _triton_C_dir]
+# libraries = ["stdc++", "TritonCPURuntime"]
+
 # Skip non-existent paths
 sys_include_dir = os.path.join(_dirname, "include")
 if os.path.exists(sys_include_dir):
@@ -72,10 +76,13 @@ class CPUUtils(object):
         pass
 
     def load_binary(self, name, kernel, shared_mem, device):
+        # lib_path = "/home/jovyan/triton-cpu/libkernel.so"
         with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
+            # with open(lib_path, "wb") as f:
             f.write(kernel)
             f.flush()
             import ctypes
+            print("load library: ", f.name)
             lib = ctypes.cdll.LoadLibrary(f.name)
             fn_ptr = getattr(lib, name)
             fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value

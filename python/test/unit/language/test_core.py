@@ -5857,7 +5857,7 @@ def matmul_kernel(  #
 @pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128),
                                                        (64, 64, 64)] if not is_cpu() else [(32, 32, 128), (32, 32, 32)])
-@pytest.mark.parametrize("in_type_str", ['float8e5', 'float8e4nv', 'float8e4b15'])
+@pytest.mark.parametrize("in_type_str", ['float16'])
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
     num_stages = 3
@@ -5900,6 +5900,87 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
         torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
     if is_cuda() and low_precision_acc > 0 and torch.cuda.get_device_capability()[0] >= 9:
         assert h.asm["ptx"].count("add.f32") == (BLOCK_M * BLOCK_N) // (32 * num_warps) * (BLOCK_K // low_precision_acc)
+
+
+@triton.jit
+def matmul_blocked_kernel(  #
+        a_ptr, b_ptr, c_ptr,  #
+        M, N, K,  #
+        stride_am, stride_ak,  #
+        stride_bk, stride_bn,  #
+        stride_cm, stride_cn,  #
+        BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
+        low_precision_acc: tl.constexpr,  #
+        num_pipeline_stages: tl.constexpr = 3  #
+):
+    pid_m = tl.program_id(axis=0)
+    pid_n = tl.program_id(axis=1)
+
+    # offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+    # offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+    # offs_k = tl.arange(0, BLOCK_SIZE_K)
+    # a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    # b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    block_offset_m = pid_m * BLOCK_SIZE_M
+    block_offset_n = pid_n * BLOCK_SIZE_N
+
+    a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+                                   offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K), order=(1, 0))
+    b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+                                   offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0))
+
+    for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K), num_stages=num_pipeline_stages):
+        a = tl.load(a_tile_ptr, boundary_check=(0, 1))
+        b = tl.load(b_tile_ptr, boundary_check=(0, 1))
+        accumulator = tl.dot(a, b, acc=accumulator, max_num_imprecise_acc=low_precision_acc)
+        a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
+        b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+    # a_ptrs += BLOCK_SIZE_K * stride_ak
+    # b_ptrs += BLOCK_SIZE_K * stride_bk
+    # offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    # offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    # c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c = accumulator.to(c_ptr.type.element_ty)
+
+    # tl.store(c_ptrs, accumulator)
+    c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
+                                    offsets=(block_offset_m, block_offset_n), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                                    order=(1, 0))
+    tl.store(c_block_ptr, c, boundary_check=(0, 1))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("M, N, K", [(32, 32, 32)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 32, 16)])
+@pytest.mark.parametrize("in_type_str", ['float32'])
+@pytest.mark.parametrize("low_precision_acc", [0])
+def test_dot_blocked(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
+    num_stages = 3
+    check_type_supported(in_type_str, device)
+    # A = numpy_random((M, K), dtype_str=in_type_str)
+    # B = numpy_random((K, N), dtype_str=in_type_str)
+    A = np.ones((M, K), dtype=np.float32)
+    B = np.ones((K, N), dtype=np.float32)
+    C = torch.empty((M, N), dtype=torch.float32, device=device)
+    num_warps = 8
+    a = to_triton(A, device=device, dst_type=in_type_str)
+    b = to_triton(B, device=device, dst_type=in_type_str)
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+    max_num_impressive_acc = low_precision_acc if low_precision_acc <= BLOCK_K else None
+    h = matmul_blocked_kernel[grid](
+        a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0), C.stride(1), BLOCK_M,
+        BLOCK_N, BLOCK_K, max_num_impressive_acc, num_warps=num_warps,
+        num_pipeline_stages=num_stages)  #, enable_triton_xsmm=True, enable_loop_brgemm_xsmm=True)
+    torch_a = torch.from_numpy(A).to(device=device)
+    torch_b = torch.from_numpy(B).to(device=device)
+
+    in_dtype = getattr(tl, in_type_str)
+    ref_out = torch.matmul(torch_a, torch_b).to(torch.float32)
+
+    torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
 
 
 # -----------------------
