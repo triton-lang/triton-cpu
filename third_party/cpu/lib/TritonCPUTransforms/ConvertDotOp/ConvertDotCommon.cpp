@@ -29,7 +29,8 @@ bool isLoopCarriedAcc(Value acc) {
     return false;
   }
 
-  blockArg.getArgNumber();
+  // We don't need this I guess
+  // blockArg.getArgNumber();
 
   Value updAcc = acc.getUsers().begin()->getResult(0);
   if (!updAcc.hasOneUse()) {
@@ -248,6 +249,15 @@ Value shiftIndex(Location loc, Value index, int64_t offs,
 
   Value offsVal = rewriter.create<arith::ConstantIndexOp>(loc, offs);
   return rewriter.create<arith::AddIOp>(loc, index.getType(), index, offsVal);
+}
+
+MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
+                           PatternRewriter &rewriter) {
+  LDBG("Storing vector to a temporary buffer: " << val);
+  auto vecTy = cast<VectorType>(val.getType());
+  MemBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
+  rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
+  return buf;
 }
 
 } // namespace cpu

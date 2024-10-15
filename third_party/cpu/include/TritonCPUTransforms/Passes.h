@@ -40,6 +40,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
+std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToOneDNN();
+
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 

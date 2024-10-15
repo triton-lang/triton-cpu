@@ -28,6 +28,8 @@ struct MemBuffer {
   // encoding.
   bool vnni = false;
 
+  Value origTritonBlockPtr = nullptr;
+
   bool empty() const { return !memRef; }
 };
 
@@ -80,6 +82,9 @@ Value shiftIndex(Location loc, Value index, int64_t offs,
 // Check if val is a result of a sequence that performs VNNI decoding.
 // If it is, then return the original encoded value. Otherwise, return nullptr.
 Value getVnniSrc(Value val);
+
+MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
+                           PatternRewriter &rewriter);
 
 } // namespace cpu
 } // namespace triton

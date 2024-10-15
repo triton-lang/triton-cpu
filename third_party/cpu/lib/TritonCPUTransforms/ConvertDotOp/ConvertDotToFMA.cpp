@@ -124,15 +124,6 @@ bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate) {
   return true;
 }
 
-MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
-                           PatternRewriter &rewriter) {
-  LDBG("Storing vector to a temporary buffer: " << val);
-  auto vecTy = cast<VectorType>(val.getType());
-  MemBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
-  rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
-  return buf;
-}
-
 SmallVector<Value> shiftIndices(Location loc, ArrayRef<Value> indices,
                                 bool transposed, int64_t m, int64_t n,
                                 PatternRewriter &rewriter) {
