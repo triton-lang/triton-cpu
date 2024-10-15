@@ -24,7 +24,7 @@ except AttributeError:
 
 include_dirs = [os.path.join(_dirname, "include")]
 library_dirs = [os.path.join(_dirname, "lib"), _triton_C_dir]
-libraries = ["stdc++"]
+libraries = ["stdc++", "TritonCPURuntime"]
 
 
 def compile_module_from_src(src, name):
@@ -62,10 +62,13 @@ class CPUUtils(object):
         pass
 
     def load_binary(self, name, kernel, shared_mem, device):
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
+        lib_path = "/home/jovyan/triton-cpu/libkernel.so"
+        # with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
+        with open(lib_path, "wb") as f:
             f.write(kernel)
             f.flush()
             import ctypes
+            print("load library: ", f.name)
             lib = ctypes.cdll.LoadLibrary(f.name)
             fn_ptr = getattr(lib, name)
             fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value
