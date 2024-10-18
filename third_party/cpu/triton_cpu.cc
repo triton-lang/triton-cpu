@@ -1,6 +1,7 @@
 #include "ScalarizePass/ScalarizeInterfaceImpl.h"
 #include "TritonCPUToLLVM/Passes.h"
 #include "TritonCPUTransforms/Passes.h"
+#include "TritonRaiseBlockPointer/Passes.h"
 #include "TritonToTritonCPU/Passes.h"
 #include "Xsmm/Passes.h"
 
@@ -38,6 +39,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
       .value("libsleef", cpu::VecLib::Sleef)
       .value("libmvec", cpu::VecLib::Mvec);
 
+  m.def("add_raise_block_pointer", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createTritonRaiseBlockPointer());
+  });
   m.def("add_scalarize", [](mlir::PassManager &pm, bool skip_gather_scatter) {
     pm.addPass(
         mlir::triton::cpu::createScalarizeUsingForOpPass(skip_gather_scatter));

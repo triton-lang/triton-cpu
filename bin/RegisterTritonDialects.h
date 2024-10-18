@@ -29,6 +29,8 @@
 #include "triton/Target/LLVMIR/Passes.h"
 
 #include "mlir/Dialect/AMX/AMXDialect.h"
+#include "cpu/include/TritonRaiseBlockPointer/Passes.h"
+
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/InitAllPasses.h"
@@ -81,6 +83,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::cpu::registerTritonCPUToLLVMPasses();
   mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
   mlir::triton::cpu::registerTritonCPUXsmmPasses();
+
+  mlir::triton::cpu::registerTritonRaiseBlockPointerPass();
 
   // TODO: register Triton & TritonGPU passes
   registry
