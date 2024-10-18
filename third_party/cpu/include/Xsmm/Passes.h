@@ -48,6 +48,14 @@ namespace vector {
 class VectorDialect;
 } // namespace vector
 
+namespace triton {
+class TritonDialect;
+
+namespace cpu {
+class TritonCPUDialect;
+} // namespace cpu
+} // namespace triton
+
 } // namespace mlir
 
 namespace mlir {

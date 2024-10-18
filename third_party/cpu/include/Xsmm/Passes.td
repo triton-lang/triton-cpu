@@ -14,4 +14,16 @@ def ConvertVectorToXsmm : Pass<"triton-cpu-convert-vector-to-xsmm", "mlir::Modul
 			                    "LLVM::LLVMDialect"];
 }
 
+def ConvertTritonToXsmm : Pass<"triton-cpu-convert-triton-to-xsmm", "mlir::ModuleOp"> {
+ let summary = "Convert triton to xsmm";
+ let description = [{
+   Convert triton operations to XSMM operations.
+ }];
+ let dependentDialects = ["func::FuncDialect",
+                          "memref::MemRefDialect",
+                          "triton::TritonDialect",
+                          "triton::cpu::TritonCPUDialect",
+			                    "LLVM::LLVMDialect"];
+}
+
 #endif

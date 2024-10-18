@@ -108,7 +108,7 @@ SmallVector<Value> getOperands(OpBuilder &builder, Location loc,
                                ValueRange operands, IntegerAttr dataTypeAttr);
 
 FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
-                                         vector::ContractionOp contractOp,
+                                         Operation *contractOp,
                                          SmallVector<Value> &inputs,
                                          SmallVector<Value> &output,
                                          ArrayRef<AffineMap> indexingMap);
@@ -118,11 +118,10 @@ makeMinorDimensionsInnerMost(RewriterBase &rewriter,
                              vector::ContractionOp contractOp, unsigned m,
                              unsigned n, unsigned k, IntegerAttr type);
 std::optional<unsigned> getPosInCodomain(unsigned dim, Value operand,
-                                         vector::ContractionOp contractOp,
-                                         AffineMap map);
+                                         Operation *contractOp, AffineMap map);
 FailureOr<xsmm::BrgemmInfo>
-checkAccess(PatternRewriter &rewriter, vector::ContractionOp contractOp,
-            unsigned m, unsigned n, SmallVector<unsigned, 2> kVector,
+checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
+            unsigned n, SmallVector<unsigned, 2> kVector,
             std::optional<unsigned> batchPos, SmallVector<Value> inputs,
             ArrayRef<AffineMap> indexingMap);
 
