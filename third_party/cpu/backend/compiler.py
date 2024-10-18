@@ -48,6 +48,7 @@ class CPUOptions:
     enable_fast_math: bool = True
     enable_vector_xsmm: bool = False
     enable_triton_xsmm: bool = False
+    enable_raise_block_pointer: bool = False
     vec_lib: Optional[str] = 'libsleef'
     # TODO: Try to enable it.
     sanitize_overflow: bool = False
@@ -107,6 +108,8 @@ class CPUBackend(BaseBackend):
             args["enable_vector_xsmm"] = os.getenv("TRITON_CPU_VECTOR_XSMM", "0") != "0"
         if "enable_triton_xsmm" not in args:
             args["enable_triton_xsmm"] = os.getenv("TRITON_CPU_TRITON_XSMM", "0") != "0"
+        if "enable_raise_block_pointer" not in args:
+            args["enable_raise_block_pointer"] = os.getenv("TRITON_CPU_RAISE_BLOCK_POINTER", "0") != "0"
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -143,6 +146,8 @@ class CPUBackend(BaseBackend):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        if opt.enable_raise_block_pointer:
+            cpu.passes.ttcpuir.add_raise_block_pointer(pm)
         if opt.enable_triton_xsmm:
             cpu.passes.ttcpuir.add_convert_triton_to_xsmm(pm)
             passes.common.add_canonicalizer(pm)

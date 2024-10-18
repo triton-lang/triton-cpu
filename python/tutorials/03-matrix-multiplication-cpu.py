@@ -165,15 +165,22 @@ USE_BLOCK_POINTERS = False
 @triton.jit
 def matmul_kernel(
         # Pointers to matrices
-        a_ptr, b_ptr, c_ptr,
+        a_ptr, # arg0
+        b_ptr, # arg1
+        c_ptr, # arg2
         # Matrix dimensions
-        M, N, K,
+        M, # arg3
+        N, # arg4
+        K, # arg5
         # The stride variables represent how much to increase the ptr by when moving by 1
         # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
         # by to get the element one row down (A has M rows).
-        stride_am, stride_ak,  #
-        stride_bk, stride_bn,  #
-        stride_cm, stride_cn,
+        stride_am, # arg6
+        stride_ak, # arg7
+        stride_bk, # arg8
+        stride_bn, # arg9
+        stride_cm, # arg11
+        stride_cn, # arg12
         # Meta-parameters
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
