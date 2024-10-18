@@ -46,7 +46,8 @@ class CPUOptions:
     enable_fp_fusion: bool = True
     max_num_imprecise_acc_default: int = 0
     enable_fast_math: bool = True
-    enable_xsmm: bool = False
+    enable_vector_xsmm: bool = False
+    enable_triton_xsmm: bool = False
     vec_lib: Optional[str] = 'libsleef'
     # TODO: Try to enable it.
     sanitize_overflow: bool = False
@@ -102,8 +103,10 @@ class CPUBackend(BaseBackend):
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CPUOptions.supported_fp8_dtypes)
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
-        if "enable_xsmm" not in args:
-            args["enable_xsmm"] = os.getenv("TRITON_CPU_XSMM", "0") != "0"
+        if "enable_vector_xsmm" not in args:
+            args["enable_vector_xsmm"] = os.getenv("TRITON_CPU_VECTOR_XSMM", "0") != "0"
+        if "enable_triton_xsmm" not in args:
+            args["enable_triton_xsmm"] = os.getenv("TRITON_CPU_TRITON_XSMM", "0") != "0"
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -140,6 +143,9 @@ class CPUBackend(BaseBackend):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        if opt.enable_triton_xsmm:
+            cpu.passes.ttcpuir.add_convert_triton_to_xsmm(pm)
+            passes.common.add_canonicalizer(pm)
         cpu.passes.ttcpuir.add_scalarize(pm, True)
         cpu.passes.ttcpuir.add_convert_memory_ops(pm, True)
         cpu.passes.ttcpuir.add_convert_ptr_ops(pm)
@@ -207,7 +213,7 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        if options.enable_xsmm:
+        if options.enable_vector_xsmm:
             cpu.passes.ttcpuir.add_convert_vector_to_xsmm(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
         cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
@@ -275,7 +281,7 @@ class CPUBackend(BaseBackend):
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
-            if options.enable_xsmm:
+            if options.enable_vector_xsmm or options.enable_triton_xsmm:
                 libs.extend(["xsmm", "TritonCPUXsmmRuntime"])
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)
             with open(so, "rb") as f:

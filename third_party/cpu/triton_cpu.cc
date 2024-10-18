@@ -10,6 +10,7 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
@@ -172,6 +173,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
   });
+  m.def("add_convert_triton_to_xsmm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertTritonToXsmm());
+  });
 }
 
 void init_triton_cpu(py::module &&m) {
@@ -200,6 +204,7 @@ void init_triton_cpu(py::module &&m) {
                     mlir::vector::VectorDialect>();
     mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
     mlir::registerAMXDialectTranslation(registry);
+    mlir::func::registerAllExtensions(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

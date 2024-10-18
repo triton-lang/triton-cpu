@@ -1,4 +1,7 @@
+get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
+
 add_triton_library(TritonCPUXsmm
+    ConvertTritonToXsmm.cpp
     ConvertVectorToXsmm.cpp
     VnniUtils.cpp
     ValueUtils.cpp
@@ -11,6 +14,7 @@ add_triton_library(TritonCPUXsmm
     xsmm
 
     LINK_LIBS PUBLIC
+    ${extension_libs}
     MLIRIR
     MLIRPass
     MLIRVectorDialect
@@ -19,6 +23,7 @@ add_triton_library(TritonCPUXsmm
     MLIRLLVMDialect
     MLIRInferTypeOpInterface
     MLIRLinalgUtils
+    TritonCPUIR
     xsmm
 )
 

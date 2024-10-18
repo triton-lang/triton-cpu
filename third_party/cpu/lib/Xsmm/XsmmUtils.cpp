@@ -85,7 +85,7 @@ struct HasStaticStrides {
 
 // Structural matcher.
 static FailureOr<ContractionDimensions>
-checkStructure(vector::ContractionOp contractOp, SmallVector<Value> &inputs,
+checkStructure(Operation *contractOp, SmallVector<Value> &inputs,
                SmallVector<Value> &outputs, ArrayRef<AffineMap> indexingMap) {
   if (!HasStaticShape()(inputs[0], inputs[0].getDefiningOp()) ||
       !HasStaticShape()(inputs[1], inputs[1].getDefiningOp()) ||
@@ -104,23 +104,21 @@ checkStructure(vector::ContractionOp contractOp, SmallVector<Value> &inputs,
 
 // Return the position of `dim` in the codomain of `operand`.
 std::optional<unsigned> getPosInCodomain(unsigned dim, Value operand,
-                                         vector::ContractionOp contractOp,
-                                         AffineMap map) {
-  return map.getResultPosition(getAffineDimExpr(dim, contractOp.getContext()));
+                                         Operation *contractOp, AffineMap map) {
+  return map.getResultPosition(getAffineDimExpr(dim, contractOp->getContext()));
 }
 
 static SmallVector<int64_t, 4>
-createFlatListOfOperandStaticDims(vector::ContractionOp contractOp) {
+createFlatListOfOperandStaticDims(Operation *contractOp) {
   SmallVector<int64_t, 4> res;
-  for (OpOperand &opOperand : contractOp.getOperation()->getOpOperands())
+  for (OpOperand &opOperand : contractOp->getOpOperands())
     llvm::append_range(
-        res, dyn_cast<VectorType>(opOperand.get().getType()).getShape());
+        res, dyn_cast<ShapedType>(opOperand.get().getType()).getShape());
   return res;
 }
 
 static SmallVector<int64_t, 4>
-computeStaticLoopSizes(vector::ContractionOp contractOp,
-                       ArrayRef<AffineMap> maps) {
+computeStaticLoopSizes(Operation *contractOp, ArrayRef<AffineMap> maps) {
   AffineMap map = concatAffineMaps(maps);
   unsigned numDims = map.getNumDims(), numRes = map.getNumResults();
   SmallVector<int64_t, 4> allShapeSizes =
@@ -159,21 +157,22 @@ getVNNIStaticStrides(MemRefType valueType) {
 
 // Access matcher.
 FailureOr<xsmm::BrgemmInfo>
-checkAccess(PatternRewriter &rewriter, vector::ContractionOp contractOp,
-            unsigned m, unsigned n, SmallVector<unsigned, 2> kVector,
+checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
+            unsigned n, SmallVector<unsigned, 2> kVector,
             std::optional<unsigned> batchPos, SmallVector<Value> inputs,
             ArrayRef<AffineMap> indexingMap) {
+  MLIRContext *ctx = contractOp->getContext();
+
   Value operandA = inputs[0];
   Value operandB = inputs[1];
   Value operandC = inputs[2];
 
   unsigned k;
-  if (*xsmm::utils::getPosInCodomain(
-          kVector[0], contractOp->getOpOperand(1).get(), contractOp,
-          contractOp.getIndexingMapsArray()[1]) <
-          *xsmm::utils::getPosInCodomain(
-              n, contractOp->getOpOperand(1).get(), contractOp,
-              contractOp.getIndexingMapsArray()[1]) ||
+  if (*xsmm::utils::getPosInCodomain(kVector[0],
+                                     contractOp->getOpOperand(1).get(),
+                                     contractOp, indexingMap[1]) <
+          *xsmm::utils::getPosInCodomain(n, contractOp->getOpOperand(1).get(),
+                                         contractOp, indexingMap[1]) ||
       kVector.size() == 1) {
     k = kVector[0];
   } else if (kVector.size() > 1) {
@@ -192,8 +191,7 @@ checkAccess(PatternRewriter &rewriter, vector::ContractionOp contractOp,
     }
     auto dataType = xsmm::utils::getDataType(rewriter, operand.getType());
     FailureOr<SmallVector<int64_t>> stridesOnOperand;
-    if (dataType ==
-            DataTypeAttr::get(contractOp.getContext(), xsmm::DataType::BF16) &&
+    if (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
         operandIndex == 1) {
       stridesOnOperand =
           getVNNIStaticStrides(dyn_cast<MemRefType>(operand.getType()));
@@ -201,17 +199,14 @@ checkAccess(PatternRewriter &rewriter, vector::ContractionOp contractOp,
       stridesOnOperand = mlir::utils::getStaticStrides(operand);
     }
     if (failed(stridesOnOperand) ||
-        (dataType ==
-             DataTypeAttr::get(contractOp.getContext(), xsmm::DataType::BF16) &&
+        (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
          operandIndex == 0 &&
          (*stridesOnOperand)[*minorDimPosInCodomain] != 2) ||
-        ((dataType != DataTypeAttr::get(contractOp.getContext(),
-                                        xsmm::DataType::BF16) &&
+        ((dataType != DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
           (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
       return failure();
     }
-    if (dataType ==
-            DataTypeAttr::get(contractOp.getContext(), xsmm::DataType::BF16) &&
+    if (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
         operandIndex == 1) {
       return (*stridesOnOperand)[*majorDimPosInCodomain + 1];
     } else {
@@ -298,7 +293,7 @@ checkAccess(PatternRewriter &rewriter, vector::ContractionOp contractOp,
 // minor dimension for C, n
 // is 1.
 FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
-                                         vector::ContractionOp contractOp,
+                                         Operation *contractOp,
                                          SmallVector<Value> &inputs,
                                          SmallVector<Value> &output,
                                          ArrayRef<AffineMap> indexingMap) {
