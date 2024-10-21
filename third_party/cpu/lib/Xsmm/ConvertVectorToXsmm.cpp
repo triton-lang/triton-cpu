@@ -55,6 +55,9 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
   if (isa<MemRefType>(operand.getType()))
     return operand;
 
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPoint(op);
+
   if (auto readOp =
           dyn_cast_or_null<vector::TransferReadOp>(operand.getDefiningOp())) {
     VectorType vecTy = readOp.getVectorType();
@@ -64,9 +67,6 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
         getAsIndexOpFoldResult(ctx, vecTy.getShape()),
         getAsIndexOpFoldResult(ctx, strides));
   }
-
-  OpBuilder::InsertionGuard g(rewriter);
-  rewriter.setInsertionPoint(op);
 
   auto vecTy = dyn_cast<VectorType>(operand.getType());
   assert(vecTy && "Expect vector type operand");
@@ -84,14 +84,16 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
 // Returns new accumulation buffer or std::nullopt, otherwise.
 //
 // Rewrites the following pattern:
-//   %acc = ... vector<...>
-//   %0 = scf.for ... iter_args(%acc)
+//   %init = ... vector<...>
+//   %0 = scf.for ... iter_args(%acc = %init)
 //     %res = GEMM(%A, %B, %acc) -> vector<...>
 //     scf.yield %res
 //   consumer(%0)
 // into:
+//   %init = ... vector<...>
 //   %hoisted = ... memref<...>
-//   %unused = %scf.for ... iter_args(%acc)
+//   store %init, %hoisted
+//   %unused = %scf.for ... iter_args(%acc = %init)
 //     %res = GEMM(%A, %B, %acc)
 //     scf.yield %acc
 //   %0 = load(%hoisted) -> vector<...>
@@ -114,6 +116,9 @@ static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
   BlockArgument blockArg = dyn_cast<BlockArgument>(operand);
   if (!forOp || !blockArg)
     return std::nullopt;
+  OpOperand *loopArg = forOp.getTiedLoopInit(blockArg);
+  if (!loopArg)
+    return std::nullopt;
 
   // The accumulation iter_arg can be safely moved outside the loop only
   // for the following chain: iter_arg -> contraction -> yield
@@ -124,9 +129,7 @@ static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
     return std::nullopt;
 
   // Create a buffer outside the loop.
-  // In scf.for, iter_args are positioned after induction variable.
-  unsigned argIdx = blockArg.getArgNumber() - forOp.getNumInductionVars();
-  Value accBuf = getMemrefSource(rewriter, forOp, forOp.getInitArgs()[argIdx]);
+  Value accBuf = getMemrefSource(rewriter, forOp, loopArg->get());
 
   // For simplicity, feed the iter_arg directly into loop yield terminator.
   // Canonicalizer will folded them away later.
@@ -142,7 +145,8 @@ static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
                              zeroIdx);
   auto readOp =
       rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
-  rewriter.replaceAllUsesWith(forOp.getResults()[argIdx], readOp.getResult());
+  rewriter.replaceAllUsesWith(forOp.getTiedLoopResult(blockArg),
+                              readOp.getResult());
 
   return accBuf;
 }
