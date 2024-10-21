@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/Operation.h"
@@ -105,6 +106,72 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
   return alloca;
 }
 
+// Helper to move accumulation buffer outside of GEMM reduction loop.
+// Returns new accumulation buffer or std::nullopt, otherwise.
+//
+// Rewrites the following pattern:
+//   %init = ... tensor<...>
+//   %0 = scf.for ... iter_args(%acc = %init)
+//     %res = GEMM(%A, %B, %acc) -> tensor<...>
+//     scf.yield %res
+//   consumer(%0)
+// into:
+//   %init = ... tensor<...>
+//   %hoisted = ... memref<...>
+//   store %init, %hoisted
+//   %unused = %scf.for ... iter_args(%acc = %init)
+//     %res = GEMM(%A, %B, %acc)
+//     scf.yield %acc
+//   %0 = load(%hoisted) -> tensor<...>
+//   consumer(%0)
+//
+// This rewrite should be used as a part of contraction to memref conversion.
+static std::optional<Value>
+hoistAccumulationBuffer(PatternRewriter &rewriter, Operation *op,
+                        TypedValue<RankedTensorType> operand,
+                        ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis) {
+  Location loc = op->getLoc();
+
+  // Check if there is any loop around the contraction and if the operand
+  // comes from loop's arguments.
+  auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+  BlockArgument blockArg = dyn_cast<BlockArgument>(operand);
+  if (!forOp || !blockArg)
+    return std::nullopt;
+  OpOperand *loopArg = forOp.getTiedLoopInit(blockArg);
+  if (!loopArg)
+    return std::nullopt;
+
+  // The accumulation iter_arg can be safely moved outside the loop only
+  // for the following chain: iter_arg -> contraction -> yield
+  // and there are no other users.
+  Value res = op->getResults()[0];
+  if (!operand.hasOneUse() || !res.hasOneUse() ||
+      !isa<scf::YieldOp>(*res.getUsers().begin()))
+    return std::nullopt;
+
+  // Create a buffer outside the loop.
+  Value accBuf = getMemrefSource(
+      rewriter, forOp, dyn_cast<TypedValue<RankedTensorType>>(loopArg->get()),
+      shapeAnalysis);
+
+  // For simplicity, feed the iter_arg directly into loop yield terminator.
+  // Canonicalizer will folded them away later.
+  rewriter.replaceAllUsesWith(res, operand);
+
+  // Replace the corresponding loop result with the latest value read from the
+  // accumulation buffer.
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPointAfter(forOp);
+
+  auto loadOp =
+      rewriter.create<triton::cpu::LoadOp>(loc, operand.getType(), accBuf);
+  rewriter.replaceAllUsesWith(forOp.getTiedLoopResult(blockArg),
+                              loadOp.getResult());
+
+  return accBuf;
+}
+
 struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -147,7 +214,11 @@ struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
     SmallVector<Attribute> flags;
     Value lhsBuf = getMemrefSource(rewriter, dotOp, lhs, shapeAnalysis);
     Value rhsBuf = getMemrefSource(rewriter, dotOp, rhs, shapeAnalysis);
-    Value accBuf = getMemrefSource(rewriter, dotOp, acc, shapeAnalysis);
+    std::optional<Value> hoistedAcc =
+        hoistAccumulationBuffer(rewriter, dotOp, acc, shapeAnalysis);
+    Value accBuf = hoistedAcc
+                       ? *hoistedAcc
+                       : getMemrefSource(rewriter, dotOp, acc, shapeAnalysis);
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
     SmallVector<Value> outputs{nullptr};
 
@@ -161,10 +232,17 @@ struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
     auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(
         rewriter, dotOp, ValueRange{lhsBuf, rhsBuf, accBuf}, *brgemmInfo,
         flags);
-    auto loadOp =
-        rewriter.create<triton::cpu::LoadOp>(loc, res.getType(), accBuf);
 
-    rewriter.replaceOp(dotOp, loadOp);
+    if (hoistedAcc) {
+      // Hoisting already updated all uses correctly.
+      // Only remove the original contraction.
+      rewriter.eraseOp(dotOp);
+    } else {
+      // Load back the result to bring it back to tensor semantics.
+      auto loadOp =
+          rewriter.create<triton::cpu::LoadOp>(loc, res.getType(), accBuf);
+      rewriter.replaceOp(dotOp, loadOp);
+    }
 
     return success();
   }
