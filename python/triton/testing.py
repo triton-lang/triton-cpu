@@ -171,9 +171,9 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     import torch
 
     if device_type == 'cpu':
-        di = runtime.driver.active.get_device_interface()
+        di = CPUDeviceInterface()
     else:
-        device_type = 'cpu'
+        di = runtime.driver.active.get_device_interface(device_type)
 
     fn()
     di.synchronize()
