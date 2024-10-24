@@ -152,8 +152,7 @@ class Autotuner(KernelInterface):
             self.post_hook(args, exception=None)
 
         try:
-            device = driver.active.get_current_target().backend
-            return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8), device_type=device)
+            return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure):
             return [float("inf"), float("inf"), float("inf")]
 
