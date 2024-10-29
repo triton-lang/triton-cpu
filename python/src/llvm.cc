@@ -455,10 +455,9 @@ void init_triton_llvm(py::module &&m) {
                 "lineno: " + std::to_string(error.getLineNo()));
           }
           auto triple = getDefaultTargerOrProcessTriple();
-          res =
-              translateLLVMIRToASM(*module, triple,
-                                   llvm::sys::getHostCPUName().str(), "", {},
-                                   enable_fp_fusion, false, enable_fast_math);
+          res = translateLLVMIRToASM(*module, triple,
+                                     llvm::sys::getHostCPUName().str(), "", {},
+                                     enable_fp_fusion, false, enable_fast_math);
         }
         return py::str(res);
       },
