@@ -57,7 +57,9 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         cc_cmd.extend(["-Wl,-rpath", dir])
     # CPU backend uses C++ (driver.cpp). Some old version compilers need a specific C++17 flag.
     if src.endswith(".cpp") or src.endswith(".cc"):
-        cc_cmd += ["-std=c++17", "-fopenmp"]
+        cc_cmd += ["-std=c++17"]
+        if not os.environ.get("TRITON_DISABLE_OPENMP", None):
+            cc_cmd += ["-fopenmp"]
     if src.endswith(".s"):
         # This is required to properly parse .file directives
         cc_cmd += ["-g"]
