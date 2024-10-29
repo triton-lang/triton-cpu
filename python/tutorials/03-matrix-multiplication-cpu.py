@@ -157,10 +157,11 @@ import triton.language as tl
 BLOCK_SIZE_M = 32
 BLOCK_SIZE_N = 32
 BLOCK_SIZE_K = 32
+
 GROUP_SIZE_M = 8
 USE_GPU = False
 USE_BLOCK_POINTERS = False
-
+DATA_TYPE = torch.float32
 
 @triton.jit
 def matmul_kernel(
@@ -268,7 +269,7 @@ def matmul_kernel(
             b_ptrs += BLOCK_SIZE_K * stride_bk
 
     # Convert the accumulator to the output matrix C's type if needed.
-    c = accumulator
+    c = accumulator.to(c_ptr.type.element_ty)
 
     if USE_BLOCK_POINTERS:
         # TODO: masking
@@ -339,8 +340,9 @@ torch.manual_seed(0)
 
 triton.runtime.driver.set_active_to_cpu()
 
-a = torch.randn((512, 512), device='cpu', dtype=torch.float32)
-b = torch.randn((512, 512), device='cpu', dtype=torch.float32)
+a = torch.randn((512, 512), device='cpu', dtype=DATA_TYPE)
+b = torch.randn((512, 512), device='cpu', dtype=DATA_TYPE)
+
 triton_output = matmul(a, b, None)
 torch_output = torch.matmul(a, b)
 print(f"triton_cpu_output_with_{a.dtype}_inputs={triton_output}")
@@ -348,6 +350,9 @@ print(f"torch_cpu_output_with_{a.dtype}_inputs={torch_output}")
 rtol = 0
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
+elif DATA_TYPE == torch.bfloat16 and torch.allclose(triton_output, torch_output, atol=2e-0, rtol=rtol):
+    print("⚠️ TritonCPU and TorchCPU rounding errors, the maximum difference is "
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
 else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
@@ -362,7 +367,16 @@ else:
 # We can now compare the performance of our kernel against that of Pytorch. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
+# LINE_VALS = [
+#     'triton-cpu-single', 'triton-cpu', 'triton-cpu-single-v2', 'triton-cpu-v2', 'torch-cpu-native', 'torch-cpu-compile']
+# LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TritonCPU 1-v2', 'TritonCPU-v2', 'TorchCPU (native)', 'TorchCPU (compile)']
+# LINE_STYLES = [('blue', '--'), ('blue', '-'), ('red', '--'), ('red', '-'), ('green', '--'), ('green', '-')]
+
+# Disabled v2 benchmarking.
+# v2 lowering effectively fails for tiles larger than 16 and throws errors on bf16 data type.
+LINE_VALS = [
+    'triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
+
 LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (native)', 'TorchCPU (compile)']
 LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
 
@@ -396,6 +410,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 # To make things easier, Triton has a set of built-in utilities that allow us to concisely plot the performance of our custom ops.
 # for different problem sizes.
 
+STR_TYPE = str(DATA_TYPE).rsplit('.')[-1]
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -408,14 +423,14 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
         ylabel='GFLOPS',  # Label name for the y-axis.
         plot_name=
         # Name for the plot. Used also as a file name for saving the plot.
-        f'matmul-performance-fp32 (BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}, GROUP_SIZE_M={GROUP_SIZE_M})',
+        f'matmul-performance-{STR_TYPE} (BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}, GROUP_SIZE_M={GROUP_SIZE_M})',
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(M, N, K, provider):
 
     device = 'cpu' if 'cpu' in provider else 'cuda'
-    a = torch.randn((M, K), device=device, dtype=torch.float32)
-    b = torch.randn((K, N), device=device, dtype=torch.float32)
+    a = torch.randn((M, K), device=device, dtype=DATA_TYPE)
+    b = torch.randn((K, N), device=device, dtype=DATA_TYPE)
 
     if device == 'cpu':
         c = torch.empty((M, N), device=a.device, dtype=a.dtype)
