@@ -76,7 +76,8 @@ void *get_base_ptr(const libxsmm_datatype dType, void *alignedPtr,
 
 } // namespace
 
-extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType, int64_t addr,
+extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType,
+                                 const libxsmm_datatype out_dtype, int64_t addr,
                                  void *alignedPtrA, int64_t offsetA,
                                  void *alignedPtrB, int64_t offsetB,
                                  void *alignedPtrC, int64_t offsetC) {
@@ -86,15 +87,16 @@ extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType, int64_t addr,
   // LIBXSMM col-major change A with B.
   gemm_param.a.primary = get_base_ptr(dType, alignedPtrB, offsetB);
   gemm_param.b.primary = get_base_ptr(dType, alignedPtrA, offsetA);
-  gemm_param.c.primary = get_base_ptr(dType, alignedPtrC, offsetC);
+  gemm_param.c.primary = get_base_ptr(out_dtype, alignedPtrC, offsetC);
 
   sgemm.gemm = reinterpret_cast<libxsmm_gemmfunction>(addr);
   sgemm.gemm(&gemm_param);
 }
 
-extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype, int64_t m,
-                                      int64_t n, int64_t k, int64_t lda,
-                                      int64_t ldb, int64_t ldc,
+extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype,
+                                      const libxsmm_datatype out_dtype,
+                                      int64_t m, int64_t n, int64_t k,
+                                      int64_t lda, int64_t ldb, int64_t ldc,
                                       const libxsmm_gemm_flags flags) {
   // std::cout << "lda: " << lda << "\n";
   // std::cout << "ldb: " << ldb << "\n";
@@ -123,15 +125,16 @@ extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype, int64_t m,
   l_shape.ldc = ldc;
   l_shape.a_in_type = dtype;
   l_shape.b_in_type = dtype;
-  l_shape.out_type = dtype;
+  l_shape.out_type = out_dtype;
   // Retarget computation type from bf16 to f32 due to missing hardware support.
   l_shape.comp_type =
-      dtype == LIBXSMM_DATATYPE_BF16 ? LIBXSMM_DATATYPE_F32 : dtype;
+      out_dtype == LIBXSMM_DATATYPE_BF16 ? LIBXSMM_DATATYPE_F32 : out_dtype;
 
   auto sgemm = libxsmm_dispatch_gemm(l_shape, l_flags, l_prefetch_flags);
   if (!sgemm) {
     fprintf(stderr, "failed to generate matmul func\n");
     fprintf(stderr, "dtype: %u\n", dtype);
+    fprintf(stderr, "out_dtype: %u\n", out_dtype);
     printXsmmStruct(l_shape);
     exit(-1);
   }
@@ -285,11 +288,12 @@ extern "C" void xsmm_unary_scalar_invoke(const libxsmm_datatype dType,
   kernel(&param);
 }
 
-extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType, int64_t addr,
-                                   void *alignedPtrA, int64_t offsetA,
-                                   void *alignedPtrB, int64_t offsetB,
-                                   void *alignedPtrC, int64_t offsetC,
-                                   int64_t numBatches) {
+extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType,
+                                   const libxsmm_datatype out_dtype,
+                                   int64_t addr, void *alignedPtrA,
+                                   int64_t offsetA, void *alignedPtrB,
+                                   int64_t offsetB, void *alignedPtrC,
+                                   int64_t offsetC, int64_t numBatches) {
   libxsmm_xmmfunction sgemm;
   libxsmm_gemm_param gemm_param;
 
@@ -299,15 +303,16 @@ extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType, int64_t addr,
   // LIBXSMM col-major change A with B.
   gemm_param.a.primary = get_base_ptr(dType, alignedPtrB, offsetB);
   gemm_param.b.primary = get_base_ptr(dType, alignedPtrA, offsetA);
-  gemm_param.c.primary = get_base_ptr(dType, alignedPtrC, offsetC);
+  gemm_param.c.primary = get_base_ptr(out_dtype, alignedPtrC, offsetC);
 
   sgemm.gemm = reinterpret_cast<libxsmm_gemmfunction>(addr);
   sgemm.gemm(&gemm_param);
 }
 
-extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype, int64_t m,
-                                        int64_t n, int64_t k, int64_t lda,
-                                        int64_t ldb, int64_t ldc,
+extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype,
+                                        const libxsmm_datatype out_dtype,
+                                        int64_t m, int64_t n, int64_t k,
+                                        int64_t lda, int64_t ldb, int64_t ldc,
                                         int64_t stride_a, int64_t stride_b,
                                         const libxsmm_gemm_flags flags) {
   // std::cout << "lda: " << lda << "\n";
@@ -337,10 +342,10 @@ extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype, int64_t m,
   l_shape.ldc = ldc_int;
   l_shape.a_in_type = dtype;
   l_shape.b_in_type = dtype;
-  l_shape.out_type = dtype;
+  l_shape.out_type = out_dtype;
   // Retarget computation type from bf16 to f32 due to missing hardware support.
   l_shape.comp_type =
-      dtype == LIBXSMM_DATATYPE_BF16 ? LIBXSMM_DATATYPE_F32 : dtype;
+      out_dtype == LIBXSMM_DATATYPE_BF16 ? LIBXSMM_DATATYPE_F32 : out_dtype;
   l_brconfig.br_type = LIBXSMM_GEMM_BATCH_REDUCE_STRIDE;
   auto typeSize = dtype == LIBXSMM_DATATYPE_F32 ? sizeof(float) : sizeof(bf16);
   l_brconfig.br_stride_a_hint = stride_b * typeSize;
@@ -352,6 +357,7 @@ extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype, int64_t m,
   if (!sgemm) {
     fprintf(stderr, "failed to generate brgemm func\n");
     fprintf(stderr, "dtype: %u\n", dtype);
+    fprintf(stderr, "out_dtype: %u\n", out_dtype);
     printXsmmStruct(l_shape);
     printXsmmStruct(l_brconfig);
     exit(-1);

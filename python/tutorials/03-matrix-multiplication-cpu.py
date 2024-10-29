@@ -168,7 +168,7 @@ USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
 USE_GPU = False
 USE_BLOCK_POINTERS = False
-
+DATA_TYPE = torch.float32
 
 @triton.jit
 def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, PADDING: tl.constexpr):
@@ -271,7 +271,7 @@ def matmul_kernel(
             b_tile_ptr += BLOCK_SIZE_K * stride_bk
 
     # Convert the accumulator to the output matrix C's type if needed.
-    c = accumulator
+    c = accumulator.to(c_ptr.type.element_ty)
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix C.
@@ -367,6 +367,9 @@ print(f"torch_cpu_output_with_{a.dtype}_inputs={torch_output}")
 rtol = 0
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
+elif DATA_TYPE == torch.bfloat16 and torch.allclose(triton_output, torch_output, atol=2e-0, rtol=rtol):
+    print("⚠️ TritonCPU and TorchCPU rounding errors, the maximum difference is "
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
 else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
@@ -415,6 +418,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 # To make things easier, Triton has a set of built-in utilities that allow us to concisely plot the performance of our custom ops.
 # for different problem sizes.
 
+STR_TYPE = str(DATA_TYPE).rsplit('.')[-1]
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(

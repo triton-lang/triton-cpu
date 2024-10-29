@@ -167,6 +167,13 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
   Value operandB = inputs[1];
   Value operandC = inputs[2];
 
+  // Assume that if the last two dimensions are reductions, it is VNNI format.
+  // TODO: Add proper checks for VNNI.
+  auto dims = inferContractionDims(indexingMap);
+  auto numDims = indexingMap[0].getNumDims();
+  bool isVnni =
+      dims->k.back() == (numDims - 1) && dims->k.end()[-2] == (numDims - 2);
+
   unsigned k;
   if (*xsmm::utils::getPosInCodomain(kVector[0],
                                      contractOp->getOpOperand(1).get(),
@@ -191,7 +198,7 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
     }
     auto dataType = xsmm::utils::getDataType(rewriter, operand.getType());
     FailureOr<SmallVector<int64_t>> stridesOnOperand;
-    if (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
+    if (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
         operandIndex == 1) {
       stridesOnOperand =
           getVNNIStaticStrides(dyn_cast<MemRefType>(operand.getType()));
@@ -199,14 +206,14 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
       stridesOnOperand = mlir::utils::getStaticStrides(operand);
     }
     if (failed(stridesOnOperand) ||
-        (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
+        (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
          operandIndex == 0 &&
          (*stridesOnOperand)[*minorDimPosInCodomain] != 2) ||
-        ((dataType != DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-          (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
+        (isVnni && (dataType != DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
+                    (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
       return failure();
     }
-    if (dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
+    if (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
         operandIndex == 1) {
       return (*stridesOnOperand)[*majorDimPosInCodomain + 1];
     } else {
@@ -266,7 +273,7 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
     loopsK *= loops[kItr];
 
   xsmm::BrgemmInfo info{loops[m], loops[n], loopsK,  batchVal, *lda,
-                        *ldb,     *ldc,     strideA, strideB};
+                        *ldb,     *ldc,     strideA, strideB,  isVnni};
   return info;
 }
 
@@ -902,11 +909,15 @@ bool isTwoDTransposeOp(vector::TransposeOp transposeOp) {
 // Extract the operands to be used in the function call. For each memref operand
 // extract the aligned pointer and the offset.
 SmallVector<Value> getOperands(OpBuilder &builder, Location loc,
-                               ValueRange operands, IntegerAttr dataTypeAttr) {
+                               ValueRange operands, IntegerAttr dataTypeAttr,
+                               std::optional<IntegerAttr> outDataTypeAttr) {
   SmallVector<Value> res;
   IntegerType integer64 = IntegerType::get(builder.getContext(), 64);
   res.push_back(
       builder.create<arith::ConstantOp>(loc, integer64, dataTypeAttr));
+  if (outDataTypeAttr)
+    res.push_back(
+        builder.create<arith::ConstantOp>(loc, integer64, *outDataTypeAttr));
 
   for (Value operand : operands) {
     auto memrefType = dyn_cast<MemRefType>(operand.getType());
@@ -924,9 +935,6 @@ SmallVector<Value> getOperands(OpBuilder &builder, Location loc,
 SmallVector<Type> extractInvokeOperandTypes(OpBuilder &builder,
                                             ValueRange operands) {
   SmallVector<Type> results;
-  // One extra operand for datatype
-  IntegerType integer64 = IntegerType::get(builder.getContext(), 64);
-  results.push_back(integer64);
   for (Value operand : operands) {
     Type operandType = operand.getType();
     if (auto memrefType = dyn_cast<MemRefType>(operandType)) {
@@ -982,9 +990,17 @@ func::CallOp buildDispatchCall(RewriterBase &rewriter, Location loc,
 
 func::CallOp buildInvokeCall(RewriterBase &rewriter, Location loc,
                              ModuleOp module, SmallVector<Value> operandRange,
-                             StringRef invokeName, DataTypeAttr dtype) {
-  auto libFnType = rewriter.getFunctionType(
-      xsmm::utils::extractInvokeOperandTypes(rewriter, operandRange), {});
+                             StringRef invokeName, DataTypeAttr dtype,
+                             std::optional<DataTypeAttr> outDtype) {
+  SmallVector<Type> operandTypes;
+  // Extra operands for datatypes.
+  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+  operandTypes.push_back(integer64);
+  if (outDtype)
+    operandTypes.push_back(integer64);
+  operandTypes.append(
+      xsmm::utils::extractInvokeOperandTypes(rewriter, operandRange));
+  auto libFnType = rewriter.getFunctionType(operandTypes, {});
   FlatSymbolRefAttr fnName =
       SymbolRefAttr::get(rewriter.getContext(), invokeName);
 
@@ -1000,7 +1016,7 @@ func::CallOp buildInvokeCall(RewriterBase &rewriter, Location loc,
 
   func::CallOp call = rewriter.create<func::CallOp>(
       loc, fnName, TypeRange(),
-      xsmm::utils::getOperands(rewriter, loc, operandRange, dtype));
+      xsmm::utils::getOperands(rewriter, loc, operandRange, dtype, outDtype));
 
   return call;
 }
@@ -1020,12 +1036,16 @@ buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
   int64_t strideB = brgemmInfo.strideB;
   auto loc = op->getLoc();
   auto dtype = xsmm::utils::getDataType(rewriter, inputs[0].getType());
+  auto outDtype = xsmm::utils::getDataType(rewriter, inputs[2].getType());
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
-  SmallVector<Value, 10> dispatchOperands;
-  SmallVector<Type, 10> dispatchOperandTypes;
+  SmallVector<Value, 11> dispatchOperands;
+  SmallVector<Type, 11> dispatchOperandTypes;
   // Dispatch the data type.
   dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
       loc, integer64, cast<TypedAttr>(dtype)));
+  dispatchOperandTypes.push_back(integer64);
+  dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
+      loc, integer64, cast<TypedAttr>(outDtype)));
   dispatchOperandTypes.push_back(integer64);
 
   ArrayAttr brgemmFlags = rewriter.getArrayAttr(flags);
@@ -1070,7 +1090,7 @@ buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
     operandRange.push_back(batchDim);
   }
   auto invokeCall = xsmm::utils::buildInvokeCall(
-      rewriter, loc, module, operandRange, invokeName, dtype);
+      rewriter, loc, module, operandRange, invokeName, dtype, outDtype);
   return std::make_pair(&*dispatched, &*invokeCall);
 }
 

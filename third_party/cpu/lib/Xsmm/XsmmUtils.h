@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 using namespace mlir;
@@ -104,8 +105,10 @@ int64_t getOredFlags(ArrayAttr flags);
 
 SmallVector<Type> extractInvokeOperandTypes(OpBuilder &builder,
                                             ValueRange operands);
-SmallVector<Value> getOperands(OpBuilder &builder, Location loc,
-                               ValueRange operands, IntegerAttr dataTypeAttr);
+SmallVector<Value>
+getOperands(OpBuilder &builder, Location loc, ValueRange operands,
+            IntegerAttr dataTypeAttr,
+            std::optional<IntegerAttr> outDataTypeAttr = std::nullopt);
 
 FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
                                          Operation *contractOp,
@@ -140,9 +143,11 @@ func::CallOp buildDispatchCall(RewriterBase &rewriter, Location loc,
                                ArrayRef<Value> dispatchOperands,
                                ArrayRef<Type> dispatchOperandTypes,
                                ModuleOp module, FlatSymbolRefAttr fnName);
-func::CallOp buildInvokeCall(RewriterBase &rewriter, Location loc,
-                             ModuleOp module, SmallVector<Value> operands,
-                             StringRef invokeName, DataTypeAttr dtype);
+func::CallOp
+buildInvokeCall(RewriterBase &rewriter, Location loc, ModuleOp module,
+                SmallVector<Value> operands, StringRef invokeName,
+                DataTypeAttr dtype,
+                std::optional<DataTypeAttr> outDtype = std::nullopt);
 
 // Create a pair of XSMM dispatch and invoke (BR)GEMM calls.
 std::pair<Operation *, Operation *>
