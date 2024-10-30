@@ -35,16 +35,16 @@ class Attribute;
 namespace xsmm {
 
 struct BrgemmInfo {
-  int64_t m;
-  int64_t n;
-  int64_t k;
-  int64_t batch;
+  OpFoldResult m;
+  OpFoldResult n;
+  OpFoldResult k;
+  OpFoldResult batch;
 
-  int64_t lda;
-  int64_t ldb;
-  int64_t ldc;
-  int64_t strideA;
-  int64_t strideB;
+  OpFoldResult lda;
+  OpFoldResult ldb;
+  OpFoldResult ldc;
+  OpFoldResult strideA;
+  OpFoldResult strideB;
 
   bool isVnni = false;
 };
@@ -110,18 +110,18 @@ getOperands(OpBuilder &builder, Location loc, ValueRange operands,
             IntegerAttr dataTypeAttr,
             std::optional<IntegerAttr> outDataTypeAttr = std::nullopt);
 
-FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
-                                         Operation *contractOp,
-                                         SmallVector<Value> &inputs,
-                                         SmallVector<Value> &output,
-                                         ArrayRef<AffineMap> indexingMap);
+LogicalResult isMappableToBrgemm(PatternRewriter &rewriter,
+                                 Operation *contractOp,
+                                 SmallVector<Value> &inputs,
+                                 SmallVector<Value> &output,
+                                 ArrayRef<AffineMap> indexingMap);
 
 FailureOr<vector::ContractionOp>
 makeMinorDimensionsInnerMost(RewriterBase &rewriter,
                              vector::ContractionOp contractOp, unsigned m,
                              unsigned n, unsigned k, IntegerAttr type);
-std::optional<unsigned> getPosInCodomain(unsigned dim, Value operand,
-                                         Operation *contractOp, AffineMap map);
+std::optional<unsigned> getPosInCodomain(unsigned dim, AffineMap map,
+                                         MLIRContext *ctx);
 FailureOr<xsmm::BrgemmInfo>
 checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
             unsigned n, SmallVector<unsigned, 2> kVector,
@@ -152,7 +152,8 @@ buildInvokeCall(RewriterBase &rewriter, Location loc, ModuleOp module,
 // Create a pair of XSMM dispatch and invoke (BR)GEMM calls.
 std::pair<Operation *, Operation *>
 buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
-                 xsmm::BrgemmInfo brgemmInfo, SmallVector<Attribute> flags);
+                 ArrayRef<AffineMap> indexingMaps,
+                 SmallVector<Attribute> flags);
 
 } // namespace utils
 } // namespace xsmm
