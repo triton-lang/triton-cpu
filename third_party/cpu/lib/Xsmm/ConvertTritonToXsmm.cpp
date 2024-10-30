@@ -224,14 +224,13 @@ struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
 
     auto brgemmInfo = xsmm::utils::isMappableToBrgemm(rewriter, dotOp, inputs,
                                                       outputs, indexingMaps);
-    if (failed(brgemmInfo))
-      return rewriter.notifyMatchFailure(dotOp, "not mappable to XSMM");
-    if (brgemmInfo->isVnni)
-      return rewriter.notifyMatchFailure(dotOp, "VNNI support NYI");
+    if (failed(brgemmInfo)) {
+      assert(false); // FIXME: getMemrefSource above already modified IR...
+      // return rewriter.notifyMatchFailure(dotOp, "not mappable to XSMM");
+    }
 
-    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(
-        rewriter, dotOp, ValueRange{lhsBuf, rhsBuf, accBuf}, *brgemmInfo,
-        flags);
+    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(rewriter, dotOp, inputs,
+                                                   indexingMaps, flags);
 
     if (hoistedAcc) {
       // Hoisting already updated all uses correctly.

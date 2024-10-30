@@ -83,29 +83,10 @@ struct HasStaticStrides {
   SmallVectorImpl<int64_t> *strides = nullptr;
 };
 
-// Structural matcher.
-static FailureOr<ContractionDimensions>
-checkStructure(Operation *contractOp, SmallVector<Value> &inputs,
-               SmallVector<Value> &outputs, ArrayRef<AffineMap> indexingMap) {
-  if (!HasStaticShape()(inputs[0], inputs[0].getDefiningOp()) ||
-      !HasStaticShape()(inputs[1], inputs[1].getDefiningOp()) ||
-      !HasStaticShape()(inputs[2], inputs[2].getDefiningOp()) ||
-      (outputs[0] != nullptr &&
-       !HasStaticShape()(outputs[0], outputs[0].getDefiningOp())) ||
-      !HasStaticStrides()(inputs[0], inputs[0].getDefiningOp()) ||
-      !HasStaticStrides()(inputs[1], inputs[1].getDefiningOp()) ||
-      !HasStaticStrides()(inputs[2], inputs[2].getDefiningOp()) ||
-      (outputs[0] != nullptr &&
-       !HasStaticStrides()(outputs[0], outputs[0].getDefiningOp()))) {
-    return failure();
-  }
-  return inferContractionDims(indexingMap);
-}
-
 // Return the position of `dim` in the codomain of `operand`.
-std::optional<unsigned> getPosInCodomain(unsigned dim, Value operand,
-                                         Operation *contractOp, AffineMap map) {
-  return map.getResultPosition(getAffineDimExpr(dim, contractOp->getContext()));
+std::optional<unsigned> getPosInCodomain(unsigned dim, AffineMap map,
+                                         MLIRContext *ctx) {
+  return map.getResultPosition(getAffineDimExpr(dim, ctx));
 }
 
 static SmallVector<int64_t, 4>
@@ -155,126 +136,36 @@ getVNNIStaticStrides(MemRefType valueType) {
   return strides;
 }
 
-// Access matcher.
-FailureOr<xsmm::BrgemmInfo>
-checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
-            unsigned n, SmallVector<unsigned, 2> kVector,
-            std::optional<unsigned> batchPos, SmallVector<Value> inputs,
-            ArrayRef<AffineMap> indexingMap) {
-  MLIRContext *ctx = contractOp->getContext();
+FailureOr<std::tuple<unsigned, unsigned, unsigned, std::optional<unsigned>>>
+dimPositionsMNKBatch(ArrayRef<AffineMap> indexingMaps) {
+  auto contractionDims = inferContractionDims(indexingMaps);
+  if (failed(contractionDims))
+    return failure();
 
-  Value operandA = inputs[0];
-  Value operandB = inputs[1];
-  Value operandC = inputs[2];
+  unsigned posM = contractionDims->m.back();
+  unsigned posN = contractionDims->n.back();
+  unsigned posK;
+  std::optional<unsigned> posBatch = std::nullopt;
 
-  // Assume that if the last two dimensions are reductions, it is VNNI format.
-  // TODO: Add proper checks for VNNI.
-  auto dims = inferContractionDims(indexingMap);
-  auto numDims = indexingMap[0].getNumDims();
-  bool isVnni =
-      dims->k.back() == (numDims - 1) && dims->k.end()[-2] == (numDims - 2);
+  auto pos1stContractionDimInIterSpace = contractionDims->k[0];
+  if (contractionDims->k.size() == 1) {
+    posK = pos1stContractionDimInIterSpace;
+  } else if (contractionDims->k.size() == 2) {
+    auto pos2ndContractionDimInIterSpace = contractionDims->k[1];
 
-  unsigned k;
-  if (*xsmm::utils::getPosInCodomain(kVector[0],
-                                     contractOp->getOpOperand(1).get(),
-                                     contractOp, indexingMap[1]) <
-          *xsmm::utils::getPosInCodomain(n, contractOp->getOpOperand(1).get(),
-                                         contractOp, indexingMap[1]) ||
-      kVector.size() == 1) {
-    k = kVector[0];
-  } else if (kVector.size() > 1) {
-    k = kVector[1];
-  }
-
-  auto checkStridesAndGetLda = [&](unsigned minorDim, unsigned majorDim,
-                                   Value operand, AffineMap map,
-                                   int operandIndex) -> FailureOr<int64_t> {
-    auto minorDimPosInCodomain =
-        xsmm::utils::getPosInCodomain(minorDim, operand, contractOp, map);
-    auto majorDimPosInCodomain =
-        xsmm::utils::getPosInCodomain(majorDim, operand, contractOp, map);
-    if (!minorDimPosInCodomain || !majorDimPosInCodomain) {
-      return failure();
-    }
-    auto dataType = xsmm::utils::getDataType(rewriter, operand.getType());
-    FailureOr<SmallVector<int64_t>> stridesOnOperand;
-    if (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-        operandIndex == 1) {
-      stridesOnOperand =
-          getVNNIStaticStrides(dyn_cast<MemRefType>(operand.getType()));
+    if (pos1stContractionDimInIterSpace < pos2ndContractionDimInIterSpace) {
+      posBatch = pos1stContractionDimInIterSpace;
+      posK = pos2ndContractionDimInIterSpace;
     } else {
-      stridesOnOperand = mlir::utils::getStaticStrides(operand);
+      posK = pos1stContractionDimInIterSpace;
+      posBatch = pos2ndContractionDimInIterSpace;
     }
-    if (failed(stridesOnOperand) ||
-        (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-         operandIndex == 0 &&
-         (*stridesOnOperand)[*minorDimPosInCodomain] != 2) ||
-        (isVnni && (dataType != DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-                    (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
-      return failure();
-    }
-    if (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-        operandIndex == 1) {
-      return (*stridesOnOperand)[*majorDimPosInCodomain + 1];
-    } else {
-      return (*stridesOnOperand)[*majorDimPosInCodomain];
-    }
-  };
-  // A(m, k)
-  auto lda = checkStridesAndGetLda(k, m, operandA, indexingMap[0], 0);
-  if (failed(lda)) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed to compute lda\n");
+  } else { // i.e., when contractionDims->k.size() == [0] or in [3,...]
+    LLVM_DEBUG(llvm::dbgs() << "too many/few contraction dims\n");
     return failure();
   }
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] Strides on "
-                             "A: OK\n");
 
-  // B(k, n)
-  auto ldb = checkStridesAndGetLda(n, k, operandB, indexingMap[1], 1);
-  if (failed(ldb)) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed to compute ldb\n");
-
-    return failure();
-  }
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] Strides on "
-                             "B: OK\n");
-
-  // C(m, n)
-  auto ldc = checkStridesAndGetLda(n, m, operandC, indexingMap[2], 2);
-  if (failed(ldc)) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed to compute ldc\n");
-    return failure();
-  }
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] Strides on "
-                             "C: OK\n");
-
-  int64_t strideA = 1;
-  int64_t strideB = 1;
-  if (batchPos) {
-    auto batchPosCodomainA = getPosInCodomain(batchPos.value(), operandA,
-                                              contractOp, indexingMap[0]);
-    auto stridesOnA = ::mlir::utils::getStaticStrides(operandA);
-    strideA = (*stridesOnA)[*batchPosCodomainA];
-
-    auto batchPosCodomainB = getPosInCodomain(batchPos.value(), operandB,
-                                              contractOp, indexingMap[1]);
-    auto stridesOnB = ::mlir::utils::getStaticStrides(operandB);
-    strideB = (*stridesOnB)[*batchPosCodomainB];
-  }
-
-  auto loops = computeStaticLoopSizes(contractOp, indexingMap);
-  int64_t batchVal = (batchPos) ? loops[batchPos.value()] : 0;
-
-  auto loopsK = 1;
-  for (auto kItr : kVector)
-    loopsK *= loops[kItr];
-
-  xsmm::BrgemmInfo info{loops[m], loops[n], loopsK,  batchVal, *lda,
-                        *ldb,     *ldc,     strideA, strideB,  isVnni};
-  return info;
+  return std::tuple(posM, posN, posK, posBatch);
 }
 
 // Check if the given
@@ -299,58 +190,90 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
 // -- the stride of the
 // minor dimension for C, n
 // is 1.
-FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
-                                         Operation *contractOp,
-                                         SmallVector<Value> &inputs,
-                                         SmallVector<Value> &output,
-                                         ArrayRef<AffineMap> indexingMap) {
-  auto contractionDims =
-      checkStructure(contractOp, inputs, output, indexingMap);
+LogicalResult isMappableToBrgemm(PatternRewriter &rewriter,
+                                 Operation *contractOp,
+                                 SmallVector<Value> &inputs,
+                                 SmallVector<Value> &output,
+                                 ArrayRef<AffineMap> indexingMap) {
+  auto ctx = contractOp->getContext();
+
+  auto numDims = indexingMap[0].getNumDims();
+  auto contractionDims = inferContractionDims(indexingMap);
   if (failed(contractionDims)) {
-    LLVM_DEBUG(llvm::dbgs() << "[isMappableToBr"
-                               "gemm] Failed "
-                               "on "
-                               "checkStructure"
-                               "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[isMappableToBrgemm] Failed to infer dim kinds");
     return failure();
-  }
-  unsigned m = contractionDims->m.back();
-  unsigned n = contractionDims->n.back();
-  SmallVector<unsigned, 2> kVector;
-  std::optional<unsigned> batch;
-  if (contractionDims->k.size() >= 2) {
-    for (size_t i = 1; i < contractionDims->k.size(); i++)
-      kVector.push_back(contractionDims->k[i]);
-  } else {
-    for (size_t i = 0; i < contractionDims->k.size(); i++)
-      kVector.push_back(contractionDims->k[i]);
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] Candidate "
-                             "dims: "
-                          << "\n");
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] m: "
-                          << m << "\n");
-  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrge"
-                             "mm] n: "
-                          << n << "\n");
-  if (batch)
-    LLVM_DEBUG(llvm::dbgs() << "[isMappableToBr"
-                               "gemm] batch: "
-                            << batch << "\n");
-  else
-    LLVM_DEBUG(llvm::dbgs() << "[isMappableToBr"
-                               "gemm] no batch "
-                               "dim\n");
-  auto retval = checkAccess(rewriter, contractOp, m, n, kVector, batch, inputs,
-                            indexingMap);
-  if (failed(retval)) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed to check access\n");
-    return failure();
+  assert(inputs.size() == 3);
+  Value A = inputs[0];
+  Value B = inputs[1];
+  Value C = inputs[2];
+
+  unsigned posM = contractionDims->m.back();
+  unsigned posN = contractionDims->n.back();
+  unsigned posK;
+  std::optional<unsigned> posBatch = std::nullopt;
+
+  {
+    auto pos1stContractionDimInIterSpace = contractionDims->k[0];
+    if (contractionDims->k.size() == 1) {
+      posK = pos1stContractionDimInIterSpace;
+    } else if (contractionDims->k.size() == 2) {
+      auto pos2ndContractionDimInIterSpace = contractionDims->k[1];
+
+      if (pos1stContractionDimInIterSpace < pos2ndContractionDimInIterSpace) {
+        posBatch = pos1stContractionDimInIterSpace;
+        posK = pos2ndContractionDimInIterSpace;
+      } else {
+        posK = pos1stContractionDimInIterSpace;
+        posBatch = pos2ndContractionDimInIterSpace;
+      }
+    } else { // i.e., when contractionDims->k.size() == [0] or in [3,...]
+      LLVM_DEBUG(llvm::dbgs() << "too many contraction dims\n");
+      return failure();
+    }
   }
-  return retval;
+
+  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrgemm] Candidate dims: \n");
+  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrgemm] m: " << posM << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrgemm] n: " << posN << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrgemm] k: " << posK << "\n");
+  if (posBatch)
+    LLVM_DEBUG(llvm::dbgs()
+               << "[isMappableToBrgemm] batch: " << posBatch << "\n");
+  else
+    LLVM_DEBUG(llvm::dbgs() << "[isMappableToBrgemm] no batch dim\n");
+
+  // Assume that if the last two dimensions are reductions, it is VNNI format.
+  // TODO: Add proper checks for VNNI.
+  bool isVnni = contractionDims->k.back() == (numDims - 1) &&
+                contractionDims->k.end()[-2] == (numDims - 2);
+
+  if (isVnni) {
+    auto dataTypeA = getDataType(rewriter, A.getType());
+    auto stridesOnA = getVNNIStaticStrides(dyn_cast<MemRefType>(A.getType()));
+    auto minorDimPosInAsCodomain = getPosInCodomain(posK, indexingMap[0], ctx);
+    if (failed(stridesOnA) || ((dataTypeA.getValue() != DataType::BF16) &&
+                               (*stridesOnA)[*minorDimPosInAsCodomain] != 1))
+      return failure();
+
+    auto dataTypeB = getDataType(rewriter, B.getType());
+    auto stridesOnB = getVNNIStaticStrides(dyn_cast<MemRefType>(B.getType()));
+    auto minorDimPosInBsCodomain = getPosInCodomain(posN, indexingMap[1], ctx);
+    if (failed(stridesOnB) || ((dataTypeB.getValue() != DataType::BF16) &&
+                               (*stridesOnB)[*minorDimPosInBsCodomain] != 1))
+      return failure();
+
+    auto dataTypeC = getDataType(rewriter, C.getType());
+    auto stridesOnC = getVNNIStaticStrides(dyn_cast<MemRefType>(C.getType()));
+    auto minorDimPosInCsCodomain = getPosInCodomain(posN, indexingMap[2], ctx);
+    if (failed(stridesOnC) || ((dataTypeC.getValue() != DataType::BF16) &&
+                               (*stridesOnC)[*minorDimPosInCsCodomain] != 1))
+      return failure();
+  }
+
+  return success();
 }
 
 DataTypeAttr getDataType(RewriterBase &rewriter, Type type) {
@@ -718,6 +641,7 @@ FailureOr<vector::ContractionOp>
 makeMinorDimensionsInnerMost(RewriterBase &rewriter,
                              vector::ContractionOp contractOp, unsigned m,
                              unsigned n, unsigned k, DataTypeAttr type) {
+  MLIRContext *ctx = rewriter.getContext();
   OpOperand *operandA = &contractOp->getOpOperand(0);
   OpOperand *operandB = &contractOp->getOpOperand(1);
   OpOperand &operandC = contractOp->getOpOperand(2);
@@ -727,9 +651,9 @@ makeMinorDimensionsInnerMost(RewriterBase &rewriter,
   // k is expected to be the innermost for A
   // n is expected to be the innermost for B
   auto minorKInCodomainOpA = xsmm::utils::getPosInCodomain(
-      k, operandA->get(), contractOp, contractOp.getIndexingMapsArray()[0]);
+      k, contractOp.getIndexingMapsArray()[0], ctx);
   auto minorMInCodomainOpA = xsmm::utils::getPosInCodomain(
-      m, operandA->get(), contractOp, contractOp.getIndexingMapsArray()[0]);
+      m, contractOp.getIndexingMapsArray()[0], ctx);
   if (!minorKInCodomainOpA || !minorMInCodomainOpA) {
     LLVM_DEBUG(
         llvm::dbgs()
@@ -738,9 +662,9 @@ makeMinorDimensionsInnerMost(RewriterBase &rewriter,
   }
 
   auto minorNInCodomainOpB = xsmm::utils::getPosInCodomain(
-      n, operandB->get(), contractOp, contractOp.getIndexingMapsArray()[1]);
+      n, contractOp.getIndexingMapsArray()[1], ctx);
   auto minorKInCodomainOpB = xsmm::utils::getPosInCodomain(
-      k, operandB->get(), contractOp, contractOp.getIndexingMapsArray()[1]);
+      k, contractOp.getIndexingMapsArray()[1], ctx);
   if (!minorNInCodomainOpB || !minorKInCodomainOpB) {
     LLVM_DEBUG(
         llvm::dbgs()
@@ -749,9 +673,9 @@ makeMinorDimensionsInnerMost(RewriterBase &rewriter,
   }
 
   auto minorNInCodomainOpC = xsmm::utils::getPosInCodomain(
-      n, operandC.get(), contractOp, contractOp.getIndexingMapsArray()[2]);
+      n, contractOp.getIndexingMapsArray()[2], ctx);
   auto minorMInCodomainOpC = xsmm::utils::getPosInCodomain(
-      m, operandC.get(), contractOp, contractOp.getIndexingMapsArray()[2]);
+      m, contractOp.getIndexingMapsArray()[2], ctx);
   if (!minorNInCodomainOpC || !minorMInCodomainOpC) {
     LLVM_DEBUG(
         llvm::dbgs()
@@ -1023,21 +947,68 @@ func::CallOp buildInvokeCall(RewriterBase &rewriter, Location loc,
 
 std::pair<Operation *, Operation *>
 buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
-                 xsmm::BrgemmInfo brgemmInfo, SmallVector<Attribute> flags) {
-  assert(inputs.size() == 3 && "Expects three inputs for BRGEMM call");
-  auto m = brgemmInfo.m;
-  auto n = brgemmInfo.n;
-  auto k = brgemmInfo.k;
-  auto batch = brgemmInfo.batch;
-  int64_t lda = brgemmInfo.lda;
-  int64_t ldb = brgemmInfo.ldb;
-  int64_t ldc = brgemmInfo.ldc;
-  int64_t strideA = brgemmInfo.strideA;
-  int64_t strideB = brgemmInfo.strideB;
-  auto loc = op->getLoc();
+                 ArrayRef<AffineMap> indexingMaps,
+                 SmallVector<Attribute> flags) {
+  MLIRContext *ctx = op->getContext();
+  Location loc = op->getLoc();
+
+  Type indexType = rewriter.getIndexType();
+  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+
+  auto posMNKBatch = *dimPositionsMNKBatch(indexingMaps);
+  unsigned posM = std::get<0>(posMNKBatch);
+  unsigned posN = std::get<1>(posMNKBatch);
+  unsigned posK = std::get<2>(posMNKBatch);
+  std::optional<unsigned> posBatch = std::get<3>(posMNKBatch);
+
+  assert(inputs.size() == 3 && "Expect three inputs for BRGEMM call");
+  Value A = inputs[0], B = inputs[1], C = inputs[2];
+
+  auto getMemrefMetadata = [&](Value operand) {
+    auto memrefType = dyn_cast<MemRefType>(operand.getType());
+    assert(memrefType && "Expect a memref value");
+    MemRefType baseMemrefType =
+        MemRefType::get({}, memrefType.getElementType());
+    SmallVector<Type> sizesTypes(memrefType.getRank(), indexType);
+    SmallVector<Type> stridesTypes(memrefType.getRank(), indexType);
+    return rewriter.create<memref::ExtractStridedMetadataOp>(
+        loc, baseMemrefType, /*offsetType=*/indexType, sizesTypes, stridesTypes,
+        operand);
+  };
+
+  auto metadataA = getMemrefMetadata(A);
+  auto metadataB = getMemrefMetadata(B);
+  auto metadataC = getMemrefMetadata(C);
+
+  auto posMInA = *getPosInCodomain(posM, indexingMaps[0], ctx);
+  auto posNInB = *getPosInCodomain(posN, indexingMaps[1], ctx);
+  auto posKInA = *getPosInCodomain(posK, indexingMaps[0], ctx);
+  auto posKInB = *getPosInCodomain(posK, indexingMaps[1], ctx);
+
+  auto m = metadataA.getSizes()[posMInA];
+  auto n = metadataB.getSizes()[posNInB];
+  auto k = metadataA.getSizes()[posKInA];
+
+  auto posLeadingDimA = posMInA; // TODO: account for transposes...
+  auto lda = metadataA.getStrides()[posLeadingDimA];
+  auto posLeadingDimB = posKInB; // TODO: account for transposes...
+  auto ldb = metadataB.getStrides()[posLeadingDimB];
+  auto posLeadingDimC = *getPosInCodomain(
+      posM, indexingMaps[2], ctx); // TODO: account for transposes...
+  auto ldc = metadataC.getStrides()[posLeadingDimC];
+
+  Value strideA, strideB;
+  std::optional<Value> batchSize;
+  if (posBatch) {
+    auto posBatchInA = *getPosInCodomain(*posBatch, indexingMaps[0], ctx);
+    auto posBatchInB = *getPosInCodomain(*posBatch, indexingMaps[1], ctx);
+    batchSize = metadataA.getSizes()[posBatchInA];
+    strideA = metadataA.getStrides()[posBatchInA];
+    strideB = metadataB.getStrides()[posBatchInB];
+  }
+
   auto dtype = xsmm::utils::getDataType(rewriter, inputs[0].getType());
   auto outDtype = xsmm::utils::getDataType(rewriter, inputs[2].getType());
-  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   SmallVector<Value, 11> dispatchOperands;
   SmallVector<Type, 11> dispatchOperandTypes;
   // Dispatch the data type.
@@ -1052,28 +1023,29 @@ buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
   SmallVector<Value, 10> invokeOperands;
   std::string dispatchName = "xsmm_gemm_dispatch";
   std::string invokeName = "xsmm_gemm_invoke";
-
-  if (batch != 0) {
+  if (posBatch) {
     dispatchName = "xsmm_brgemm_dispatch";
     invokeName = "xsmm_brgemm_invoke";
   }
 
-  auto dims = SmallVector<int64_t>{m, n, k, lda, ldb, ldc};
-  if (batch != 0) {
-    dims.append({strideA, strideB});
-  }
-  for (size_t idx = 0; idx < dims.size(); idx++) {
-    dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
-        loc, integer64, rewriter.getIntegerAttr(integer64, dims[idx])));
+  auto sizesAndStrides = SmallVector<Value>{m, n, k, lda, ldb, ldc};
+  if (posBatch)
+    sizesAndStrides.append({strideA, strideB});
+  for (auto sizeOrStride : sizesAndStrides) {
+    auto sizeOrStrideInt64 = getValueOrCreateCastToIndexLike(
+        rewriter, op->getLoc(), integer64, sizeOrStride);
+
+    dispatchOperands.push_back(sizeOrStrideInt64);
     dispatchOperandTypes.push_back(integer64);
   }
+
   // Dispatch the flags. Pass to the library the already ored-flag to
   // avoid changing the interface every time we add a new flag. Flags
   // are assumed to be verified before (i.e., op verifier).
   int64_t oredFlag = xsmm::utils::getOredFlags(brgemmFlags);
 
   dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), oredFlag)));
+      loc, integer64, IntegerAttr::get(integer64, oredFlag)));
   dispatchOperandTypes.push_back(integer64);
   ModuleOp module = op->getParentOfType<ModuleOp>();
   auto dispatched = xsmm::utils::buildDispatchCall(
@@ -1081,14 +1053,10 @@ buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
       SymbolRefAttr::get(op->getContext(), dispatchName));
   SmallVector<Value, 6> operandRange;
   operandRange.push_back(dispatched.getResult(0));
-  for (auto operand : inputs) {
+  for (auto operand : inputs)
     operandRange.push_back(operand);
-  }
-  if (batch != 0) {
-    Value batchDim = rewriter.create<arith::ConstantOp>(
-        loc, integer64, rewriter.getIntegerAttr(integer64, batch));
-    operandRange.push_back(batchDim);
-  }
+  if (posBatch)
+    operandRange.push_back(*batchSize);
   auto invokeCall = xsmm::utils::buildInvokeCall(
       rewriter, loc, module, operandRange, invokeName, dtype, outDtype);
   return std::make_pair(&*dispatched, &*invokeCall);

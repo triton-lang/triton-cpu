@@ -180,14 +180,14 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
     auto brgemmInfo =
         xsmm::utils::isMappableToBrgemm(rewriter, contractOp, inputs, outputs,
                                         contractOp.getIndexingMapsArray());
-    if (failed(brgemmInfo))
-      return rewriter.notifyMatchFailure(contractOp, "not mappable to XSMM");
-    if (brgemmInfo->isVnni)
-      return rewriter.notifyMatchFailure(contractOp, "VNNI support NYI");
+    if (failed(brgemmInfo)) {
+      assert(false); // FIXME: getMemrefSource above already modified IR...
+      // return rewriter.notifyMatchFailure(contractOp, "not mappable to XSMM");
+    }
 
     auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(
-        rewriter, contractOp, ValueRange{lhsBuf, rhsBuf, accBuf}, *brgemmInfo,
-        flags);
+        rewriter, contractOp, ValueRange{lhsBuf, rhsBuf, accBuf},
+        contractOp.getIndexingMapsArray(), flags);
 
     if (hoistedAcc) {
       // Hoisting already updated all uses correctly.
