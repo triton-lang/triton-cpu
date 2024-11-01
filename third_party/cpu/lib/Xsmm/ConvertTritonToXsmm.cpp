@@ -12,6 +12,7 @@
 #include "VnniUtils.h"
 #include "XsmmUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -222,6 +223,34 @@ struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
     SmallVector<Value> outputs{nullptr};
 
+    // Rewrite matmul into a BRGEMM.
+    // This allows for additional reduction dimension tiling driven
+    // by a microkernel.
+    //
+    // TODO: Expand heuristics about brgemm rewrite profitability.
+    // TODO: Allow for batch dimension.
+    int64_t kDim = lhs.getType().getShape().back();
+    auto accShape = acc.getType().getShape();
+    constexpr int64_t kTile = 32;
+    int64_t numTiles = kDim / kTile;
+    if (rank == 2 && (kDim % kTile) == 0 && numTiles > 1) {
+      // Split reduction dimension into tiles.
+      // The number of tiles represents the batch dimension.
+      inputs[0] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{accShape[0], numTiles, kTile}, inputs[0],
+          SmallVector<ReassociationIndices>{{0}, {1, 2}});
+      inputs[1] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{numTiles, kTile, accShape[1]}, inputs[1],
+          SmallVector<ReassociationIndices>{{0, 1}, {2}});
+
+      // Update maps with BRGEMM indexing.
+      auto mapA = AffineMap::getMultiDimMapWithTargets(4, {1, 0, 3}, ctx);
+      auto mapB = AffineMap::getMultiDimMapWithTargets(4, {0, 3, 2}, ctx);
+      auto mapC = AffineMap::getMultiDimMapWithTargets(4, {1, 2}, ctx);
+      indexingMaps = SmallVector<AffineMap>{mapA, mapB, mapC};
+    }
+
+    // TODO: Perform this check much earlier before any rewrites.
     auto brgemmInfo = xsmm::utils::isMappableToBrgemm(rewriter, dotOp, inputs,
                                                       outputs, indexingMaps);
     if (failed(brgemmInfo)) {

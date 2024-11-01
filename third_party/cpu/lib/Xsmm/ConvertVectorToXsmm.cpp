@@ -157,13 +157,14 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
     Location loc = contractOp.getLoc();
+    MLIRContext *ctx = contractOp.getContext();
 
     TypedValue<VectorType> lhs = contractOp.getLhs();
     TypedValue<VectorType> rhs = contractOp.getRhs();
     TypedValue<Type> acc = contractOp.getAcc();
 
-    auto vecTy = dyn_cast<VectorType>(acc.getType());
-    if (!vecTy)
+    auto accVecTy = dyn_cast<VectorType>(acc.getType());
+    if (!accVecTy)
       return rewriter.notifyMatchFailure(contractOp,
                                          "expects to accumulate on vector");
 
@@ -177,17 +178,45 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
 
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
     SmallVector<Value> outputs{nullptr};
-    auto brgemmInfo =
-        xsmm::utils::isMappableToBrgemm(rewriter, contractOp, inputs, outputs,
-                                        contractOp.getIndexingMapsArray());
+    SmallVector<AffineMap> indexingMaps = contractOp.getIndexingMapsArray();
+
+    // Rewrite matmul into a BRGEMM.
+    // This allows for additional reduction dimension tiling driven
+    // by a microkernel.
+    //
+    // TODO: Expand heuristics about brgemm rewrite profitability.
+    // TODO: Allow for batch dimension.
+    int64_t kDim = lhs.getType().getShape().back();
+    auto accShape = accVecTy.getShape();
+    constexpr int64_t kTile = 32;
+    int64_t numTiles = kDim / kTile;
+    uint32_t rank = accVecTy.getRank();
+    if (rank == 2 && (kDim % kTile) == 0 && numTiles > 1) {
+      // Split reduction dimension into tiles.
+      // The number of tiles represents the batch dimension.
+      inputs[0] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{accShape[0], numTiles, kTile}, inputs[0],
+          SmallVector<ReassociationIndices>{{0}, {1, 2}});
+      inputs[1] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{numTiles, kTile, accShape[1]}, inputs[1],
+          SmallVector<ReassociationIndices>{{0, 1}, {2}});
+
+      // Update maps with BRGEMM indexing.
+      auto mapA = AffineMap::getMultiDimMapWithTargets(4, {1, 0, 3}, ctx);
+      auto mapB = AffineMap::getMultiDimMapWithTargets(4, {0, 3, 2}, ctx);
+      auto mapC = AffineMap::getMultiDimMapWithTargets(4, {1, 2}, ctx);
+      indexingMaps = SmallVector<AffineMap>{mapA, mapB, mapC};
+    }
+
+    auto brgemmInfo = xsmm::utils::isMappableToBrgemm(
+        rewriter, contractOp, inputs, outputs, indexingMaps);
     if (failed(brgemmInfo)) {
       assert(false); // FIXME: getMemrefSource above already modified IR...
       // return rewriter.notifyMatchFailure(contractOp, "not mappable to XSMM");
     }
 
-    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(
-        rewriter, contractOp, ValueRange{lhsBuf, rhsBuf, accBuf},
-        contractOp.getIndexingMapsArray(), flags);
+    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(rewriter, contractOp, inputs,
+                                                   indexingMaps, flags);
 
     if (hoistedAcc) {
       // Hoisting already updated all uses correctly.
@@ -198,8 +227,8 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
       Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       SmallVector<Value> indices(
           dyn_cast<MemRefType>(accBuf.getType()).getRank(), zeroIdx);
-      auto readOp =
-          rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
+      auto readOp = rewriter.create<vector::TransferReadOp>(loc, accVecTy,
+                                                            accBuf, indices);
       rewriter.replaceOp(contractOp, readOp);
     }
 
