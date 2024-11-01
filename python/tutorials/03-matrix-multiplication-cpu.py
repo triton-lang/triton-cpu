@@ -150,6 +150,7 @@ You will specifically learn about:
 # ------------
 
 import torch
+import math
 
 import triton
 import triton.language as tl
@@ -162,6 +163,8 @@ GROUP_SIZE_M = 8
 USE_GPU = False
 USE_BLOCK_POINTERS = False
 DATA_TYPE = torch.float32
+K_DIM_PADDING = False
+DYNAMIC_K_BLOCK = False
 
 @triton.jit
 def matmul_kernel(
@@ -306,9 +309,24 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
     assert a.is_contiguous(), "Matrix A must be contiguous"
     M, K = a.shape
     K, N = b.shape
+
+    k_block = BLOCK_SIZE_K
+    if DYNAMIC_K_BLOCK:
+        # Currently, the maximum dynamic block size is capped somewhat arbitrarily.
+        # Ideally, tradeoffs between amount of padding, block size, and associated costs
+        # should be considered.
+        k_block = min(triton.next_power_of_2(K), 1024)
+
+    if K_DIM_PADDING or DYNAMIC_K_BLOCK:
+        padding_size = (math.ceil(K / k_block) * k_block) - K
+        if padding_size != 0:
+            a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
+            b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
+            K = a.shape[1]
+
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
-        K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
+        K % k_block == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
     if c is None:
         # Allocates output.
         c = torch.empty((M, N), device=a.device, dtype=a.dtype)
@@ -322,7 +340,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
+        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=k_block,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         num_threads=num_threads,  #
         USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
