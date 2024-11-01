@@ -150,6 +150,7 @@ You will specifically learn about:
 # ------------
 
 import torch
+import math
 
 import triton
 import triton.language as tl
@@ -169,6 +170,8 @@ GROUP_SIZE_M = 8
 USE_GPU = False
 USE_BLOCK_POINTERS = False
 DATA_TYPE = torch.float32
+K_DIM_PADDING = False
+DYNAMIC_K_BLOCK = False
 
 @triton.jit
 def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, PADDING: tl.constexpr):
@@ -314,7 +317,7 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
 
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
-        K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
+        K % k_block == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
     if c is None:
         # Allocates output.
         c = torch.empty((M, N), device=a.device, dtype=torch.float32)
@@ -336,7 +339,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K:
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
+        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=k_block,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
         num_threads=num_threads,  #
