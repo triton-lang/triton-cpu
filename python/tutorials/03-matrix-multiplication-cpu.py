@@ -165,6 +165,7 @@ USE_BLOCK_POINTERS = False
 DATA_TYPE = torch.float32
 K_DIM_PADDING = False
 DYNAMIC_K_BLOCK = False
+CACHE_PADDING = False
 
 @triton.jit
 def matmul_kernel(
@@ -323,6 +324,13 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
             a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
             b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
             K = a.shape[1]
+
+    # TODO: Check if padding is needed at all.
+    #       Currently, cache padding is most useful together with dynamic K blocking
+    #       to ensure that stride is non-power-of-two to improve cache behavior.
+    if CACHE_PADDING:
+        a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
+        b = torch.nn.functional.pad(b, (0, 32, 0, 0), mode='constant', value=0)
 
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
