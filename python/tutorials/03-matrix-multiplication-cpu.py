@@ -167,12 +167,14 @@ PREPACKED = os.getenv("PREPACKED", "0") != "0"
 PAD_B_ONLY = True
 USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
+
 USE_GPU = False
 USE_BLOCK_POINTERS = False
 DATA_TYPE = torch.float32
 K_DIM_PADDING = False
 DYNAMIC_K_BLOCK = False
 CACHE_PADDING = False
+PREPROCESS_EXTERNAL = False
 
 @triton.jit
 def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, PADDING: tl.constexpr):
@@ -290,14 +292,12 @@ def matmul_kernel(
         c_tile_ptr = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
         tl.store(c_tile_ptr, c)
 
-
 # %%
 # We can now create a convenience wrapper function that only takes two input tensors,
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
 
 a_scratch = torch.empty((), dtype=DTYPE)
 b_scratch = torch.empty((), dtype=DTYPE)
-
 
 def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
     # Check constraints.
