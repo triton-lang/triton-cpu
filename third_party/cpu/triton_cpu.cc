@@ -170,6 +170,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_triton_to_xsmm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertTritonToXsmm());
   });
+  m.def("add_loop_to_brgemm_xsmm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createLoopToBrgemmXsmm());
+  });
 }
 
 void init_triton_cpu(py::module &&m) {
