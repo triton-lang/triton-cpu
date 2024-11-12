@@ -150,10 +150,11 @@ You will specifically learn about:
 # ------------
 
 import torch
-import math
 
 import triton
 import triton.language as tl
+
+import xsmm_py
 
 BLOCK_SIZE_M = 32
 BLOCK_SIZE_N = 32
@@ -168,6 +169,7 @@ K_DIM_PADDING = False
 DYNAMIC_K_BLOCK = False
 CACHE_PADDING = False
 PREPROCESS_EXTERNAL = False
+XSMM_PAD = False
 
 @triton.jit
 def matmul_kernel(
@@ -304,7 +306,8 @@ def matmul_kernel(
 # We can now create a convenience wrapper function that only takes two input tensors,
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
 
-
+a_scratch = torch.empty((), dtype=DATA_TYPE)
+b_scratch = torch.empty((), dtype=DATA_TYPE)
 def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
@@ -319,19 +322,30 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         # should be considered.
         k_block = min(triton.next_power_of_2(K), 1024)
 
-    if K_DIM_PADDING or DYNAMIC_K_BLOCK:
-        padding_size = (math.ceil(K / k_block) * k_block) - K
-        if padding_size != 0:
-            a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
-            b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
-            K = a.shape[1]
+    if XSMM_PAD:
+        padding_size = (((K + k_block - 1) // k_block) * k_block) - K
+        col_pad = 32 if CACHE_PADDING else 0
+        a_scratch.resize_(M, K + padding_size + col_pad)
+        b_scratch.resize_(K + padding_size, N + col_pad)
+        xsmm_py.fastZeroPad2D(a, a_scratch)
+        xsmm_py.fastZeroPad2D(b, b_scratch)
+        K = K + padding_size
+        a = a_scratch
+        b = b_scratch
+    else:
+        if K_DIM_PADDING or DYNAMIC_K_BLOCK:
+            padding_size = (((K + k_block - 1) // k_block) * k_block) - K
+            if padding_size != 0:
+                a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
+                b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
+                K = a.shape[1]
 
-    # TODO: Check if padding is needed at all.
-    #       Currently, cache padding is most useful together with dynamic K blocking
-    #       to ensure that stride is non-power-of-two to improve cache behavior.
-    if CACHE_PADDING:
-        a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
-        b = torch.nn.functional.pad(b, (0, 32, 0, 0), mode='constant', value=0)
+        # TODO: Check if padding is needed at all.
+        #       Currently, cache padding is most useful together with dynamic K blocking
+        #       to ensure that stride is non-power-of-two to improve cache behavior.
+        if CACHE_PADDING:
+            a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
+            b = torch.nn.functional.pad(b, (0, 32, 0, 0), mode='constant', value=0)
 
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
