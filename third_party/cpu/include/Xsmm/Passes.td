@@ -27,4 +27,16 @@ def ConvertTritonToXsmm : Pass<"triton-cpu-convert-triton-to-xsmm", "mlir::Modul
 			                    "LLVM::LLVMDialect"];
 }
 
+def LoopToBrgemmXsmm : Pass<"triton-cpu-loop-to-brgemm-xsmm", "mlir::ModuleOp"> {
+ let summary = "Redution loop GEMM to BRGEMM";
+ let description = [{
+   Collapse reduction loop over GEMM to XSMM BRGEMM kernel.
+ }];
+ let dependentDialects = ["arith::ArithDialect",
+                          "func::FuncDialect",
+                          "memref::MemRefDialect",
+                          "triton::cpu::TritonCPUDialect",
+			                    "LLVM::LLVMDialect"];
+}
+
 #endif

@@ -48,6 +48,7 @@ class CPUOptions:
     enable_fast_math: bool = True
     enable_vector_xsmm: bool = False
     enable_triton_xsmm: bool = False
+    enable_loop_brgemm_xsmm: bool = False
     enable_raise_block_pointer: bool = False
     vec_lib: Optional[str] = 'libsleef'
     # TODO: Try to enable it.
@@ -108,6 +109,8 @@ class CPUBackend(BaseBackend):
             args["enable_vector_xsmm"] = os.getenv("TRITON_CPU_VECTOR_XSMM", "0") != "0"
         if "enable_triton_xsmm" not in args:
             args["enable_triton_xsmm"] = os.getenv("TRITON_CPU_TRITON_XSMM", "0") != "0"
+        if "enable_loop_brgemm_xsmm" not in args:
+            args["enable_loop_brgemm_xsmm"] = os.getenv("TRITON_CPU_LOOP_BRGEMM_XSMM", "0") != "0"
         if "enable_raise_block_pointer" not in args:
             args["enable_raise_block_pointer"] = os.getenv("TRITON_CPU_RAISE_BLOCK_POINTER", "0") != "0"
         return CPUOptions(**args)
@@ -148,6 +151,9 @@ class CPUBackend(BaseBackend):
         pm.enable_debug()
         if opt.enable_raise_block_pointer:
             cpu.passes.ttcpuir.add_raise_block_pointer(pm)
+        if opt.enable_loop_brgemm_xsmm:
+            cpu.passes.ttcpuir.add_loop_to_brgemm_xsmm(pm)
+            passes.common.add_canonicalizer(pm)
         if opt.enable_triton_xsmm:
             cpu.passes.ttcpuir.add_convert_triton_to_xsmm(pm)
             passes.common.add_canonicalizer(pm)
@@ -286,7 +292,7 @@ class CPUBackend(BaseBackend):
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
-            if options.enable_vector_xsmm or options.enable_triton_xsmm:
+            if options.enable_vector_xsmm or options.enable_triton_xsmm or options.enable_loop_brgemm_xsmm:
                 libs.extend(["xsmm", "TritonCPUXsmmRuntime"])
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)
             with open(so, "rb") as f:
