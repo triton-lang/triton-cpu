@@ -20,6 +20,6 @@ namespace mlir::triton::cpu {
 
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonRaiseBlockPointer/Passes.h.inc"
-} // namespace mlir::triton::intel
+} // namespace mlir::triton::cpu
 
 #endif // TRITON_RAISE_BLOCK_POINTER_PASSES_H

@@ -36,14 +36,16 @@ namespace {
 constexpr unsigned offsetBitwidth = 32;
 constexpr unsigned shapeAndStridesBitwidth = 64;
 
-// FROM intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
+// FROM
+// intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
 static std::optional<int64_t> getIntAttr(const OpFoldResult ofr) {
   if (ofr.is<Attribute>() && isa<IntegerAttr>(ofr.get<Attribute>()))
     return cast<IntegerAttr>(ofr.get<Attribute>()).getInt();
   return std::nullopt;
 }
 
-// FROM intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
+// FROM
+// intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
 std::optional<int64_t> getFoldedConstantValue(Operation *op) {
   SmallVector<OpFoldResult> results;
   if (failed(op->fold(results))) {
@@ -75,7 +77,8 @@ std::optional<int64_t> getFoldedConstantValue(Operation *op) {
   return getIntAttr(constOp.getValue());
 }
 
-// FROM intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
+// FROM
+// intel-xpu-backend-for-triton/third_party/intel/lib/TritonIntelGPUTransforms/Utility.cpp
 bool isConstant(Value val, const unsigned expected) {
   auto defOp = val.getDefiningOp();
   if (!defOp)
@@ -336,8 +339,7 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 #endif
 
 struct TritonRaiseBlockPointer
-    : triton::cpu::impl::TritonRaiseBlockPointerBase<
-          TritonRaiseBlockPointer> {
+    : triton::cpu::impl::TritonRaiseBlockPointerBase<TritonRaiseBlockPointer> {
   using Base::Base;
   using IndexMapSet = std::map<int, std::set<int>>;
   SmallVector<Operation *> cleanUp;

@@ -172,27 +172,28 @@ PREPROCESS_EXTERNAL = False
 XSMM_PAD = False
 PAD_B_ONLY = False
 
+
 @triton.jit
 def matmul_kernel(
         # Pointers to matrices
-        a_ptr, # arg0
-        b_ptr, # arg1
-        c_ptr, # arg2
+        a_ptr,  # arg0
+        b_ptr,  # arg1
+        c_ptr,  # arg2
         # Matrix dimensions
-        M, # arg3
-        N, # arg4
-        K, # arg5
+    M,  # arg3
+        N,  # arg4
+        K,  # arg5
         # The stride variables represent how much to increase the ptr by when moving by 1
         # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
         # by to get the element one row down (A has M rows).
-        stride_am, # arg6
-        stride_ak, # arg7
-        stride_bk, # arg8
-        stride_bn, # arg9
-        stride_cm, # arg11
-        stride_cn, # arg12
+    stride_am,  # arg6
+        stride_ak,  # arg7
+        stride_bk,  # arg8
+        stride_bn,  # arg9
+        stride_cm,  # arg11
+        stride_cn,  # arg12
         # Meta-parameters
-        BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
         USE_BLOCK_POINTERS: tl.constexpr,  #
 ):
@@ -224,22 +225,12 @@ def matmul_kernel(
     # `b_ptrs` is a block of [BLOCK_SIZE_K, BLOCK_SIZE_N] pointers
     # See above `Pointer Arithmetic` section for details
     if USE_BLOCK_POINTERS:
-        a_tile_ptr = tl.make_block_ptr(
-            base=a_ptr,
-            shape=(M, K),
-            strides=(stride_am, stride_ak),
-            offsets=(block_offset_m, 0),
-            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
-            order=(1, 0)
-        )
-        b_tile_ptr = tl.make_block_ptr(
-            base=b_ptr,
-            shape=(K, N),
-            strides=(stride_bk, stride_bn),
-            offsets=(0, block_offset_n),
-            block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
-            order=(1, 0)
-        )
+        a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+                                       offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
+                                       order=(1, 0))
+        b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+                                       offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
+                                       order=(1, 0))
     else:
         offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
@@ -282,14 +273,9 @@ def matmul_kernel(
 
     if USE_BLOCK_POINTERS:
         # TODO: masking
-        c_block_ptr = tl.make_block_ptr(
-            base=c_ptr,
-            shape=(M, N),
-            strides=(stride_cm, stride_cn),
-            offsets=(block_offset_m, block_offset_n),
-            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
-            order=(1, 0)
-        )
+        c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
+                                        offsets=(block_offset_m, block_offset_n),
+                                        block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
         tl.store(c_block_ptr, c, boundary_check=(0, 1))
     else:
         # -----------------------------------------------------------
@@ -303,12 +289,15 @@ def matmul_kernel(
         # tl.store(c_ptrs, c, mask=c_mask)
         tl.store(c_ptrs, c)
 
+
 # %%
 # We can now create a convenience wrapper function that only takes two input tensors,
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
 
 a_scratch = torch.empty((), dtype=DATA_TYPE)
 b_scratch = torch.empty((), dtype=DATA_TYPE)
+
+
 def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
@@ -365,7 +354,7 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
 # %%
 # We can now create a convenience wrapper function that only takes two input tensors,
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
-def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K: int, k_block: int):
+def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K: int, k_block: int, num_threads=0):
     if not PREPROCESS_EXTERNAL:
         a, b, c, M, N, K, k_block = matmul_preprocess_input(a, b, c)
 
@@ -438,8 +427,7 @@ else:
 
 # Disabled v2 benchmarking.
 # v2 lowering effectively fails for tiles larger than 16 and throws errors on bf16 data type.
-LINE_VALS = [
-    'triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
+LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
 
 LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (native)', 'TorchCPU (compile)']
 LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
@@ -475,6 +463,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 # for different problem sizes.
 
 STR_TYPE = str(DATA_TYPE).rsplit('.')[-1]
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -517,8 +506,9 @@ def benchmark(M, N, K, provider):
     if provider == 'torch-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, b), quantiles=quantiles)
     elif provider == 'triton-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles,
-                                                     device_type=device)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles,
+            device_type=device)
     elif provider == 'torch-cpu-native':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, b, out=c), quantiles=quantiles)
     elif provider == 'torch-cpu-compile':
@@ -526,9 +516,13 @@ def benchmark(M, N, K, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled(a, b, out=c), quantiles=quantiles,
                                                      device_type=device)
     elif provider == 'triton-cpu-single' or provider == 'triton-cpu-single-v2':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles, device_type=device)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block, num_threads=1), quantiles=quantiles,
+            device_type=device)
     elif provider == 'triton-cpu' or provider == 'triton-cpu-v2':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles, device_type=device)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles,
+            device_type=device)
     perf = lambda ms: 2 * M * N * K * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
