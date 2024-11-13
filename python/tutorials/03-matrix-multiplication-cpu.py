@@ -175,6 +175,7 @@ DYNAMIC_K_BLOCK = False
 CACHE_PADDING = False
 PREPROCESS_EXTERNAL = False
 XSMM_PAD = False
+PAD_B_ONLY = False
 
 @triton.jit
 def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, PADDING: tl.constexpr):
@@ -320,7 +321,8 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         #       Currently, cache padding is most useful together with dynamic K blocking
         #       to ensure that stride is non-power-of-two to improve cache behavior.
         if CACHE_PADDING:
-            a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
+            if not PAD_B_ONLY:
+                a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
             b = torch.nn.functional.pad(b, (0, 32, 0, 0), mode='constant', value=0)
 
     #TODO: Currently masked load is not supported yet.
