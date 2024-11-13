@@ -28,8 +28,8 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 
-#include "mlir/Dialect/AMX/AMXDialect.h"
 #include "cpu/include/TritonRaiseBlockPointer/Passes.h"
+#include "mlir/Dialect/AMX/AMXDialect.h"
 
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"

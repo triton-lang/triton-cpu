@@ -166,16 +166,8 @@ PREPACKED = os.getenv("PREPACKED", "0") != "0"
 PAD_B_ONLY = True
 USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
-
 USE_GPU = False
-USE_BLOCK_POINTERS = False
-DATA_TYPE = torch.float32
-K_DIM_PADDING = False
-DYNAMIC_K_BLOCK = False
-CACHE_PADDING = False
-PREPROCESS_EXTERNAL = False
-XSMM_PAD = False
-PAD_B_ONLY = False
+
 
 @triton.jit
 def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, PADDING: tl.constexpr):
@@ -194,22 +186,15 @@ def pad_kernel(in_ptr, out_ptr, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.
 @triton.jit
 def matmul_kernel(
         # Pointers to matrices
-        a_ptr, # arg0
-        b_ptr, # arg1
-        c_ptr, # arg2
+        a_ptr, b_ptr, c_ptr,
         # Matrix dimensions
-        M, # arg3
-        N, # arg4
-        K, # arg5
+        M, N, K,
         # The stride variables represent how much to increase the ptr by when moving by 1
         # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
         # by to get the element one row down (A has M rows).
-        stride_am, # arg6
-        stride_ak, # arg7
-        stride_bk, # arg8
-        stride_bn, # arg9
-        stride_cm, # arg11
-        stride_cn, # arg12
+        stride_am, stride_ak,  #
+        stride_bk, stride_bn,  #
+        stride_cm, stride_cn,
         # Meta-parameters
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
@@ -231,9 +216,6 @@ def matmul_kernel(
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + (pid % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
-    if USE_BLOCK_POINTERS:
-        block_offset_m = pid_m * BLOCK_SIZE_M
-        block_offset_n = pid_n * BLOCK_SIZE_N
 
     # ----------------------------------------------------------
     # Create pointers for the first blocks of A and B.
@@ -278,7 +260,7 @@ def matmul_kernel(
             b_tile_ptr += BLOCK_SIZE_K * stride_bk
 
     # Convert the accumulator to the output matrix C's type if needed.
-    c = accumulator.to(c_ptr.type.element_ty)
+    c = accumulator
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix C.
@@ -293,12 +275,14 @@ def matmul_kernel(
         c_tile_ptr = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
         tl.store(c_tile_ptr, c)
 
+
 # %%
 # We can now create a convenience wrapper function that only takes two input tensors,
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
 
 a_scratch = torch.empty((), dtype=DTYPE)
 b_scratch = torch.empty((), dtype=DTYPE)
+
 
 def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
     # Check constraints.
@@ -317,17 +301,9 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         pad_kernel[(K // BLOCK_SIZE_K, )](b, b_scratch, N, BLOCK_SIZE_K, BLOCK_SIZE_N, 32, num_threads=num_threads)
         b = b_scratch
 
-        # TODO: Check if padding is needed at all.
-        #       Currently, cache padding is most useful together with dynamic K blocking
-        #       to ensure that stride is non-power-of-two to improve cache behavior.
-        if CACHE_PADDING:
-            if not PAD_B_ONLY:
-                a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
-            b = torch.nn.functional.pad(b, (0, 32, 0, 0), mode='constant', value=0)
-
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
-        K % k_block == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
+        K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
     if c is None:
         # Allocates output.
         c = torch.empty((M, N), device=a.device, dtype=torch.float32)
@@ -349,11 +325,10 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K:
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=k_block,  #
+        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
         num_threads=num_threads,  #
-        USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
     )
     return c
 
@@ -380,9 +355,6 @@ print(f"torch_cpu_output_with_{a.dtype}_inputs={torch_output}")
 rtol = 0
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
-elif DATA_TYPE == torch.bfloat16 and torch.allclose(triton_output, torch_output, atol=2e-0, rtol=rtol):
-    print("⚠️ TritonCPU and TorchCPU rounding errors, the maximum difference is "
-          f'{torch.max(torch.abs(triton_output - torch_output))}')
 else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
@@ -431,7 +403,6 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 # To make things easier, Triton has a set of built-in utilities that allow us to concisely plot the performance of our custom ops.
 # for different problem sizes.
 
-STR_TYPE = str(DATA_TYPE).rsplit('.')[-1]
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(

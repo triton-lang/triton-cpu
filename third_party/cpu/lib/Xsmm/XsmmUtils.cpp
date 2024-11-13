@@ -40,7 +40,7 @@ namespace utils {
 // Callable object to verify if `operand` has static shape.
 struct HasStaticShape {
   HasStaticShape() = default;
-  HasStaticShape(SmallVectorImpl<int64_t> *shape) : shape(shape){};
+  HasStaticShape(SmallVectorImpl<int64_t> *shape) : shape(shape) {};
 
   bool operator()(Value operand, Operation *op) const {
     auto operandType = operand.getType();
@@ -61,7 +61,7 @@ struct HasStaticShape {
 // If `operand` is a tensor type or a scalar, return true.
 struct HasStaticStrides {
   HasStaticStrides() = default;
-  HasStaticStrides(SmallVector<int64_t> *strides) : strides(strides){};
+  HasStaticStrides(SmallVector<int64_t> *strides) : strides(strides) {};
 
   bool operator()(Value operand, Operation *op) const {
     auto operandType = operand.getType();
