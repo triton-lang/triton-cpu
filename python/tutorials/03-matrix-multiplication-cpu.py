@@ -517,8 +517,8 @@ def benchmark(M, N, K, provider):
                                                      device_type=device)
     elif provider == 'triton-cpu-single' or provider == 'triton-cpu-single-v2':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block, num_threads=1), quantiles=quantiles,
-            device_type=device)
+            lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block, num_threads=1),
+            quantiles=quantiles, device_type=device)
     elif provider == 'triton-cpu' or provider == 'triton-cpu-v2':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: matmul(triton_a, triton_b, triton_c, m_dim, n_dim, k_dim, k_block), quantiles=quantiles,
