@@ -166,5 +166,128 @@ def TTC_AssertOp : TTC_Op<"assert", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
   let assemblyFormat = "$condition `,` $message attr-dict `:` type($condition)";
 }
 
+def TTC_BrgemmCreate : TTC_Op<"brgemm_create", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyInteger:$M,
+    AnyInteger:$N,
+    AnyInteger:$K_k,
+    AnyInteger:$batch_size,
+    AnyInteger:$lda,
+    AnyInteger:$ldb,
+    AnyInteger:$ldc,
+    I64:$dtypeA,
+    I64:$dtypeB,
+    I64:$dtypeC
+  );
+
+  let results = (outs I64:$result);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_BrgemmCall : TTC_Op<"brgemm_call", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    I64:$kernel_hash,
+    AnyMemRef:$A_ptr,
+    AnyMemRef:$B_ptr,
+    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
+    AnyMemRef:$C_ptr,
+    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$scratchpad
+  );
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_TransformCreate : TTC_Op<"transform_create", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    I64:$K,
+    I64:$N,
+    I64:$in_pack_type,
+    I64:$in_ld,
+    I64:$out_ld,
+    I64:$in_dt,
+    I64:$out_dt
+  );
+
+  let results = (outs I64:$result);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_TransformCall : TTC_Op<"transform_call", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    I64:$kernel_hash,
+    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$in_ptr,
+    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$out_blocked_ptr
+  );
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_ConfigureHW : TTC_Op<"configure_hw", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_ReleaseHW : TTC_Op<"release_hw", []> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
 
 #endif

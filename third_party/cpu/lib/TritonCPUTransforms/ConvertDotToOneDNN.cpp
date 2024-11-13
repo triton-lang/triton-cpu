@@ -18,13 +18,13 @@
 namespace mlir {
 namespace triton {
 namespace cpu {
-#define GEN_PASS_DEF_CONVERTDOTTOAMX
+#define GEN_PASS_DEF_CONVERTDOTTOONEDNN
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 } // namespace cpu
 } // namespace triton
 } // namespace mlir
 
-#define DEBUG_TYPE "triton-cpu-dot-to-amx"
+#define DEBUG_TYPE "triton-cpu-dot-to-onednn"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
@@ -264,12 +264,11 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   return true;
 }
 
-struct brgemm_cache_info_t {
-  brgemm_desc_t desc;
-  brgemm_kernel_t *kernel;
-  std::unique_ptr<char[]> palette;
-};
-
+// struct brgemm_cache_info_t {
+//   brgemm_desc_t desc;
+//   brgemm_kernel_t *kernel;
+//   std::unique_ptr<char[]> palette;
+// };
 
 // Check if accumulator value is updated in a loop and has no other
 // usages than a dot op, that updates it. Tile loads/stores and casts
@@ -628,7 +627,9 @@ Value loadTile(Location loc, VectorType tileTy, const AmxBuffer &buf,
   auto indices =
       shiftIndices(loc, buf.indices, tileTy, tilesInBlockM, tilesInBlockN,
                    blockM, blockN, tileM, tileN, rewriter);
-  return rewriter.create<amx::TileLoadOp>(loc, tileTy, buf.memRef, indices);
+  llvm::errs() << "Should create Load Tile\n";
+  return {}; // rewriter.create<amx::TileLoadOp>(loc, tileTy, buf.memRef,
+             // indices);
 }
 
 void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
@@ -638,7 +639,8 @@ void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
   auto indices =
       shiftIndices(loc, buf.indices, tileTy, tilesInBlockM, tilesInBlockN,
                    blockM, blockN, tileM, tileN, rewriter);
-  rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
+  llvm::errs() << "Should create Store Tile\n";
+  // rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
 }
 
 SmallVector<SmallVector<Value>>
@@ -648,10 +650,14 @@ loadBlockTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
   SmallVector<SmallVector<Value>> res(tilesInBlockM);
   for (int64_t m = 0; m < tilesInBlockM; ++m) {
     for (int64_t n = 0; n < tilesInBlockN; ++n) {
-      Value tile = buf.memRef
-                       ? loadTile(loc, tileTy, buf, tilesInBlockM,
-                                  tilesInBlockN, blockM, blockN, m, n, rewriter)
-                       : rewriter.create<amx::TileZeroOp>(loc, tileTy);
+      Value tile;
+      if (buf.memRef)
+        tile = loadTile(loc, tileTy, buf, tilesInBlockM, tilesInBlockN, blockM,
+                        blockN, m, n, rewriter);
+      else {
+        llvm::errs() << "Should create Tile zero\n";
+        //: rewriter.create<amx::TileZeroOp>(loc, tileTy);
+      }
       res[m].push_back(tile);
     }
   }
@@ -679,105 +685,114 @@ moveLoopAccToTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
 // Multiply two blocks. LHS block is preloaded to tiles with the following
 // iteration over RHS. Accumulator values are updated in accTiles.
 // Optionally, results can also be stored to accBuf.
-void multiplyBlocksPreloadLhs(Location loc, VectorType lhsTileTy,
-                              VectorType rhsTileTy, VectorType accTileTy,
-                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
-                              const AmxBuffer &accBuf, int64_t blockM,
-                              int64_t blockN, int64_t blockK,
-                              int64_t tilesInBlockM, int64_t tilesInBlockN,
-                              SmallVector<SmallVector<Value>> &accTiles,
-                              bool storeResult, PatternRewriter &rewriter) {
-  bool isInteger = accTileTy.getElementType().isInteger();
-  SmallVector<SmallVector<Value>> lhsTiles = loadBlockTiles(
-      loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM, blockK, rewriter);
-  
+// void multiplyBlocksPreloadLhs(Location loc, VectorType lhsTileTy,
+//                               VectorType rhsTileTy, VectorType accTileTy,
+//                               const AmxBuffer &lhsBuf, const AmxBuffer
+//                               &rhsBuf, const AmxBuffer &accBuf, int64_t
+//                               blockM, int64_t blockN, int64_t blockK, int64_t
+//                               tilesInBlockM, int64_t tilesInBlockN,
+//                               SmallVector<SmallVector<Value>> &accTiles,
+//                               bool storeResult, PatternRewriter &rewriter) {
+//   bool isInteger = accTileTy.getElementType().isInteger();
+//   SmallVector<SmallVector<Value>> lhsTiles = loadBlockTiles(
+//       loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM, blockK, rewriter);
 
-  SmallVector<Value, 10> operands;
-  SmallVector<Type, 10> operandTypes;
+//   SmallVector<Value, 10> operands;
+//   SmallVector<Type, 10> operandTypes;
 
-  auto raw_operands = op->getOperands();
-  size_t raw_op_cnt = 0;
-  for (Value operand : raw_operands) {
-    if (raw_op_cnt++ >= 5) {
-      // drop the last operand for `addr list length`
-      break;
-    }
-    Type operandType = operand.getType();
-    if (auto memrefType = dyn_cast<MemRefType>(operandType)) {
-      Type basePtrType = LLVM::LLVMPointerType::get(context);
-      auto [ptr, offset] = utils::getPtrAndOffset(rewriter, operand);
-      operands.push_back(ptr);
-      operands.push_back(offset);
-      operandTypes.push_back(basePtrType);
-      operandTypes.push_back(rewriter.getIndexType()); // offset
-    } else {
-      operands.push_back(operand);
-      operandTypes.push_back(operand.getType());
-    }
-  }
+//   auto raw_operands = op->getOperands();
+//   size_t raw_op_cnt = 0;
+//   for (Value operand : raw_operands) {
+//     if (raw_op_cnt++ >= 5) {
+//       // drop the last operand for `addr list length`
+//       break;
+//     }
+//     Type operandType = operand.getType();
+//     if (auto memrefType = dyn_cast<MemRefType>(operandType)) {
+//       Type basePtrType = LLVM::LLVMPointerType::get(context);
+//       auto [ptr, offset] = utils::getPtrAndOffset(rewriter, operand);
+//       operands.push_back(ptr);
+//       operands.push_back(offset);
+//       operandTypes.push_back(basePtrType);
+//       operandTypes.push_back(rewriter.getIndexType()); // offset
+//     } else {
+//       operands.push_back(operand);
+//       operandTypes.push_back(operand.getType());
+//     }
+//   }
 
-  createFuncCall(rewriter, loc, module, "dnnl_brgemm_execute", operands,
-                   operandTypes, {});
+//   createFuncCall(rewriter, loc, module, "dnnl_brgemm_execute", operands,
+//                  operandTypes, {});
 
-  
-  for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-    Value rhsTile = loadTile(loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK,
-                             blockN, 0, tileN, rewriter);
+//   for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
+//     Value rhsTile = loadTile(loc, rhsTileTy, rhsBuf, 1, tilesInBlockN,
+//     blockK,
+//                              blockN, 0, tileN, rewriter);
 
-    for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-      if (isInteger)
-        accTiles[tileM][tileN] =
-            rewriter.create<amx::TileMulIOp>(loc, accTileTy, lhsTiles[tileM][0],
-                                             rhsTile, accTiles[tileM][tileN]);
-      else
-        accTiles[tileM][tileN] =
-            rewriter.create<amx::TileMulFOp>(loc, accTileTy, lhsTiles[tileM][0],
-                                             rhsTile, accTiles[tileM][tileN]);
+//     for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
+//       if (isInteger)
+//         llvm::errs() << "Should create MulI Tile\n";
+//       // accTiles[tileM][tileN] =
+//       //     rewriter.create<amx::TileMulIOp>(loc, accTileTy,
+//       //     lhsTiles[tileM][0],
+//       //                                      rhsTile,
+//       accTiles[tileM][tileN]); else
+//         llvm::errs() << "Should create MulF Tile\n";
+//       // accTiles[tileM][tileN] =
+//       //     rewriter.create<amx::TileMulFOp>(loc, accTileTy,
+//       //     lhsTiles[tileM][0],
+//       //                                      rhsTile,
+//       accTiles[tileM][tileN]);
 
-      // Insert store here to better mix stores with multiplications.
-      if (storeResult) {
-        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
-                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-      }
-    }
-  }
-}
+//       // Insert store here to better mix stores with multiplications.
+//       if (storeResult) {
+//         storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf,
+//         tilesInBlockM,
+//                   tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
+//       }
+//     }
+//   }
+// }
 
 // Similar to multiplyBlocksPreloadLhs but here RHS is preloaded to tiles.
-void multiplyBlocksPreloadRhs(Location loc, VectorType lhsTileTy,
-                              VectorType rhsTileTy, VectorType accTileTy,
-                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
-                              const AmxBuffer &accBuf, int64_t blockM,
-                              int64_t blockN, int64_t blockK,
-                              int64_t tilesInBlockM, int64_t tilesInBlockN,
-                              SmallVector<SmallVector<Value>> &accTiles,
-                              bool storeResult, PatternRewriter &rewriter) {
-  bool isInteger = accTileTy.getElementType().isInteger();
-  SmallVector<SmallVector<Value>> rhsTiles = loadBlockTiles(
-      loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK, blockN, rewriter);
+// void multiplyBlocksPreloadRhs(Location loc, VectorType lhsTileTy,
+//                               VectorType rhsTileTy, VectorType accTileTy,
+//                               const AmxBuffer &lhsBuf, const AmxBuffer
+//                               &rhsBuf, const AmxBuffer &accBuf, int64_t
+//                               blockM, int64_t blockN, int64_t blockK, int64_t
+//                               tilesInBlockM, int64_t tilesInBlockN,
+//                               SmallVector<SmallVector<Value>> &accTiles,
+//                               bool storeResult, PatternRewriter &rewriter) {
+//   bool isInteger = accTileTy.getElementType().isInteger();
+//   SmallVector<SmallVector<Value>> rhsTiles = loadBlockTiles(
+//       loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK, blockN, rewriter);
 
-  for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-    Value lhsTile = loadTile(loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM,
-                             blockK, tileM, 0, rewriter);
+//   for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
+//     Value lhsTile = loadTile(loc, lhsTileTy, lhsBuf, tilesInBlockM, 1,
+//     blockM,
+//                              blockK, tileM, 0, rewriter);
 
-    for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-      if (isInteger)
-        accTiles[tileM][tileN] = rewriter.create<amx::TileMulIOp>(
-            loc, accTileTy, lhsTile, rhsTiles[0][tileN],
-            accTiles[tileM][tileN]);
-      else
-        accTiles[tileM][tileN] = rewriter.create<amx::TileMulFOp>(
-            loc, accTileTy, lhsTile, rhsTiles[0][tileN],
-            accTiles[tileM][tileN]);
+//     for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
+//       if (isInteger)
+//         llvm::errs() << "Should create MulI Tile\n";
+//       // accTiles[tileM][tileN] = rewriter.create<amx::TileMulIOp>(
+//       //     loc, accTileTy, lhsTile, rhsTiles[0][tileN],
+//       //     accTiles[tileM][tileN]);
+//       else
+//         llvm::errs() << "Should create MulF Tile\n";
+//       // accTiles[tileM][tileN] = rewriter.create<amx::TileMulFOp>(
+//       //     loc, accTileTy, lhsTile, rhsTiles[0][tileN],
+//       //     accTiles[tileM][tileN]);
 
-      // Insert store here to better mix stores with multiplications.
-      if (storeResult) {
-        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
-                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-      }
-    }
-  }
-}
+//       // Insert store here to better mix stores with multiplications.
+//       if (storeResult) {
+//         storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf,
+//         tilesInBlockM,
+//                   tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
+//       }
+//     }
+//   }
+// }
 
 LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
@@ -787,6 +802,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   VectorType rhsTy = cast<VectorType>(op.getRhs().getType());
   VectorType accTy = cast<VectorType>(op.getAcc().getType());
   VectorType resTy = cast<VectorType>(op.getResultType());
+
   VectorType lhsTileTy =
       lhsTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileK}),
                       candidate.lhsTileElemTy);
@@ -815,11 +831,18 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   FloatType float32 = FloatType::getF32(rewriter.getContext());
 
-  // M, N, K, LDA, LDB, LDC, stride_a, stride_b
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   // they are in the same order with BrgemmDispatchOp inputs
-  ArrayRef<int64_t> inputs{
-      candidate.tileM,     candidate.tileN,    candidate.tileK, 0, 0, 0,
-      lhsTy.getShape()[0], rhsTy.getShape()[0]};
+  ArrayRef<int64_t> inputs{candidate.tileM,
+                           candidate.tileN,
+                           candidate.tileK,
+                           /*batch_size*/ 1,
+                           /* ldc - full tensor size*/ lhsTy.getShape()[0],
+                           /*ldb*/ rhsTy.getShape()[1],
+                           /*ldc*/ resTy.getShape()[1]};
+  LDBG("Inps: M - " << candidate.tileM << ", N - " << candidate.tileN
+                    << ", K - " << candidate.tileK << " lhsType - " << lhsTy
+                    << " rhsType - " << rhsTy);
   for (auto input : inputs) {
     auto attr = IntegerAttr::get(rewriter.getI64Type(), input);
     operands.push_back(
@@ -827,29 +850,19 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     operandTypes.push_back(integer64);
   }
 
-  // beta
-  ArrayAttr flags = op.getFlagsAttr();
-  float beta = 1.0f;
-  // for (Attribute flag : flags) {
-  //   auto brgemmFlag = dyn_cast_or_null<microkernel::BrgemmFlagsAttr>(flag);
-  //   if (!brgemmFlag)
-  //     return rewriter.notifyMatchFailure(op, "unknown flag for BRGEMM");
-  //   if (brgemmFlag.getValue() == BrgemmFlags::LIST)
-  //     return rewriter.notifyMatchFailure(
-  //         op, "addr mode BRGEMM not supported yet");
-  //   if (brgemmFlag.getValue() == BrgemmFlags::BETA_0)
-  //     beta = 0.0f;
-  // }
-  auto betaAttr = FloatAttr::get(rewriter.getF32Type(), beta);
-  operands.push_back(
-      rewriter.create<arith::ConstantOp>(loc, float32, betaAttr));
-  operandTypes.push_back(float32);
+  // dtypeA, dtypeB, dtypeC
+  SmallVector<Attribute, 2> brgemmDtypes{
+      TypeAttr::get(getElementTypeOrSelf(op.getLhs().getType())),
+      TypeAttr::get(getElementTypeOrSelf(op.getRhs().getType())),
+      TypeAttr::get(getElementTypeOrSelf(op.getResultType()))};
 
-  // dtypeA, dtypeB
-  auto dtypes = op.getDataType();
-  if (dtypes.size() != 2)
-    return rewriter.notifyMatchFailure(op,
-                                       "invalid number of DataType for BRGEMM");
+  LDBG("ElemTyeps: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
+                     << brgemmDtypes[2]);
+
+  // create dispatch op
+  // auto flags = rewriter.getArrayAttr(brgemmFlags);
+  auto dtypes = rewriter.getArrayAttr(brgemmDtypes);
+
   auto dtypeAAttr = IntegerAttr::get(rewriter.getI64Type(),
                                      getDnnlDataTypeVal(rewriter, dtypes[0]));
   auto dtypeBAttr = IntegerAttr::get(rewriter.getI64Type(),
@@ -861,13 +874,27 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       rewriter.create<arith::ConstantOp>(loc, integer64, dtypeBAttr));
   operandTypes.push_back(integer64);
 
-  func::CallOp call =
-      createFuncCall(rewriter, loc, module, "dnnl_brgemm_dispatch", operands,
-                     operandTypes, {integer64});
-  
+  auto dtypeCAttr = IntegerAttr::get(rewriter.getI64Type(),
+                                     getDnnlDataTypeVal(rewriter, dtypes[2]));
+  operands.push_back(
+      rewriter.create<arith::ConstantOp>(loc, integer64, dtypeCAttr));
+
+  Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
+      loc, rewriter.getI64Type(), operands[0], operands[1], operands[2], operands[3],
+      operands[4], operands[5], operands[6], operands[7], operands[8], operands[9]);
+
+  // void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
+  //                           int64_t batch_size, int64_t lda, int64_t ldb,
+  //                           int64_t ldc, int64_t dtypeA, int64_t dtypeB,
+  //                           int64_t dtypeC)
+  // func::CallOp call =
+  //     createFuncCall(rewriter, loc, module, "create_brgemm_ukernel",
+  //     operands,
+  //                    operandTypes, {ptr_ty(rewriter.getContext())});
+
   // make tile config void
-  createFuncCall(rewriter, loc, module, DNNL_BRGEMM_TILECFG_NAME,
-                       {}, {}, {});
+  // createFuncCall(rewriter, loc, module, DNNL_BRGEMM_TILECFG_NAME, {}, {},
+  // {});
 
   // Cast input data if required and prepare input buffer. It might be temporary
   // buffers with stored vectors or the original input memory.
@@ -930,16 +957,17 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
         // we would use all tile registers trying to keep both ACC and
         // LHS blocks on registers. To decrease register pressure, keep
         // the smallest block on tiles.
-        if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
-          multiplyBlocksPreloadLhs(
-              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
-              blockM, blockN, blocK, candidate.tilesInBlockM,
-              candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
-        else
-          multiplyBlocksPreloadRhs(
-              loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
-              blockM, blockN, blocK, candidate.tilesInBlockM,
-              candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
+
+        // if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
+        //   multiplyBlocksPreloadLhs(
+        //       loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
+        //       blockM, blockN, blocK, candidate.tilesInBlockM,
+        //       candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
+        // else
+        //   multiplyBlocksPreloadRhs(
+        //       loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
+        //       blockM, blockN, blocK, candidate.tilesInBlockM,
+        //       candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
       }
     }
   }
@@ -981,13 +1009,11 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   return success();
 }
 
-struct ConvertDotToAMX
-    : public triton::cpu::impl::ConvertDotToAMXBase<ConvertDotToAMX> {
-  ConvertDotToAMX() = default;
+struct ConvertDotToOneDNN
+    : public triton::cpu::impl::ConvertDotToOneDNNBase<ConvertDotToOneDNN> {
+  ConvertDotToOneDNN() = default;
 
   void runOnOperation() override {
-    if (!convertInt8 && !convertFp16 && !convertBf16)
-      return;
 
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
@@ -1010,7 +1036,7 @@ struct ConvertDotToAMX
           LDBG("  TilesInBlockN: " << candidate.tilesInBlockN);
           LDBG("  KeepAccOnTiles: " << candidate.keepAccOnTiles);
           LDBG("  KeepAccInBuf: " << candidate.keepAccInBuf);
-          LDBG("  Has output buffer: " << !candidate.outBuf.empty());
+          LDBG("  Has output buffer: " << (bool)!candidate.outBuf.empty());
         });
         candidates.push_back(candidate);
       }
@@ -1036,8 +1062,8 @@ namespace mlir {
 namespace triton {
 namespace cpu {
 
-std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToAMX() {
-  return std::make_unique<ConvertDotToAMX>();
+std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToOneDNN() {
+  return std::make_unique<ConvertDotToOneDNN>();
 }
 
 } // namespace cpu

@@ -125,4 +125,30 @@ def ConvertDotToAMX : Pass<"triton-cpu-convert-dot-to-amx", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def ConvertDotToOneDNN : Pass<"triton-cpu-convert-dot-to-onednn", "mlir::ModuleOp"> {
+    let summary = "Convert dot product op to OneDNN.";
+    let description = [{
+        This pass is used to lower matmul operations to OneDNN.
+    }];
+
+    let options = [
+        Option<"convertInt8", "convert-i8",
+               "bool", /*default*/"true",
+               "Use AMX extensions for int8 type.">,
+        Option<"convertFp16", "convert-fp16",
+               "bool", /*default*/"true",
+               "Use AMX extensions for ifp16 type.">,
+        Option<"convertBf16", "convert-bf16",
+               "bool", /*default*/"true",
+               "Use AMX extensions for bf16 type.">,
+    ];
+
+    let constructor = "mlir::triton::cpu::createConvertDotToOneDNN()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 #endif

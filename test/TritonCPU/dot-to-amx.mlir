@@ -14,6 +14,7 @@
 
 #loc = loc(unknown)
 #map = affine_map<(d0, d1, d2) -> (d0, d2)>
+#map = affine_map<(d0, d1, d2) -> (d0, d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 module {

@@ -83,6 +83,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
                                       bool useHorizontalSum) {
     pm.addPass(mlir::triton::cpu::createConvertDotProduct(useHorizontalSum));
   });
+  m.def("add_convert_dot_to_onednn", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToOneDNN());
+  });
   m.def("add_convert_dot_to_amx", [](mlir::PassManager &pm, bool convertInt8,
                                      bool convertFp16, bool convertBf16) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
