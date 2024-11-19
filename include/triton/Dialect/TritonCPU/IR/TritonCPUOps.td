@@ -166,7 +166,7 @@ def TTC_AssertOp : TTC_Op<"assert", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
   let assemblyFormat = "$condition `,` $message attr-dict `:` type($condition)";
 }
 
-def TTC_BrgemmCreate : TTC_Op<"brgemm_create", []> {
+def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
   let summary = "";
 
   let description = [{}];
@@ -194,7 +194,8 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", []> {
   // let hasVerifier = 1;
 }
 
-def TTC_BrgemmCall : TTC_Op<"brgemm_call", []> {
+def TTC_BrgemmCall : TTC_Op<"brgemm_call", [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
   let summary = "";
 
   let description = [{}];
@@ -202,11 +203,11 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call", []> {
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins
     I64:$kernel_hash,
-    AnyMemRef:$A_ptr,
-    AnyMemRef:$B_ptr,
-    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
-    AnyMemRef:$C_ptr,
-    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$scratchpad
+    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
+    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
+    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad
   );
 
   // let assemblyFormat = [{
@@ -216,7 +217,7 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call", []> {
   // let hasVerifier = 1;
 }
 
-def TTC_TransformCreate : TTC_Op<"transform_create", []> {
+def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   let summary = "";
 
   let description = [{}];
@@ -225,7 +226,7 @@ def TTC_TransformCreate : TTC_Op<"transform_create", []> {
   let arguments = (ins
     I64:$K,
     I64:$N,
-    I64:$in_pack_type,
+    // I64:$in_pack_type,
     I64:$in_ld,
     I64:$out_ld,
     I64:$in_dt,
@@ -241,7 +242,8 @@ def TTC_TransformCreate : TTC_Op<"transform_create", []> {
   // let hasVerifier = 1;
 }
 
-def TTC_TransformCall : TTC_Op<"transform_call", []> {
+def TTC_TransformCall : TTC_Op<"transform_call", [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
   let summary = "";
 
   let description = [{}];
@@ -249,8 +251,8 @@ def TTC_TransformCall : TTC_Op<"transform_call", []> {
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins
     I64:$kernel_hash,
-    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$in_ptr,
-    AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$out_blocked_ptr
+    Arg<AnyMemRef, "", [MemRead]>:$in_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$out_blocked_ptr
   );
 
   // let assemblyFormat = [{
@@ -260,13 +262,13 @@ def TTC_TransformCall : TTC_Op<"transform_call", []> {
   // let hasVerifier = 1;
 }
 
-def TTC_ConfigureHW : TTC_Op<"configure_hw", []> {
+def TTC_ConfigureHW : TTC_Op<"configure_hw", [NoMemoryEffect]> {
   let summary = "";
 
   let description = [{}];
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins);
+  let arguments = (ins I64:$brgemm_kernel_hash);
 
   // let assemblyFormat = [{
   //   $prefix attr-dict (`:` $val^ `:` type($val))?
@@ -275,7 +277,7 @@ def TTC_ConfigureHW : TTC_Op<"configure_hw", []> {
   // let hasVerifier = 1;
 }
 
-def TTC_ReleaseHW : TTC_Op<"release_hw", []> {
+def TTC_ReleaseHW : TTC_Op<"release_hw", [NoMemoryEffect]> {
   let summary = "";
 
   let description = [{}];

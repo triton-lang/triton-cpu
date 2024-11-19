@@ -8,11 +8,15 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
+
 #include "include/triton/Analysis/Utility.h"
 #include "oneapi/dnnl/dnnl_types.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include <iostream>
+#include <tuple>
 #include <utility>
 
 namespace mlir {
@@ -481,7 +485,7 @@ AmxBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(allocaPoint);
   auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
-  Value memRef = rewriter.create<memref::AllocaOp>(
+  Value memRef = rewriter.create<memref::AllocOp>(
       loc, memRefTy, rewriter.getIntegerAttr(rewriter.getI64Type(), 64));
   Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   SmallVector<Value, 2> indices(2, zeroIdx);
@@ -501,32 +505,14 @@ AmxBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
 // so that original columns are 32-bits now. In case of int8 type, the
 // result would be:
 //   B(0,0) B(1,0) B(2,0), B(3,0) ... B(0,15) B(1,15), B(2,15) B(3,15)
-void interleaveAndStore(Location loc, Value val, Value buf,
-                        PatternRewriter &rewriter) {
-  LDBG("Repacking operand before storing to a buffer.");
-  VectorType valTy = cast<VectorType>(val.getType());
-  int64_t rowsPerGroup = 32 / valTy.getElementTypeBitWidth();
-  assert(rowsPerGroup == 2 || rowsPerGroup == 4);
-  assert(valTy.getDimSize(0) % rowsPerGroup == 0);
-  Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  for (int64_t i = 0; i < valTy.getDimSize(0); i += rowsPerGroup) {
-    Value row1, row2;
-    if (rowsPerGroup == 2) {
-      row1 = rewriter.create<vector::ExtractOp>(loc, val, i);
-      row2 = rewriter.create<vector::ExtractOp>(loc, val, i + 1);
-    } else {
-      row1 = rewriter.create<vector::InterleaveOp>(
-          loc, rewriter.create<vector::ExtractOp>(loc, val, i),
-          rewriter.create<vector::ExtractOp>(loc, val, i + 2));
-      row2 = rewriter.create<vector::InterleaveOp>(
-          loc, rewriter.create<vector::ExtractOp>(loc, val, i + 1),
-          rewriter.create<vector::ExtractOp>(loc, val, i + 3));
-    }
-    Value shuffled = rewriter.create<vector::InterleaveOp>(loc, row1, row2);
-    Value idx = rewriter.create<arith::ConstantIndexOp>(loc, i / rowsPerGroup);
-    rewriter.create<vector::StoreOp>(loc, shuffled, buf,
-                                     SmallVector<Value>({idx, zeroIdx}));
-  }
+void transformIntoBuf(Location loc, Value transform_hash, Value inputBuf,
+                      Value outBuf, PatternRewriter &rewriter) {
+  // TODO add check that all is memref
+
+  // K, N, in_pack, in_ld, out_ld, in_dt, out_dt
+  // Value transform =
+  rewriter.create<triton::cpu::TransformCall>(loc, transform_hash, inputBuf,
+                                              outBuf);
 }
 
 // Prepare temporary buffers to be used for tile loads. If the original
@@ -536,35 +522,42 @@ void interleaveAndStore(Location loc, Value val, Value buf,
 //
 // If interleave flag is set, then pre-pack RHS before sotring. See
 // interleaveAndStore for more details.
-AmxBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
-                              bool skipForZeros, bool readOnly,
-                              Operation *allocaPoint,
-                              PatternRewriter &rewriter) {
-  LDBG("Preparing buffer (interleave=" << interleave
-                                       << ") for a vector: " << val);
+AmxBuffer prepareTensorBuffer(PatternRewriter &rewriter, Location loc,
+                              Value val, bool readOnly, Operation *allocaPoint,
+                              Value transform = nullptr) {
+  LDBG("Preparing buffer (interleave=" << (transform == nullptr)
+                                       << ") for a vector: " << val
+                                       << " readOnly: " << readOnly);
   auto valLoad = val.getDefiningOp<vector::TransferReadOp>();
-  if (valLoad && !interleave && readOnly && !hasMaskOrBoundsCheck(valLoad)) {
+  // some extra conditions required
+  if (valLoad) {
+    LDBG("Lhs should take src memref!\n");
     Value memRef = valLoad.getSource();
     ValueRange indices = valLoad.getIndices();
-    LDBG("  Reusing the original memref for a buffer: " << memRef);
-    return {memRef, indices};
-  }
+    if (!transform) {
+      LDBG("  Reusing the original memref for a buffer: " << memRef);
+      return {memRef, indices};
+    }
 
-  if (skipForZeros && isZeroConst(val)) {
-    LDBG("Skip buffer for zero vector.");
-    return {};
+    // Just a stub, dont know why we should use Vector TYpe here
+    auto vecTy = cast<VectorType>(val.getType());
+    AmxBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
+
+    LDBG("  Reusing the original memref for a buffer: " << memRef);
+    transformIntoBuf(loc, transform, memRef, buf.memRef, rewriter);
+    return buf;
   }
 
   auto vecTy = cast<VectorType>(val.getType());
-  if (interleave)
-    vecTy = getSwizzledRhsTileType(vecTy);
   AmxBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
 
-  if (interleave) {
-    interleaveAndStore(loc, val, buf.memRef, rewriter);
-  } else {
-    rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
+  if (transform) {
+    LDBG("Unhandled case for transform: " << val);
+    assert(false);
+    return {};
   }
+
+  rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
 
   return buf;
 }
@@ -576,7 +569,9 @@ AmxBuffer prepareResultBuffer(Location loc, Value val, const AmxBuffer &accBuf,
                               const AmxBuffer &outBuf, Operation *allocaPoint,
                               PatternRewriter &rewriter) {
   if (!outBuf.empty()) {
-    LDBG("Output memory will be used for direct tile stores.");
+    LDBG("Output memory will be used for direct tile stores. Outbuf in "
+         "candidate: "
+         << outBuf.memRef.getType());
     return outBuf;
   }
 
@@ -628,8 +623,8 @@ Value loadTile(Location loc, VectorType tileTy, const AmxBuffer &buf,
       shiftIndices(loc, buf.indices, tileTy, tilesInBlockM, tilesInBlockN,
                    blockM, blockN, tileM, tileN, rewriter);
   llvm::errs() << "Should create Load Tile\n";
-  return {}; // rewriter.create<amx::TileLoadOp>(loc, tileTy, buf.memRef,
-             // indices);
+  return buf.memRef; // rewriter.create<amx::TileLoadOp>(loc, tileTy,
+                     // buf.memRef, indices);
 }
 
 void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
@@ -685,122 +680,89 @@ moveLoopAccToTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
 // Multiply two blocks. LHS block is preloaded to tiles with the following
 // iteration over RHS. Accumulator values are updated in accTiles.
 // Optionally, results can also be stored to accBuf.
-// void multiplyBlocksPreloadLhs(Location loc, VectorType lhsTileTy,
-//                               VectorType rhsTileTy, VectorType accTileTy,
-//                               const AmxBuffer &lhsBuf, const AmxBuffer
-//                               &rhsBuf, const AmxBuffer &accBuf, int64_t
-//                               blockM, int64_t blockN, int64_t blockK, int64_t
-//                               tilesInBlockM, int64_t tilesInBlockN,
-//                               SmallVector<SmallVector<Value>> &accTiles,
-//                               bool storeResult, PatternRewriter &rewriter) {
-//   bool isInteger = accTileTy.getElementType().isInteger();
-//   SmallVector<SmallVector<Value>> lhsTiles = loadBlockTiles(
-//       loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM, blockK, rewriter);
+void multiplyBlocksPreloadRhs(Location loc, Value brgemm, VectorType lhsTileTy,
+                              VectorType rhsTileTy, VectorType accTileTy,
+                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
+                              const AmxBuffer &accBuf, int64_t blockM,
+                              int64_t blockN, int64_t blockK,
+                              int64_t tilesInBlockM, int64_t tilesInBlockN,
+                              SmallVector<SmallVector<Value>> &accTiles,
+                              bool storeResult, PatternRewriter &rewriter) {
+  bool isInteger = accTileTy.getElementType().isInteger();
+  SmallVector<SmallVector<Value>> rhsTiles = loadBlockTiles(
+      loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK, blockN, rewriter);
 
-//   SmallVector<Value, 10> operands;
-//   SmallVector<Type, 10> operandTypes;
+  for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
+    Value lhsTile = loadTile(loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM,
+                             blockK, tileM, 0, rewriter);
 
-//   auto raw_operands = op->getOperands();
-//   size_t raw_op_cnt = 0;
-//   for (Value operand : raw_operands) {
-//     if (raw_op_cnt++ >= 5) {
-//       // drop the last operand for `addr list length`
-//       break;
-//     }
-//     Type operandType = operand.getType();
-//     if (auto memrefType = dyn_cast<MemRefType>(operandType)) {
-//       Type basePtrType = LLVM::LLVMPointerType::get(context);
-//       auto [ptr, offset] = utils::getPtrAndOffset(rewriter, operand);
-//       operands.push_back(ptr);
-//       operands.push_back(offset);
-//       operandTypes.push_back(basePtrType);
-//       operandTypes.push_back(rewriter.getIndexType()); // offset
-//     } else {
-//       operands.push_back(operand);
-//       operandTypes.push_back(operand.getType());
-//     }
-//   }
+    for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
+      // FIXME TODO
+      // add offsets map
+      rewriter.create<triton::cpu::BrgemmCall>(
+          loc, brgemm, lhsTile, rhsTiles[0][tileN], accTiles[tileM][tileN],
+          accTiles[tileM][tileN]);
 
-//   createFuncCall(rewriter, loc, module, "dnnl_brgemm_execute", operands,
-//                  operandTypes, {});
-
-//   for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-//     Value rhsTile = loadTile(loc, rhsTileTy, rhsBuf, 1, tilesInBlockN,
-//     blockK,
-//                              blockN, 0, tileN, rewriter);
-
-//     for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-//       if (isInteger)
-//         llvm::errs() << "Should create MulI Tile\n";
-//       // accTiles[tileM][tileN] =
-//       //     rewriter.create<amx::TileMulIOp>(loc, accTileTy,
-//       //     lhsTiles[tileM][0],
-//       //                                      rhsTile,
-//       accTiles[tileM][tileN]); else
-//         llvm::errs() << "Should create MulF Tile\n";
-//       // accTiles[tileM][tileN] =
-//       //     rewriter.create<amx::TileMulFOp>(loc, accTileTy,
-//       //     lhsTiles[tileM][0],
-//       //                                      rhsTile,
-//       accTiles[tileM][tileN]);
-
-//       // Insert store here to better mix stores with multiplications.
-//       if (storeResult) {
-//         storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf,
-//         tilesInBlockM,
-//                   tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-//       }
-//     }
-//   }
-// }
+      // Insert store here to better mix stores with multiplications.
+      if (storeResult) {
+        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
+                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
+      }
+    }
+  }
+}
 
 // Similar to multiplyBlocksPreloadLhs but here RHS is preloaded to tiles.
-// void multiplyBlocksPreloadRhs(Location loc, VectorType lhsTileTy,
-//                               VectorType rhsTileTy, VectorType accTileTy,
-//                               const AmxBuffer &lhsBuf, const AmxBuffer
-//                               &rhsBuf, const AmxBuffer &accBuf, int64_t
-//                               blockM, int64_t blockN, int64_t blockK, int64_t
-//                               tilesInBlockM, int64_t tilesInBlockN,
-//                               SmallVector<SmallVector<Value>> &accTiles,
-//                               bool storeResult, PatternRewriter &rewriter) {
-//   bool isInteger = accTileTy.getElementType().isInteger();
-//   SmallVector<SmallVector<Value>> rhsTiles = loadBlockTiles(
-//       loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK, blockN, rewriter);
+void multiplyBlocksPreloadLhs(Location loc, Value brgemm, VectorType lhsTileTy,
+                              VectorType rhsTileTy, VectorType accTileTy,
+                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
+                              const AmxBuffer &accBuf, int64_t blockM,
+                              int64_t blockN, int64_t blockK,
+                              int64_t tilesInBlockM, int64_t tilesInBlockN,
+                              SmallVector<SmallVector<Value>> &accTiles,
+                              bool storeResult, PatternRewriter &rewriter) {
+  SmallVector<SmallVector<Value>> lhsTiles = loadBlockTiles(
+      loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM, blockK, rewriter);
 
-//   for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-//     Value lhsTile = loadTile(loc, lhsTileTy, lhsBuf, tilesInBlockM, 1,
-//     blockM,
-//                              blockK, tileM, 0, rewriter);
+  for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
 
-//     for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-//       if (isInteger)
-//         llvm::errs() << "Should create MulI Tile\n";
-//       // accTiles[tileM][tileN] = rewriter.create<amx::TileMulIOp>(
-//       //     loc, accTileTy, lhsTile, rhsTiles[0][tileN],
-//       //     accTiles[tileM][tileN]);
-//       else
-//         llvm::errs() << "Should create MulF Tile\n";
-//       // accTiles[tileM][tileN] = rewriter.create<amx::TileMulFOp>(
-//       //     loc, accTileTy, lhsTile, rhsTiles[0][tileN],
-//       //     accTiles[tileM][tileN]);
+    Value rhsTile = loadTile(loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK,
+                             blockN, 0, tileN, rewriter);
 
-//       // Insert store here to better mix stores with multiplications.
-//       if (storeResult) {
-//         storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf,
-//         tilesInBlockM,
-//                   tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-//       }
-//     }
-//   }
-// }
+    for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
+      LDBG("Call args: " << brgemm << ", \n\tA: " << lhsTiles[tileM][0]
+                         << ", \n\tB: " << rhsTile << ", \n\tC: "
+                         << accTiles[tileM][tileN] << ", \n\tscratch: --");
+      // FIXME TODO
+      // add offsets map
+      rewriter.create<triton::cpu::BrgemmCall>(loc, brgemm, lhsTiles[tileM][0],
+                                               rhsTile, accTiles[tileM][tileN],
+                                               accTiles[tileM][tileN]);
+
+      // Insert store here to better mix stores with multiplications.
+      if (storeResult) {
+        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
+                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
+      }
+    }
+  }
+}
+
+std::optional<unsigned> getPosInCodomain(unsigned dim, AffineMap map,
+                                         MLIRContext *ctx) {
+  return map.getResultPosition(getAffineDimExpr(dim, ctx));
+}
 
 LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
   vector::ContractionOp op = candidate.op;
   Location loc = op.getLoc();
+  MLIRContext *ctx = op.getContext();
+
   VectorType lhsTy = cast<VectorType>(op.getLhs().getType());
   VectorType rhsTy = cast<VectorType>(op.getRhs().getType());
-  VectorType accTy = cast<VectorType>(op.getAcc().getType());
+  VectorType accTy =
+      cast<VectorType>(op.getAcc().getType()); // BLOCK_M x BLOCK_N
   VectorType resTy = cast<VectorType>(op.getResultType());
 
   VectorType lhsTileTy =
@@ -831,6 +793,19 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   FloatType float32 = FloatType::getF32(rewriter.getContext());
 
+  // Value strideA, strideB;
+  // std::optional<Value> batchSize;
+  // if (posBatch) {
+  //   auto posBatchInA = *getPosInCodomain(*posBatch, indexingMaps[0], ctx);
+  //   auto posBatchInB = *getPosInCodomain(*posBatch, indexingMaps[1], ctx);
+  //   batchSize = metadataA.getSizes()[posBatchInA];
+  //   strideA = metadataA.getStrides()[posBatchInA];
+  //   strideB = metadataB.getStrides()[posBatchInB];
+  // }
+
+  // auto dtype = xsmm::utils::getDataType(rewriter, inputs[0].getType());
+  // auto outDtype = xsmm::utils::getDataType(rewriter, inputs[2].getType());
+
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   // they are in the same order with BrgemmDispatchOp inputs
   ArrayRef<int64_t> inputs{candidate.tileM,
@@ -856,7 +831,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       TypeAttr::get(getElementTypeOrSelf(op.getRhs().getType())),
       TypeAttr::get(getElementTypeOrSelf(op.getResultType()))};
 
-  LDBG("ElemTyeps: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
+  LDBG("ElemTypes: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
                      << brgemmDtypes[2]);
 
   // create dispatch op
@@ -880,17 +855,9 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       rewriter.create<arith::ConstantOp>(loc, integer64, dtypeCAttr));
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, rewriter.getI64Type(), operands[0], operands[1], operands[2], operands[3],
-      operands[4], operands[5], operands[6], operands[7], operands[8], operands[9]);
-
-  // void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
-  //                           int64_t batch_size, int64_t lda, int64_t ldb,
-  //                           int64_t ldc, int64_t dtypeA, int64_t dtypeB,
-  //                           int64_t dtypeC)
-  // func::CallOp call =
-  //     createFuncCall(rewriter, loc, module, "create_brgemm_ukernel",
-  //     operands,
-  //                    operandTypes, {ptr_ty(rewriter.getContext())});
+      loc, rewriter.getI64Type(), operands[0], operands[1], operands[2],
+      operands[3], operands[4], operands[5], operands[6], operands[7],
+      operands[8], operands[9]);
 
   // make tile config void
   // createFuncCall(rewriter, loc, module, DNNL_BRGEMM_TILECFG_NAME, {}, {},
@@ -899,12 +866,43 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   // Cast input data if required and prepare input buffer. It might be temporary
   // buffers with stored vectors or the original input memory.
   Value lhs = maybeCast(loc, op.getLhs(), candidate.lhsTileElemTy, rewriter);
+  LDBG("Preparing LHS.");
   AmxBuffer lhsBuf =
-      prepareTensorBuffer(loc, lhs, false, false, true, allocaPoint, rewriter);
+      prepareTensorBuffer(rewriter, loc, lhs, false, allocaPoint);
+  auto lhsMemRefTy = cast<MemRefType>(lhsBuf.memRef.getType());
+  LDBG("Lhs shape: " << lhsMemRefTy);
 
+  // We will check if packing required and insert transform call if needed
+  // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
   Value rhs = maybeCast(loc, op.getRhs(), candidate.rhsTileElemTy, rewriter);
+
+  /*
+  operands[2] * n_calls // K_k * n_calls
+  operands[1] // N
+  // pack_type::no_trans
+  operands[1] // in_ld // N
+  operands[1] // out_ld // ldb // N
+  operands[8] // b_dt
+  operands[8] // b_dt
+  */
+
+  // TODO FIXME
+  // n_calls should be passed from smwhr
+  auto n_calls_attr = IntegerAttr::get(rewriter.getI64Type(), 73);
+  auto n_calls =
+      rewriter.create<arith::ConstantOp>(loc, integer64, n_calls_attr);
+
+  auto ldb = operands[1];
+
+  Value transform = rewriter.create<triton::cpu::TransformCreate>(
+      loc, rewriter.getI64Type(), n_calls, operands[1], operands[1], ldb,
+      operands[8], operands[8]);
+
+  LDBG("Preparing RHS.");
   AmxBuffer rhsBuf =
-      prepareTensorBuffer(loc, rhs, true, false, true, allocaPoint, rewriter);
+      prepareTensorBuffer(rewriter, loc, rhs, true, allocaPoint, transform);
+  auto rhsMemRefTy = cast<MemRefType>(rhsBuf.memRef.getType());
+  LDBG("Rhs shape: " << rhsMemRefTy);
 
   Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
@@ -921,9 +919,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     OpBuilder::InsertionGuard g(rewriter);
     if (candidate.keepAccInBuf)
       rewriter.setInsertionPoint(forOp);
-    accBuf =
-        prepareTensorBuffer(loc, accToStore, false, !candidate.keepAccInBuf,
-                            false, allocaPoint, rewriter);
+    accBuf = prepareTensorBuffer(rewriter, loc, accToStore, false, allocaPoint);
   }
 
   AmxBuffer resBuf = prepareResultBuffer(
@@ -935,42 +931,52 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
         moveLoopAccToTiles(loc, accTileTy, accBuf, candidate.tilesInBlockM,
                            candidate.tilesInBlockN, rewriter);
 
-  int64_t blocksInAccM =
-      accTy.getDimSize(0) / candidate.tileM / candidate.tilesInBlockM;
-  int64_t blocksInAccN =
-      accTy.getDimSize(1) / candidate.tileN / candidate.tilesInBlockN;
-  int64_t tilesInVectorK = lhsTy.getDimSize(1) / candidate.tileK;
-  for (int64_t blockM = 0; blockM < blocksInAccM; ++blockM) {
-    for (int64_t blockN = 0; blockN < blocksInAccN; ++blockN) {
-      if (!candidate.keepAccOnTiles)
-        accTiles =
-            loadBlockTiles(loc, accTileTy, accBuf, candidate.tilesInBlockM,
-                           candidate.tilesInBlockN, blockM, blockN, rewriter);
+  // SmallVector<AffineMap> indexingMaps = op.getIndexingMapsArray();
 
-      for (int64_t blocK = 0; blocK < tilesInVectorK; ++blocK) {
-        // We can store accumulator if it is the last block over K dimension.
-        // TODO: enable forward store for acc kept in tiles.
-        bool storeAcc =
-            !candidate.keepAccOnTiles && (blocK == (tilesInVectorK - 1));
-        // We need to choose which block (LHS or RHS) to keep on tiles.
-        // E.g. for ACC block 4x1 tiles, LHS block is also 4 tiles, so
-        // we would use all tile registers trying to keep both ACC and
-        // LHS blocks on registers. To decrease register pressure, keep
-        // the smallest block on tiles.
+  rewriter.create<triton::cpu::ConfigureHW>(loc, brgemm);
 
-        // if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
-        //   multiplyBlocksPreloadLhs(
-        //       loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
-        //       blockM, blockN, blocK, candidate.tilesInBlockM,
-        //       candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
-        // else
-        //   multiplyBlocksPreloadRhs(
-        //       loc, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf, resBuf,
-        //       blockM, blockN, blocK, candidate.tilesInBlockM,
-        //       candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
-      }
-    }
-  }
+  rewriter.create<triton::cpu::BrgemmCall>(
+      loc, brgemm, lhsBuf.memRef, rhsBuf.memRef, resBuf.memRef, accBuf.memRef);
+
+  // int64_t blocksInAccM =
+  //     accTy.getDimSize(0) / candidate.tileM / candidate.tilesInBlockM;
+  // int64_t blocksInAccN =
+  //     accTy.getDimSize(1) / candidate.tileN / candidate.tilesInBlockN;
+  // int64_t tilesInVectorK = lhsTy.getDimSize(1) / candidate.tileK;
+  // for (int64_t blockM = 0; blockM < blocksInAccM; ++blockM) {
+  //   for (int64_t blockN = 0; blockN < blocksInAccN; ++blockN) {
+  //     if (!candidate.keepAccOnTiles)
+  //       accTiles =
+  //           loadBlockTiles(loc, accTileTy, accBuf, candidate.tilesInBlockM,
+  //                          candidate.tilesInBlockN, blockM, blockN,
+  //                          rewriter);
+
+  //     for (int64_t blocK = 0; blocK < tilesInVectorK; ++blocK) {
+  //       // We can store accumulator if it is the last block over K dimension.
+  //       // TODO: enable forward store for acc kept in tiles.
+  //       bool storeAcc =
+  //           !candidate.keepAccOnTiles && (blocK == (tilesInVectorK - 1));
+  //       // We need to choose which block (LHS or RHS) to keep on tiles.
+  //       // E.g. for ACC block 4x1 tiles, LHS block is also 4 tiles, so
+  //       // we would use all tile registers trying to keep both ACC and
+  //       // LHS blocks on registers. To decrease register pressure, keep
+  //       // the smallest block on tiles.
+
+  //       if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
+  //         multiplyBlocksPreloadLhs(
+  //             loc, brgemm, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf,
+  //             resBuf, blockM, blockN, blocK, candidate.tilesInBlockM,
+  //             candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
+  //       else
+  //         multiplyBlocksPreloadRhs(
+  //             loc, brgemm, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf,
+  //             resBuf, blockM, blockN, blocK, candidate.tilesInBlockM,
+  //             candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
+  //     }
+  //   }
+  // }
+
+  rewriter.create<triton::cpu::ReleaseHW>(loc);
 
   // TODO: For keepAccOnTiles fix YieldOp to use mul results.
   // TODO: For keepAccOnTiles move all new forOp results to vector through a
