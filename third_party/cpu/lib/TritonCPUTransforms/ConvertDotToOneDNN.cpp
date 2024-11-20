@@ -638,121 +638,6 @@ void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
   // rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
 }
 
-SmallVector<SmallVector<Value>>
-loadBlockTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
-               int64_t tilesInBlockM, int64_t tilesInBlockN, int64_t blockM,
-               int64_t blockN, PatternRewriter &rewriter) {
-  SmallVector<SmallVector<Value>> res(tilesInBlockM);
-  for (int64_t m = 0; m < tilesInBlockM; ++m) {
-    for (int64_t n = 0; n < tilesInBlockN; ++n) {
-      Value tile;
-      if (buf.memRef)
-        tile = loadTile(loc, tileTy, buf, tilesInBlockM, tilesInBlockN, blockM,
-                        blockN, m, n, rewriter);
-      else {
-        llvm::errs() << "Should create Tile zero\n";
-        //: rewriter.create<amx::TileZeroOp>(loc, tileTy);
-      }
-      res[m].push_back(tile);
-    }
-  }
-  return res;
-}
-
-// Move acc to a tile for the whole loop. It might be loads from memory or
-// zero tiles.
-SmallVector<SmallVector<Value>>
-moveLoopAccToTiles(Location loc, VectorType tileTy, const AmxBuffer &buf,
-                   int64_t tilesInBlockM, int64_t tilesInBlockN,
-                   PatternRewriter &rewriter) {
-  LDBG("Loading accumulator to tiles before the loop.");
-  auto res = loadBlockTiles(loc, tileTy, buf, tilesInBlockM, tilesInBlockN, 0,
-                            0, rewriter);
-
-  // TODO: add new block args into ForOp and return them instead.
-  // Yield directly uses them for now and will be patched after mul
-  // ops generation.
-  llvm_unreachable("Not yet supported.");
-
-  return res;
-}
-
-// Multiply two blocks. LHS block is preloaded to tiles with the following
-// iteration over RHS. Accumulator values are updated in accTiles.
-// Optionally, results can also be stored to accBuf.
-void multiplyBlocksPreloadRhs(Location loc, Value brgemm, VectorType lhsTileTy,
-                              VectorType rhsTileTy, VectorType accTileTy,
-                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
-                              const AmxBuffer &accBuf, int64_t blockM,
-                              int64_t blockN, int64_t blockK,
-                              int64_t tilesInBlockM, int64_t tilesInBlockN,
-                              SmallVector<SmallVector<Value>> &accTiles,
-                              bool storeResult, PatternRewriter &rewriter) {
-  bool isInteger = accTileTy.getElementType().isInteger();
-  SmallVector<SmallVector<Value>> rhsTiles = loadBlockTiles(
-      loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK, blockN, rewriter);
-
-  for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-    Value lhsTile = loadTile(loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM,
-                             blockK, tileM, 0, rewriter);
-
-    for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-      // FIXME TODO
-      // add offsets map
-      rewriter.create<triton::cpu::BrgemmCall>(
-          loc, brgemm, lhsTile, rhsTiles[0][tileN], accTiles[tileM][tileN],
-          accTiles[tileM][tileN]);
-
-      // Insert store here to better mix stores with multiplications.
-      if (storeResult) {
-        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
-                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-      }
-    }
-  }
-}
-
-// Similar to multiplyBlocksPreloadLhs but here RHS is preloaded to tiles.
-void multiplyBlocksPreloadLhs(Location loc, Value brgemm, VectorType lhsTileTy,
-                              VectorType rhsTileTy, VectorType accTileTy,
-                              const AmxBuffer &lhsBuf, const AmxBuffer &rhsBuf,
-                              const AmxBuffer &accBuf, int64_t blockM,
-                              int64_t blockN, int64_t blockK,
-                              int64_t tilesInBlockM, int64_t tilesInBlockN,
-                              SmallVector<SmallVector<Value>> &accTiles,
-                              bool storeResult, PatternRewriter &rewriter) {
-  SmallVector<SmallVector<Value>> lhsTiles = loadBlockTiles(
-      loc, lhsTileTy, lhsBuf, tilesInBlockM, 1, blockM, blockK, rewriter);
-
-  for (int64_t tileN = 0; tileN < tilesInBlockN; ++tileN) {
-
-    Value rhsTile = loadTile(loc, rhsTileTy, rhsBuf, 1, tilesInBlockN, blockK,
-                             blockN, 0, tileN, rewriter);
-
-    for (int64_t tileM = 0; tileM < tilesInBlockM; ++tileM) {
-      LDBG("Call args: " << brgemm << ", \n\tA: " << lhsTiles[tileM][0]
-                         << ", \n\tB: " << rhsTile << ", \n\tC: "
-                         << accTiles[tileM][tileN] << ", \n\tscratch: --");
-      // FIXME TODO
-      // add offsets map
-      rewriter.create<triton::cpu::BrgemmCall>(loc, brgemm, lhsTiles[tileM][0],
-                                               rhsTile, accTiles[tileM][tileN],
-                                               accTiles[tileM][tileN]);
-
-      // Insert store here to better mix stores with multiplications.
-      if (storeResult) {
-        storeTile(loc, accTileTy, accTiles[tileM][tileN], accBuf, tilesInBlockM,
-                  tilesInBlockN, blockM, blockN, tileM, tileN, rewriter);
-      }
-    }
-  }
-}
-
-std::optional<unsigned> getPosInCodomain(unsigned dim, AffineMap map,
-                                         MLIRContext *ctx) {
-  return map.getResultPosition(getAffineDimExpr(dim, ctx));
-}
-
 LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
   vector::ContractionOp op = candidate.op;
@@ -927,9 +812,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   SmallVector<SmallVector<Value>> accTiles;
   if (candidate.keepAccOnTiles)
-    accTiles =
-        moveLoopAccToTiles(loc, accTileTy, accBuf, candidate.tilesInBlockM,
-                           candidate.tilesInBlockN, rewriter);
+    assert("keepAcc is true, Move Loop req");
 
   // SmallVector<AffineMap> indexingMaps = op.getIndexingMapsArray();
 
@@ -937,44 +820,6 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   rewriter.create<triton::cpu::BrgemmCall>(
       loc, brgemm, lhsBuf.memRef, rhsBuf.memRef, resBuf.memRef, accBuf.memRef);
-
-  // int64_t blocksInAccM =
-  //     accTy.getDimSize(0) / candidate.tileM / candidate.tilesInBlockM;
-  // int64_t blocksInAccN =
-  //     accTy.getDimSize(1) / candidate.tileN / candidate.tilesInBlockN;
-  // int64_t tilesInVectorK = lhsTy.getDimSize(1) / candidate.tileK;
-  // for (int64_t blockM = 0; blockM < blocksInAccM; ++blockM) {
-  //   for (int64_t blockN = 0; blockN < blocksInAccN; ++blockN) {
-  //     if (!candidate.keepAccOnTiles)
-  //       accTiles =
-  //           loadBlockTiles(loc, accTileTy, accBuf, candidate.tilesInBlockM,
-  //                          candidate.tilesInBlockN, blockM, blockN,
-  //                          rewriter);
-
-  //     for (int64_t blocK = 0; blocK < tilesInVectorK; ++blocK) {
-  //       // We can store accumulator if it is the last block over K dimension.
-  //       // TODO: enable forward store for acc kept in tiles.
-  //       bool storeAcc =
-  //           !candidate.keepAccOnTiles && (blocK == (tilesInVectorK - 1));
-  //       // We need to choose which block (LHS or RHS) to keep on tiles.
-  //       // E.g. for ACC block 4x1 tiles, LHS block is also 4 tiles, so
-  //       // we would use all tile registers trying to keep both ACC and
-  //       // LHS blocks on registers. To decrease register pressure, keep
-  //       // the smallest block on tiles.
-
-  //       if (candidate.tilesInBlockM <= candidate.tilesInBlockN)
-  //         multiplyBlocksPreloadLhs(
-  //             loc, brgemm, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf,
-  //             resBuf, blockM, blockN, blocK, candidate.tilesInBlockM,
-  //             candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
-  //       else
-  //         multiplyBlocksPreloadRhs(
-  //             loc, brgemm, lhsTileTy, rhsTileTy, accTileTy, lhsBuf, rhsBuf,
-  //             resBuf, blockM, blockN, blocK, candidate.tilesInBlockM,
-  //             candidate.tilesInBlockN, accTiles, storeAcc, rewriter);
-  //     }
-  //   }
-  // }
 
   rewriter.create<triton::cpu::ReleaseHW>(loc);
 
