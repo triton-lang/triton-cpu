@@ -194,7 +194,7 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
   // let hasVerifier = 1;
 }
 
-def TTC_BrgemmCall : TTC_Op<"brgemm_call", 
+def TTC_BrgemmCall : TTC_Op<"brgemm_call",
     [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
   let summary = "";
@@ -243,7 +243,7 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   // let hasVerifier = 1;
 }
 
-def TTC_TransformCall : TTC_Op<"transform_call", 
+def TTC_TransformCall : TTC_Op<"transform_call",
     [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
   let summary = "";
