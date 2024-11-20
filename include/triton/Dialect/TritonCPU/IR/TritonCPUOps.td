@@ -194,7 +194,8 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
   // let hasVerifier = 1;
 }
 
-def TTC_BrgemmCall : TTC_Op<"brgemm_call", [MemoryEffects<[MemRead<GlobalMemory>,
+def TTC_BrgemmCall : TTC_Op<"brgemm_call", 
+    [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
   let summary = "";
 
@@ -242,7 +243,8 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   // let hasVerifier = 1;
 }
 
-def TTC_TransformCall : TTC_Op<"transform_call", [MemoryEffects<[MemRead<GlobalMemory>,
+def TTC_TransformCall : TTC_Op<"transform_call", 
+    [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
   let summary = "";
 
@@ -254,12 +256,6 @@ def TTC_TransformCall : TTC_Op<"transform_call", [MemoryEffects<[MemRead<GlobalM
     Arg<AnyMemRef, "", [MemRead]>:$in_ptr,
     Arg<AnyMemRef, "", [MemWrite]>:$out_blocked_ptr
   );
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 def TTC_ConfigureHW : TTC_Op<"configure_hw", [NoMemoryEffect]> {

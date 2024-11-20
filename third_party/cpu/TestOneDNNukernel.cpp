@@ -17,7 +17,6 @@ using namespace dnnl::ukernel;
 using tag = memory::format_tag;
 using dt = memory::data_type;
 
-
 #ifdef Nope
 static inline int64_t getDnnlDataTypeVal(RewriterBase &rewriter,
                                          Attribute attr) {
@@ -350,7 +349,8 @@ int main() {
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(batch_size);
   for (memory::dim i = 0; i < batch_size; i++) {
     const memory::dim A_offset_i = i * K_k * a_dt_size;
-    const memory::dim B_offset_i = need_pack ? i * blocked_B_size : i * N * K_k * b_dt_size;
+    const memory::dim B_offset_i =
+        need_pack ? i * blocked_B_size : i * N * K_k * b_dt_size;
     A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
   }
 
@@ -363,7 +363,6 @@ int main() {
     // An execute call. `A_B` is a vector of pointers to A and packed B
     // tensors. `acc_ptr` is a pointer to an accumulator buffer.
     brg.execute(A_ptr, B_base_ptr, A_B_offsets, C_ptr, scratchpad.data());
-
 
     printf("( m, n)  val after \"brg\" call\n");
     for (int m = 0; m < M; m++) {
