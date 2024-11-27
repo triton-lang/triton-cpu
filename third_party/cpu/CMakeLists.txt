@@ -1,14 +1,27 @@
+# libxsmm
+include(xsmm)
+message (STATUS "LIBXSMM Include dir: ${XSMM_INCLUDE_DIRS}")
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
-  add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
-  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation)
+  add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms TritonCPUXsmm)
+  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation MLIRMemRefTransforms)
 endif()
 
 add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp)
 target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport)
+
+add_library(TritonCPUXsmmRuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/lib/Xsmm/runtime/XsmmRunnerUtils.cpp)
+target_link_libraries(TritonCPUXsmmRuntime PRIVATE xsmm)
+set_property(TARGET TritonCPUXsmmRuntime PROPERTY CXX_STANDARD 11)
+target_compile_definitions(TritonCPUXsmmRuntime PRIVATE mlir_c_runner_utils_EXPORTS)
+target_include_directories(TritonCPUXsmmRuntime
+  PUBLIC
+    $<BUILD_INTERFACE:${XSMM_INCLUDE_DIRS}>
+)
 
 # Build and link sleef
 set(SLEEF_BUILD_SHARED_LIBS ON CACHE BOOL "Build sleef shared lib" FORCE)

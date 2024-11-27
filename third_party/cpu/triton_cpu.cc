@@ -1,13 +1,17 @@
 #include "ScalarizePass/ScalarizeInterfaceImpl.h"
 #include "TritonCPUToLLVM/Passes.h"
 #include "TritonCPUTransforms/Passes.h"
+#include "TritonRaiseBlockPointer/Passes.h"
 #include "TritonToTritonCPU/Passes.h"
+#include "Xsmm/Passes.h"
 
 #include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
@@ -35,6 +39,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
       .value("libsleef", cpu::VecLib::Sleef)
       .value("libmvec", cpu::VecLib::Mvec);
 
+  m.def("add_raise_block_pointer", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createTritonRaiseBlockPointer());
+  });
   m.def("add_scalarize", [](mlir::PassManager &pm, bool skip_gather_scatter) {
     pm.addPass(
         mlir::triton::cpu::createScalarizeUsingForOpPass(skip_gather_scatter));
@@ -155,6 +162,18 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_func_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertFuncToLLVMPass());
   });
+  m.def("add_convert_vector_to_xsmm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertVectorToXsmm());
+  });
+  m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+  });
+  m.def("add_convert_triton_to_xsmm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertTritonToXsmm());
+  });
+  m.def("add_loop_to_brgemm_xsmm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createLoopToBrgemmXsmm());
+  });
 }
 
 void init_triton_cpu(py::module &&m) {
@@ -183,6 +202,7 @@ void init_triton_cpu(py::module &&m) {
                     mlir::vector::VectorDialect>();
     mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
     mlir::registerAMXDialectTranslation(registry);
+    mlir::func::registerAllExtensions(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
