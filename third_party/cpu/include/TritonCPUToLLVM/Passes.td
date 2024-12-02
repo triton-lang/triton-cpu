@@ -66,6 +66,17 @@ def DebugOpsToLLVM : Pass<"triton-cpu-debug-ops-to-llvm", "mlir::ModuleOp"> {
                              "mlir::triton::TritonDialect"];
 }
 
+def OneDNNOpsToLLVM : Pass<"triton-cpu-onednn-ops-to-llvm", "mlir::ModuleOp"> {
+    let summary = "Convert Triton OneDNN operations to LLVM.";
+    let description = [{}];
+    let constructor = "mlir::triton::cpu::createOneDNNOpsToLLVMPass()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::LLVM::LLVMDialect",
+                             "mlir::triton::cpu::TritonCPUDialect",
+                             "mlir::triton::TritonDialect"];
+}
+
 def MathToVecLib : Pass<"triton-cpu-math-to-vec-lib", "mlir::ModuleOp"> {
     let summary = "Convert vector math operations to vector libm or sleef calls.";
     let description = [{

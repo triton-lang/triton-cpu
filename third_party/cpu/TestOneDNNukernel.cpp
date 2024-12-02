@@ -195,8 +195,8 @@ int main() {
   const memory::dim ldd = N; // Leading dimension for an actual output.
   const memory::dim batch_size = n_calls;
 
-  memory::data_type a_dt = dt::bf16;
-  memory::data_type b_dt = dt::bf16;
+  memory::data_type a_dt = dt::f32; //dt::bf16;
+  memory::data_type b_dt = dt::f32; // dt::bf16;
   memory::data_type c_dt = dt::f32; // Accumulator data type.
   memory::data_type d_dt = dt::f32; // Output data type.
 

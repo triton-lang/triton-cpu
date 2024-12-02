@@ -174,6 +174,7 @@ class CPUBackend(BaseBackend):
             amx_fp16 = False
             amx_bf16 = 'amx-bf16' in self.cpu_features
             cpu.passes.ttcpuir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
+        cpu.passes.ttcpuir.add_convert_dot_to_onednn(pm)
         promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
         convert_mixed_precision_matmul = True
@@ -210,6 +211,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_memory_op_to_llvmir(pm)
         cpu.passes.ttcpuir.add_atomic_ops_to_llvmir(pm)
         cpu.passes.ttcpuir.add_debug_ops_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm)
 
         vec_lib_requirements = {
             VecLib.libsleef: {"neon", "sse", "avx"},
@@ -264,7 +266,7 @@ class CPUBackend(BaseBackend):
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
-            libs = ["m", "TritonCPURuntime", "sleef"]
+            libs = ["m", "dnnl", "TritonCPURuntime", "sleef"]
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)
             with open(so, "rb") as f:
                 return f.read()

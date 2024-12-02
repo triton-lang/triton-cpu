@@ -1,7 +1,7 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
-include_directories(${DNNLROOT}/include)
-link_directories(${DNNLROOT}/lib)
+include_directories(/usr/local/include)
+link_directories(/usr/local/lib)
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
@@ -9,8 +9,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation dnnl)
 endif()
 
-add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp)
-target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport)
+add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp ${CMAKE_CURRENT_SOURCE_DIR}/runtime/runtime_onednn.cpp)
+target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport dnnl)
 
 # Build and link sleef
 set(SLEEF_BUILD_SHARED_LIBS ON CACHE BOOL "Build sleef shared lib" FORCE)
