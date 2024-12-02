@@ -5691,6 +5691,7 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     if is_cuda() and low_precision_acc > 0 and torch.cuda.get_device_capability()[0] >= 9:
         assert h.asm["ptx"].count("add.f32") == (BLOCK_M * BLOCK_N) // (32 * num_warps) * (BLOCK_K // low_precision_acc)
 
+
 @triton.jit
 def matmul_blocked_kernel(  #
         a_ptr, b_ptr, c_ptr,  #
@@ -5717,11 +5718,9 @@ def matmul_blocked_kernel(  #
     block_offset_n = pid_n * BLOCK_SIZE_N
 
     a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
-                                       offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
-                                       order=(1, 0))
+                                   offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K), order=(1, 0))
     b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
-                                    offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
-                                    order=(1, 0))
+                                   offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0))
 
     # for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K), num_stages=num_pipeline_stages):
     a = tl.load(a_tile_ptr, boundary_check=(0, 1))
@@ -5729,8 +5728,8 @@ def matmul_blocked_kernel(  #
     accumulator = tl.dot(a, b, acc=accumulator, max_num_imprecise_acc=low_precision_acc)
     a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
     b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
-        # a_ptrs += BLOCK_SIZE_K * stride_ak
-        # b_ptrs += BLOCK_SIZE_K * stride_bk
+    # a_ptrs += BLOCK_SIZE_K * stride_ak
+    # b_ptrs += BLOCK_SIZE_K * stride_bk
     # offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     # offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     # c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
@@ -5738,9 +5737,10 @@ def matmul_blocked_kernel(  #
 
     # tl.store(c_ptrs, accumulator)
     c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
-                                    offsets=(block_offset_m, block_offset_n),
-                                    block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
+                                    offsets=(block_offset_m, block_offset_n), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                                    order=(1, 0))
     tl.store(c_block_ptr, c, boundary_check=(0, 1))
+
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("M, N, K", [(32, 32, 32)])
@@ -5758,12 +5758,13 @@ def test_dot_blocked(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precis
     b = to_triton(B, device=device, dst_type=in_type_str)
     grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
     max_num_impressive_acc = low_precision_acc if low_precision_acc <= BLOCK_K else None
-    h = matmul_blocked_kernel[grid](a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0),
-                            C.stride(1), BLOCK_M, BLOCK_N, BLOCK_K, max_num_impressive_acc, num_warps=num_warps,
-                            num_pipeline_stages=num_stages)#, enable_triton_xsmm=True, enable_loop_brgemm_xsmm=True)
+    h = matmul_blocked_kernel[grid](
+        a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0), C.stride(1), BLOCK_M,
+        BLOCK_N, BLOCK_K, max_num_impressive_acc, num_warps=num_warps,
+        num_pipeline_stages=num_stages)  #, enable_triton_xsmm=True, enable_loop_brgemm_xsmm=True)
     torch_a = torch.from_numpy(A).to(device=device)
     torch_b = torch.from_numpy(B).to(device=device)
-    
+
     in_dtype = getattr(tl, in_type_str)
     ref_out = torch.matmul(torch_a, torch_b).to(torch.float32)
 

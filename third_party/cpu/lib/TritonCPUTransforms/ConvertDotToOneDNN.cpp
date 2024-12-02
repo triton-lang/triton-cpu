@@ -830,12 +830,13 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   auto b_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeBAttr);
   auto c_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeCAttr);
 
-  auto memrefElemType = dyn_cast<MemRefType>(A.memRef.getType()).getElementType();
+  auto memrefElemType =
+      dyn_cast<MemRefType>(A.memRef.getType()).getElementType();
   auto memrefType = UnrankedMemRefType::get(memrefElemType, 0);
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, memrefType, block_m, block_n, block_k, batch_size, lda,
-      ldb, n, a_dt, b_dt, c_dt);
+      loc, memrefType, block_m, block_n, block_k, batch_size, lda, ldb, n, a_dt,
+      b_dt, c_dt);
 
   // make tile config void
   // createFuncCall(rewriter, loc, module, DNNL_BRGEMM_TILECFG_NAME, {}, {},
@@ -906,8 +907,8 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   // LDBG("TF creation: " << transform);
   LDBG("Preparing RHS.");
-  AmxBuffer rhsBuf =
-      prepareTensorBuffer(rewriter, loc, rhs, true, allocaPoint);//, transform);
+  AmxBuffer rhsBuf = prepareTensorBuffer(rewriter, loc, rhs, true,
+                                         allocaPoint); //, transform);
   auto rhsMemRefTy = cast<MemRefType>(rhsBuf.memRef.getType());
   LDBG("Rhs shape: " << rhsMemRefTy);
 
