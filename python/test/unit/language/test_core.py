@@ -5722,12 +5722,12 @@ def matmul_blocked_kernel(  #
     b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
                                    offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0))
 
-    # for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K), num_stages=num_pipeline_stages):
-    a = tl.load(a_tile_ptr, boundary_check=(0, 1))
-    b = tl.load(b_tile_ptr, boundary_check=(0, 1))
-    accumulator = tl.dot(a, b, acc=accumulator, max_num_imprecise_acc=low_precision_acc)
-    a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
-    b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+    for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K), num_stages=num_pipeline_stages):
+        a = tl.load(a_tile_ptr, boundary_check=(0, 1))
+        b = tl.load(b_tile_ptr, boundary_check=(0, 1))
+        accumulator = tl.dot(a, b, acc=accumulator, max_num_imprecise_acc=low_precision_acc)
+        a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
+        b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
     # a_ptrs += BLOCK_SIZE_K * stride_ak
     # b_ptrs += BLOCK_SIZE_K * stride_bk
     # offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -5744,7 +5744,7 @@ def matmul_blocked_kernel(  #
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("M, N, K", [(32, 32, 32)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 32, 32)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 32, 16)])
 @pytest.mark.parametrize("in_type_str", ['float32'])
 @pytest.mark.parametrize("low_precision_acc", [0])
 def test_dot_blocked(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):

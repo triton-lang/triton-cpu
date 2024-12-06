@@ -185,48 +185,47 @@ bool isDotOp(vector::ContractionOp op) {
 // In this case, tile element type fields of the candidate structure are
 // filled with actual types to be used in lowering.
 bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                    Type resElemTy, bool supportInt8, bool supportFp16,
-                    bool supportBf16, AmxDotOpCandidate &candidate) {
+                    Type resElemTy, AmxDotOpCandidate &candidate) {
   MLIRContext *ctx = lhsElemTy.getContext();
-  if (lhsElemTy.isInteger()) {
-    if (!supportInt8) {
-      LDBG("Drop candidate because AMX_INT8 is not available.");
-      return false;
-    }
 
-    // For integer case only i8 is allowed for LHS and RHS.
-    if (!lhsElemTy.isInteger(8) || !rhsElemTy.isInteger(8)) {
-      LDBG("Drop candidate with unsupported input integer type.");
-      return false;
-    }
+  // This function indicates when VNNI granularity packing is expected by the
+  // kernel.
+  //
+  // Note: used in benchdnn only, not used inside the library.
+  // Note: for `bf32` (or brgattr.fpmath_mode_ == bf16) the function returns
+  //   `true` because the data transformation to vnni layout is internal and
+  //   transparent to the user.
 
-    // Accumulator should be i32. If it's smaller, we will use casts.
-    if (!accElemTy.isInteger() || accElemTy.getIntOrFloatBitWidth() > 32 ||
-        !resElemTy.isInteger() || resElemTy.getIntOrFloatBitWidth() > 32) {
-      LDBG("Drop candidate with unsupported output integer type.");
-      return false;
-    }
-
-    candidate.lhsTileElemTy = IntegerType::get(ctx, 8);
-    candidate.rhsTileElemTy = IntegerType::get(ctx, 8);
-    candidate.accTileElemTy = IntegerType::get(ctx, 32);
-
-    return true;
+  if (lhsElemTy.getIntOrFloatBitWidth() < 16 &&
+      rhsElemTy.getIntOrFloatBitWidth() < 16) {
+    LDBG("Packing will be applied for types smaller than 16 bits.");
+    // Do something to insert transform and use it result
   }
 
-  // FP case. Expect no integer args or result.
-  if (rhsElemTy.isInteger() || accElemTy.isInteger() || resElemTy.isInteger()) {
-    LDBG("Drop candidate with mixed int/fp types.");
+  // For integer case only i8 is allowed for LHS and RHS.
+  if (lhsElemTy.getIntOrFloatBitWidth() < 32 &&
+      rhsElemTy.getIntOrFloatBitWidth() < 32) {
+    LDBG("Packing can be applied for types smaller than 32 bits.");
+
+    // 16 bit case
+    if (!lhsElemTy.isInteger() && !rhsElemTy.isInteger()) {
+      // Transform is conditional, maybe should wrapped with get_B_pack check
+    } else {
+      // Transform required
+    }
+  }
+  // Transform is not required
+
+  // Accumulator should be i32. If it's smaller, we will use casts.
+  if (!accElemTy.isInteger() || accElemTy.getIntOrFloatBitWidth() > 32 ||
+      !resElemTy.isInteger() || resElemTy.getIntOrFloatBitWidth() > 32) {
+    LDBG("Drop candidate with unsupported output integer type.");
     return false;
   }
 
-  // For fp case LHS and RHS types should match and can be either FP16 or
-  // BF16.
-  // if (lhsElemTy.getIntOrFloatBitWidth() > 16 ||
-  //     rhsElemTy.getIntOrFloatBitWidth() > 16) {
-  //   LDBG("Drop candidate with unsupported input fp type.");
-  //   return false;
-  // }
+  candidate.lhsTileElemTy = IntegerType::get(ctx, 8);
+  candidate.rhsTileElemTy = IntegerType::get(ctx, 8);
+  candidate.accTileElemTy = IntegerType::get(ctx, 32);
 
   // Try to find common input type.
   Type commonInputElemTy = lhsElemTy;
@@ -246,21 +245,6 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
     }
   } else if (rhsElemTy.getIntOrFloatBitWidth() == 16)
     commonInputElemTy = rhsElemTy;
-  // Both inputs are FP8, choose 16-bit FP type to use.
-  else if (supportBf16)
-    commonInputElemTy = BFloat16Type::get(ctx);
-  else
-    commonInputElemTy = Float16Type::get(ctx);
-
-  if (commonInputElemTy.isF16() && !supportFp16) {
-    LDBG("Drop candidate because AMX_FP16 is not available.");
-    return false;
-  }
-
-  if (commonInputElemTy.isBF16() && !supportBf16) {
-    LDBG("Drop candidate because AMX_BF16 is not available.");
-    return false;
-  }
 
   // Accumulator type should be FP32, we can use casts if it is smaller.
   if (accElemTy.getIntOrFloatBitWidth() > 32) {
@@ -274,12 +258,6 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
 
   return true;
 }
-
-// struct brgemm_cache_info_t {
-//   brgemm_desc_t desc;
-//   brgemm_kernel_t *kernel;
-//   std::unique_ptr<char[]> palette;
-// };
 
 // Check if accumulator value is updated in a loop and has no other
 // usages than a dot op, that updates it. Tile loads/stores and casts
@@ -305,7 +283,7 @@ bool isLoopCarriedAcc(Value acc) {
     return false;
   }
 
-  blockArg.getArgNumber();
+  // blockArg.getArgNumber();
 
   Value updAcc = acc.getUsers().begin()->getResult(0);
   if (!updAcc.hasOneUse()) {
@@ -343,23 +321,12 @@ void setupBlockAndTileSizes(ArrayRef<int64_t> lhsShape,
   int64_t m = lhsShape[0];
   int64_t n = rhsShape[1];
   int64_t k = rhsShape[0];
-  int64_t tileM = std::min(m, (int64_t)16);
-  int64_t tileN = std::min(n, (int64_t)16);
-  int64_t tileK = std::min(
-      k, (int64_t)512 / candidate.lhsTileElemTy.getIntOrFloatBitWidth());
+  int64_t tileM = m;
+  int64_t tileN = n;
+  int64_t tileK = k;
 
   int64_t accBlocksM = m / tileM;
   int64_t accBlocksN = n / tileN;
-
-  // All these sizes are power of 2. We have 8 tile registers and
-  // cannot use them all for accumulator. So, we will use up to 4
-  // tiles for accumulator in a single block.
-  while (accBlocksM * accBlocksN > 4) {
-    if (accBlocksM > accBlocksN)
-      accBlocksM /= 2;
-    else
-      accBlocksN /= 2;
-  }
 
   candidate.tileM = tileM;
   candidate.tileN = tileN;
@@ -392,6 +359,85 @@ void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
   }
 }
 
+// Check if val is available in memory.
+void findInputBuffer(Value val, bool allowTransposed, MemBuffer &buf) {
+  if (allowTransposed) {
+    auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
+    if (transposeOp) {
+      val = transposeOp.getVector();
+      buf.transposed = true;
+    }
+  }
+
+  auto valLoad = val.getDefiningOp<vector::TransferReadOp>();
+  if (!valLoad || hasMaskOrBoundsCheck(valLoad)) {
+    LDBG("Couldn't find a buffer with input: " << val);
+    return;
+  }
+
+  buf.memRef = valLoad.getSource();
+  buf.indices = valLoad.getIndices();
+  LLVM_DEBUG(
+      DBGS() << "Found buffer with input: " << val << "\n";
+      DBGS() << "  MemRef: " << buf.memRef << "\n"; DBGS() << "  Indices: ";
+      llvm::interleaveComma(buf.indices, llvm::dbgs()); llvm::dbgs() << "\n");
+
+  auto forOp = dyn_cast<scf::ForOp>(valLoad->getParentOp());
+  if (!forOp) {
+    LDBG("  Skip steps. Not in a for-loop.");
+    return;
+  }
+
+  auto extractMemRef = buf.memRef.getDefiningOp<ExtractMemRefOp>();
+  if (!extractMemRef) {
+    LDBG("  Skip steps. No ExtractMemRefOp.");
+    return;
+  }
+
+  ExtractIndicesOp extractIndices;
+  for (auto index : buf.indices) {
+    auto def = index.getDefiningOp<ExtractIndicesOp>();
+    if (!def || (extractIndices && def != extractIndices)) {
+      LDBG("  Skip steps. No ExtractIndicesOp.");
+      return;
+    }
+    extractIndices = def;
+  }
+
+  if (extractMemRef.getSrc() != extractIndices.getSrc()) {
+    LDBG("  Skip steps. Mismatched ExtractMemRefOp and ExtractIndicesOp.");
+    return;
+  }
+
+  BlockArgument blockPtrArg = dyn_cast<BlockArgument>(extractMemRef.getSrc());
+  if (!blockPtrArg) {
+    LDBG("  Skip steps. No block pointer arg.");
+    return;
+  }
+
+  OpOperand *yieldOp = forOp.getTiedLoopYieldedValue(blockPtrArg);
+  if (!yieldOp) {
+    LDBG("  Skip steps. No block pointer in yield.");
+    return;
+  }
+
+  auto advance = yieldOp->get().getDefiningOp<AdvanceOp>();
+  if (!advance) {
+    LDBG("  Skip steps. No AdvanceOp.");
+    return;
+  }
+
+  if (advance.getPtr() != blockPtrArg) {
+    LDBG("  Skip steps. AdvanceOp doesn't use block pointer arg.");
+    return;
+  }
+
+  buf.step = advance.getOffsets();
+  LLVM_DEBUG(DBGS() << "  Step: ";
+             llvm::interleaveComma(buf.step, llvm::dbgs());
+             llvm::dbgs() << "\n");
+}
+
 // Check if specified ContractionOp can be lowered to AMX operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
@@ -416,37 +462,19 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
   // to use in AMX operations.
   if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                       accTy.getElementType(), resTy.getElementType(),
-                      supportInt8, supportFp16, supportBf16, candidate))
+                      candidate))
     return false;
 
   candidate.op = op;
   setupBlockAndTileSizes(lhsTy.getShape(), rhsTy.getShape(), candidate);
   candidate.keepAccOnTiles = isLoopCarriedAcc(op.getAcc());
 
-  // Can't keep acc in a tile the whole loop right now:
-  // https://github.com/llvm/llvm-project/issues/109481
-  if (candidate.keepAccOnTiles) {
-    // We might not have enough tiles to hold accumulator. In this case
-    // keep it in a bufffer.
-    if (candidate.tilesInBlockM * candidate.tilesInBlockN > 1) {
-      LDBG("Accumulator is too big to keep on tiles. Keep it bufferized "
-           "insterad.");
-      candidate.keepAccOnTiles = false;
-      candidate.keepAccInBuf = true;
-    } else {
-      findOutputBuffer(getResValueForLoopCarriedAcc(op), candidate);
-    }
+  if (lhsTy.getElementType() == candidate.lhsElemTy)
+    findInputBuffer(op.getA(), true, candidate.lhsBuf);
+  if (rhsTy.getElementType() == candidate.rhsElemTy)
+    findInputBuffer(op.getB(), false, candidate.rhsBuf);
 
-    // TODO: fix LLVM bug and remove this code.
-    LDBG("Avoid accumulator on tiles due to LLVM bug: "
-         "https://github.com/llvm/llvm-project/issues/109481.");
-    LDBG("Keep accumulator bufferized instead.");
-    candidate.keepAccOnTiles = false;
-    candidate.keepAccInBuf = true;
-    candidate.outBuf = AmxBuffer{};
-  } else {
-    findOutputBuffer(op.getResult(), candidate);
-  }
+  findOutputBuffer(op.getResult(), candidate);
 
   return true;
 }
@@ -566,7 +594,9 @@ AmxBuffer getMemrefFromVectorOperand(Value val) {
 // If interleave flag is set, then pre-pack RHS before sotring. See
 // interleaveAndStore for more details.
 AmxBuffer prepareTensorBuffer(PatternRewriter &rewriter, Location loc,
-                              Value val, bool readOnly, Operation *allocaPoint,
+                              Value val,
+                              memref::ExtractStridedMetadataOp metadata,
+                              bool readOnly, Operation *allocaPoint,
                               Value transform = nullptr) {
   LDBG("Preparing buffer (interleave=" << (transform == nullptr)
                                        << ") for a vector: " << val
@@ -579,7 +609,19 @@ AmxBuffer prepareTensorBuffer(PatternRewriter &rewriter, Location loc,
     ValueRange indices = valLoad.getIndices();
     if (!transform) {
       LDBG("  Reusing the original memref for a buffer: " << memRef);
-      return {memRef, indices};
+      auto vecTy = cast<VectorType>(val.getType());
+      auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
+      auto ctx = rewriter.getContext();
+      // Value memRef_view = rewriter.create<memref::SubViewOp>(
+      //     loc, memRefTy, memRef, {0, 0}, indices,
+      //     metadata.getStrides());
+      SmallVector<int64_t> strides(vecTy.getRank(), 1);
+
+      Value memRef_view = rewriter.create<memref::SubViewOp>(
+          loc, memRef, getAsOpFoldResult(indices),
+          getAsIndexOpFoldResult(ctx, vecTy.getShape()),
+          getAsIndexOpFoldResult(ctx, strides));
+      return {memRef_view, indices};
     }
 
     // Just a stub, dont know why we should use Vector TYpe here
@@ -708,6 +750,20 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       accTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileN}),
                       candidate.accTileElemTy);
 
+  TypedValue<Type> acc_tmp = op.getAcc();
+  scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+  BlockArgument accBbArg = dyn_cast<BlockArgument>(acc_tmp);
+
+  if (!forOp || !accBbArg) {
+    llvm::errs() << "no for op \n";
+  }
+
+  OpOperand *accArg = forOp.getTiedLoopInit(accBbArg);
+
+  // Loop induction variable
+  Value loopIv = forOp.getInductionVar();
+  forOp.getRegionIterArgs();
+
   // If we don't work with a loop and want to directly store tiles into output
   // memory, then use the original store as insertion point to have its buffer
   // values available for generated code.
@@ -725,6 +781,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   SmallVector<Type, 10> operandTypes;
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   FloatType float32 = FloatType::getF32(rewriter.getContext());
+  // IndexType indexTy = IndexType::get(rewriter.getContext());
 
   // Value strideA, strideB;
   // std::optional<Value> batchSize;
@@ -739,7 +796,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   // auto dtype = xsmm::utils::getDataType(rewriter, inputs[0].getType());
   // auto outDtype = xsmm::utils::getDataType(rewriter, inputs[2].getType());
 
-  Type indexType = rewriter.getIndexType();
+  IndexType indexType = rewriter.getIndexType();
 
   auto getMemrefMetadata = [&](Value operand, Value indices_base,
                                Value indices_size) {
@@ -779,17 +836,10 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   // metadataC.getStrides()[posLeadingDimC];
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  // they are in the same order with BrgemmDispatchOp inputs
-  // ArrayRef<int64_t> inputs{candidate.tileM,
-  //                          candidate.tileN,
-  //                          candidate.tileK,
-  //                          /*batch_size*/ 1,
-  //                          /* ldc - full tensor size*/ lhsTy.getShape()[0],
-  //                          /*ldb*/ rhsTy.getShape()[1],
-  //                          /*ldc*/ resTy.getShape()[1]};
-  LDBG("Inps: M - " << candidate.tileM << ", N - " << candidate.tileN
-                    << ", K - " << candidate.tileK << " lhsType - " << lhsTy
-                    << " rhsType - " << rhsTy);
+  // they are in the same order with BrgemmDispatchOp inputs;
+  llvm::errs() << "Inps: M - " << candidate.tileM << ", N - " << candidate.tileN
+               << ", K - " << candidate.tileK << " lhsType - " << lhsTy
+               << " rhsType - " << rhsTy << "\n";
 
   auto block_m = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
@@ -832,22 +882,18 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   auto memrefElemType =
       dyn_cast<MemRefType>(A.memRef.getType()).getElementType();
-  auto memrefType = UnrankedMemRefType::get(memrefElemType, 0);
+  // auto memrefType = indexType::get(memrefElemType, 0);
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, memrefType, block_m, block_n, block_k, batch_size, lda, ldb, n, a_dt,
-      b_dt, c_dt);
-
-  // make tile config void
-  // createFuncCall(rewriter, loc, module, DNNL_BRGEMM_TILECFG_NAME, {}, {},
-  // {});
+      loc, rewriter.getIndexType(), block_m, block_n, block_k, batch_size, lda,
+      ldb, n, a_dt, b_dt, c_dt);
 
   // Cast input data if required and prepare input buffer. It might be temporary
   // buffers with stored vectors or the original input memory.
   Value lhs = maybeCast(loc, op.getLhs(), candidate.lhsTileElemTy, rewriter);
   LDBG("Preparing LHS.");
   AmxBuffer lhsBuf =
-      prepareTensorBuffer(rewriter, loc, lhs, false, allocaPoint);
+      prepareTensorBuffer(rewriter, loc, lhs, metadataA, false, allocaPoint);
   auto lhsMemRefTy = cast<MemRefType>(lhsBuf.memRef.getType());
   LDBG("Lhs shape: " << lhsMemRefTy);
 
@@ -864,18 +910,6 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   operands[8] // b_dt
   operands[8] // b_dt
   */
-
-  // auto loopRange = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
-  //                                                 forOp.getLowerBound());
-  // Value numTiles =
-  //     rewriter.create<arith::DivUIOp>(loc, loopRange, forOp.getStep());
-  // numTiles = rewriter.create<arith::IndexCastOp>(loc,
-  // rewriter.getIndexType(),
-  //                                                numTiles);
-  // auto kStepCst =
-  //     rewriter.create<arith::ConstantIndexOp>(loc, *lhsStepReduction);
-  // auto fullKDimLength = rewriter.create<arith::MulIOp>(loc, numTiles,
-  // kStepCst);
 
   // TODO FIXME
   // n_calls should be passed from smwhr
@@ -907,14 +941,14 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   // LDBG("TF creation: " << transform);
   LDBG("Preparing RHS.");
-  AmxBuffer rhsBuf = prepareTensorBuffer(rewriter, loc, rhs, true,
+  AmxBuffer rhsBuf = prepareTensorBuffer(rewriter, loc, rhs, metadataB, true,
                                          allocaPoint); //, transform);
   auto rhsMemRefTy = cast<MemRefType>(rhsBuf.memRef.getType());
   LDBG("Rhs shape: " << rhsMemRefTy);
 
   Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
-  scf::ForOp forOp;
+
   if (candidate.keepAccInBuf || candidate.keepAccOnTiles) {
     forOp = cast<scf::ForOp>(op->getParentOp());
     accToStore = getInitAccValue(acc);
@@ -927,7 +961,8 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     OpBuilder::InsertionGuard g(rewriter);
     if (candidate.keepAccInBuf)
       rewriter.setInsertionPoint(forOp);
-    accBuf = prepareTensorBuffer(rewriter, loc, accToStore, false, allocaPoint);
+    accBuf =
+        prepareTensorBuffer(rewriter, loc, accToStore, {}, false, allocaPoint);
   }
 
   AmxBuffer resBuf = prepareResultBuffer(
@@ -941,8 +976,16 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   rewriter.create<triton::cpu::ConfigureHW>(loc, brgemm);
 
+  auto num_batches = rewriter.create<arith::ConstantOp>(
+      loc, indexType, rewriter.getIndexAttr(1));
+  auto stepA = rewriter.create<arith::ConstantOp>(loc, indexType,
+                                                  rewriter.getIndexAttr(0));
+  auto stepB = rewriter.create<arith::ConstantOp>(loc, indexType,
+                                                  rewriter.getIndexAttr(0));
+
   rewriter.create<triton::cpu::BrgemmCall>(
-      loc, brgemm, lhsBuf.memRef, rhsBuf.memRef, resBuf.memRef, accBuf.memRef);
+      loc, brgemm, lhsBuf.memRef, rhsBuf.memRef, resBuf.memRef, accBuf.memRef,
+      stepA, stepB, num_batches);
 
   rewriter.create<triton::cpu::ReleaseHW>(loc);
 

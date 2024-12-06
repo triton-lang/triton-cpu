@@ -243,21 +243,40 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
     auto ctx = rewriter.getContext();
     auto typeConverter = getTypeConverter();
 
+    // auto brgem_kernel_params_op =
+    //     adaptor.getKernelHash()
+    //         .getDefiningOp<triton::cpu::BrgemmCreate>();
+    // if (brgem_kernel_params_op == nullptr) {
+    //   return failure();
+    // }
+
     // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "call_brgemm";
 
-    auto brgemmArgs =
-        SmallVector<Value>{rewriter.getRemappedValue(brgemmOp.getOperand(0)),
-                           rewriter.getRemappedValue(brgemmOp.getAPtr()),
-                           rewriter.getRemappedValue(brgemmOp.getBPtr()),
-                           rewriter.getRemappedValue(brgemmOp.getCPtr()),
-                           rewriter.getRemappedValue(brgemmOp.getScratchpad())};
-    auto brgemmArgTypes = SmallVector<Type>{
-        getTypeConverter()->convertType(brgemmOp.getOperand(0).getType()),
-        getTypeConverter()->convertType(brgemmOp.getAPtr().getType()),
-        getTypeConverter()->convertType(brgemmOp.getBPtr().getType()),
-        getTypeConverter()->convertType(brgemmOp.getCPtr().getType()),
-        getTypeConverter()->convertType(brgemmOp.getScratchpad().getType())};
+    auto kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
+        loc, ptr_ty(ctx), adaptor.getKernelHash());
+
+    // auto b_step = rewriter.create<LLVM::MulOp>(loc, i64_ty,
+    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getKK()),
+    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getN()));
+
+    auto brgemmArgs = SmallVector<Value>{
+        kernel_hash_ptr,
+        MemRefDescriptor(adaptor.getAPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getBPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getCPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getScratchpad()).alignedPtr(rewriter, loc),
+        adaptor.getStepA(),
+        adaptor.getStepB(),
+        adaptor.getNumBatches()};
+    // auto unranked =
+    //     getTypeConverter()->convertType(brgemmOp.getOperand(0).getType());
+    // auto brgemmArgTypes = SmallVector<Type>{
+    //     unranked, unranked, unranked, unranked, unranked,
+    // };
+    auto brgemmArgTypes =
+        SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
+                          ptr_ty(ctx), i64_ty,      i64_ty,      i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,

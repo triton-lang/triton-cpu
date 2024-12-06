@@ -6,7 +6,7 @@ add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
-  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation dnnl)
+  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation dnnl MLIRMemRefTransforms)
 endif()
 
 add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp ${CMAKE_CURRENT_SOURCE_DIR}/runtime/runtime_onednn.cpp)

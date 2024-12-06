@@ -201,7 +201,9 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
+        cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
         cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
         cpu.passes.ttcpuir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)
@@ -211,7 +213,6 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_memory_op_to_llvmir(pm)
         cpu.passes.ttcpuir.add_atomic_ops_to_llvmir(pm)
         cpu.passes.ttcpuir.add_debug_ops_to_llvmir(pm)
-        cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm)
 
         vec_lib_requirements = {
             VecLib.libsleef: {"neon", "sse", "avx"},

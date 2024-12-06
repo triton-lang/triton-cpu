@@ -185,7 +185,7 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     I64:$dtypeC
   );
 
-  let results = (outs AnyUnrankedMemRef:$result);
+  let results = (outs Index:$result);
 
   // let assemblyFormat = [{
   //   $prefix attr-dict (`:` $val^ `:` type($val))?
@@ -203,12 +203,16 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call",
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins
-    AnyUnrankedMemRef:$kernel_hash,
+    Index:$kernel_hash,
     Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
     Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
     // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
     Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
-    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad
+    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
+
+    Index:$stepA,
+    Index:$stepB, 
+    Index:$numBatches
   );
 
   // let assemblyFormat = [{
@@ -237,7 +241,7 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
     AnyTypeOf<[I64, Index]>:$n_calls
   );
 
-  let results = (outs AnyUnrankedMemRef:$result);
+  let results = (outs Index:$result);
 
   // let assemblyFormat = [{
   //   $prefix attr-dict (`:` $val^ `:` type($val))?
@@ -255,7 +259,7 @@ def TTC_TransformCall : TTC_Op<"transform_call",
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins
-    AnyUnrankedMemRef:$kernel_hash,
+    Index:$kernel_hash,
     Arg<AnyMemRef, "", [MemRead]>:$in_ptr,
     Arg<AnyMemRef, "", [MemWrite]>:$out_blocked_ptr
   );
@@ -267,7 +271,7 @@ def TTC_ConfigureHW : TTC_Op<"configure_hw", [MemoryEffects<[MemWrite<GlobalMemo
   let description = [{}];
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins AnyUnrankedMemRef:$brgemm_kernel_hash);
+  let arguments = (ins Index:$brgemm_kernel_hash);
 
   // let assemblyFormat = [{
   //   $prefix attr-dict (`:` $val^ `:` type($val))?

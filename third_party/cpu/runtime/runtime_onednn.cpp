@@ -48,6 +48,15 @@ static constexpr size_t SCRATCH_SIZE = 2 * 4096;
 // TODO(haixin): need to use custom thread management for scratch in the future?
 static thread_local char scratch[SCRATCH_SIZE] = {0};
 
+namespace {
+template <typename T> struct RawMemRefDescriptor {
+  const T *allocated;
+  const T *aligned;
+  intptr_t offset;
+  intptr_t sizesAndStrides[];
+};
+} // namespace
+
 extern "C" {
 
 EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
@@ -55,9 +64,10 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
                                    int64_t ldc, int64_t dtypeA, int64_t dtypeB,
                                    int64_t dtypeC) {
   using K = std::array<int64_t, 10>;
-  std::cout << "Args: " << M << ", " << N << ", " << K_k << ", " << batch_size
-            << ", " << lda << ", " << ldb << ", " << ldc << ", " << dtypeA
-            << ", " << dtypeB << ", " << dtypeC << "\n";
+  std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
+            << ", bath - " << batch_size << ", lda - " << lda << ", ldb - "
+            << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
+            << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
   K key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
   static std::map<K, dnnl::ukernel::brgemm> savedUkernels;
@@ -91,6 +101,7 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   brg.generate();
 
   auto it = savedUkernels.insert({key, brg});
+  std::cout << "Ptr: " << &it.first->second << "\n";
   return &it.first->second;
 }
 
@@ -168,16 +179,42 @@ EXPORT void prepare_hw_context(const void *brg_k) {
   brg->set_hw_context();
 }
 
-EXPORT void call_brgemm(const void *brg_k, const void *A_ptr, const void *B_ptr,
-                        void *C_ptr, void *scratchpad) {
+EXPORT void call_brgemm(const void *brg_k, void *A_ptr, void *B_ptr,
+                        void *C_ptr, void *scratchpad, int64_t A_step_in_bytes,
+                        int64_t B_step_in_bytes, int64_t num_batches) {
   std::cout << "Call Brg: " << brg_k << ", " << A_ptr << ", " << B_ptr << ", "
             << C_ptr << ", " << scratchpad << "\n";
+  std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes
+            << " n: " << num_batches << "\n";
+
+  if (A_ptr == nullptr || B_ptr == nullptr || C_ptr == nullptr) {
+    std::cout << "----------------FAIL----------------\n";
+    return;
+  }
+
+  // auto dnnl_dtypeA = static_cast<dnnl::memory::data_type>(dtypeA);
+  // auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
+
+  // const size_t a_dt_size = memory::data_type_size(dnnl_dtypeA);
+  // const size_t b_dt_size = memory::data_type_size(dnnl_dtypeB);
+
+  std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
+  for (memory::dim i = 0; i < num_batches; i++) {
+    const memory::dim A_offset_i =
+        i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
+    const memory::dim B_offset_i =
+        i * B_step_in_bytes; // * b_dt_size; // N * K_k * b_dt_size;
+    A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
+  }
+
   auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
 
-  std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(3);
-  // An execute call. `A_B` is a vector of pointers to A and packed B
-  // tensors. `acc_ptr` is a pointer to an accumulator buffer.
-  brg->execute(A_ptr, B_ptr, A_B_offsets, C_ptr, scratchpad);
+  size_t scratchpad_size = brg->get_scratchpad_size();
+  std::vector<float> scratchpad_sm(scratchpad_size);
+  // std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(3);
+  //  An execute call. `A_B` is a vector of pointers to A and packed B
+  //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
+  brg->execute(A_ptr, B_ptr, A_B_offsets, C_ptr, scratchpad_sm.data());
 }
 
 // at the end of execution
