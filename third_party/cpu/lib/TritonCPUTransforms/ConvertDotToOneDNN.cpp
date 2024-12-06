@@ -65,6 +65,7 @@ static func::CallOp createFuncCall(RewriterBase &rewriter, Location loc,
 struct AmxBuffer {
   Value memRef;
   SmallVector<Value, 2> indices;
+  SmallVector<Value, 2> step;
 
   bool empty() const { return !memRef; }
 };
@@ -125,12 +126,15 @@ struct AmxDotOpCandidate {
   // If we want to keep accumulator in tiles but it's too big, then we might
   // keep it bufferized instead.
   bool keepAccInBuf = false;
+  // If output buffer is used then keep the original vector store here.
+  Operation *origStore = nullptr;
+
   // If resulting tiles are not required to be trasfered to vectors and can be
   // directly stored to the output memory instead, then this field holds a
   // buffer to use.
   AmxBuffer outBuf;
-  // If output buffer is used then keep the original vector store here.
-  Operation *origStore = nullptr;
+  AmxBuffer lhsBuf;
+  AmxBuffer rhsBuf;
 };
 
 bool checkIdxMap(Attribute attr, unsigned int v1, unsigned int v2) {
@@ -344,6 +348,8 @@ template <typename T> bool hasMaskOrBoundsCheck(T op) {
       std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
         return !cast<mlir::BoolAttr>(attr).getValue();
       });
+  llvm::errs() << "mask: " << mask << " bounds check: " << hasBoundsCheck
+               << "\n";
   return hasBoundsCheck || mask;
 }
 
@@ -360,17 +366,18 @@ void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
 }
 
 // Check if val is available in memory.
-void findInputBuffer(Value val, bool allowTransposed, MemBuffer &buf) {
-  if (allowTransposed) {
-    auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
-    if (transposeOp) {
-      val = transposeOp.getVector();
-      buf.transposed = true;
-    }
-  }
+void findInputBuffer(Value val, bool allowTransposed, AmxBuffer &buf) {
+  // if (allowTransposed) {
+  //   auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
+  //   if (transposeOp) {
+  //     val = transposeOp.getVector();
+  //     buf.transposed = true;
+  //   }
+  // }
 
   auto valLoad = val.getDefiningOp<vector::TransferReadOp>();
-  if (!valLoad || hasMaskOrBoundsCheck(valLoad)) {
+  (void)hasMaskOrBoundsCheck(valLoad);
+  if (!valLoad) {
     LDBG("Couldn't find a buffer with input: " << val);
     return;
   }
@@ -434,7 +441,7 @@ void findInputBuffer(Value val, bool allowTransposed, MemBuffer &buf) {
 
   buf.step = advance.getOffsets();
   LLVM_DEBUG(DBGS() << "  Step: ";
-             llvm::interleaveComma(buf.step, llvm::dbgs());
+             llvm::interleaveComma(advance.getOffsets(), llvm::dbgs());
              llvm::dbgs() << "\n");
 }
 
@@ -460,19 +467,23 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
   // Check if input and output types match available hardware capabilities.
   // If check is successful then tile element types are filled with types
   // to use in AMX operations.
-  if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
-                      accTy.getElementType(), resTy.getElementType(),
-                      candidate))
-    return false;
+  // if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
+  //                     accTy.getElementType(), resTy.getElementType(),
+  //                     candidate))
+  //   return false;
+  candidate.lhsTileElemTy = lhsTy.getElementType();
+  candidate.rhsTileElemTy = rhsTy.getElementType();
+  candidate.accTileElemTy = accTy.getElementType();
 
   candidate.op = op;
   setupBlockAndTileSizes(lhsTy.getShape(), rhsTy.getShape(), candidate);
   candidate.keepAccOnTiles = isLoopCarriedAcc(op.getAcc());
 
-  if (lhsTy.getElementType() == candidate.lhsElemTy)
-    findInputBuffer(op.getA(), true, candidate.lhsBuf);
-  if (rhsTy.getElementType() == candidate.rhsElemTy)
-    findInputBuffer(op.getB(), false, candidate.rhsBuf);
+  // if (lhsTy.getElementType() == candidate.lhsElemTy)
+  findInputBuffer(op.getLhs(), true, candidate.lhsBuf);
+
+  // if (rhsTy.getElementType() == candidate.rhsElemTy)
+  findInputBuffer(op.getRhs(), false, candidate.rhsBuf);
 
   findOutputBuffer(op.getResult(), candidate);
 
@@ -750,19 +761,29 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       accTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileN}),
                       candidate.accTileElemTy);
 
-  TypedValue<Type> acc_tmp = op.getAcc();
+  // TypedValue<Type> acc_tmp = op.getAcc();
   scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-  BlockArgument accBbArg = dyn_cast<BlockArgument>(acc_tmp);
+  // BlockArgument accBbArg = dyn_cast<BlockArgument>(acc_tmp);
 
-  if (!forOp || !accBbArg) {
-    llvm::errs() << "no for op \n";
-  }
+  // if (!forOp || !accBbArg) {
+  //   llvm::errs() << "no for op \n";
+  // }
 
-  OpOperand *accArg = forOp.getTiedLoopInit(accBbArg);
+  // OpOperand *accArg = forOp.getTiedLoopInit(accBbArg);
 
   // Loop induction variable
-  Value loopIv = forOp.getInductionVar();
-  forOp.getRegionIterArgs();
+  // Value loopIv = forOp.getInductionVar();
+  // forOp.getRegionIterArgs();
+
+  if (candidate.keepAccOnTiles) {
+    // Initial tile values are loaded before the loop and then directly
+    // used within the loop. Later, new iter values will be added to
+    // add loop carried-dependencies for accumulator tiles and accInitTiles
+    // will be used as initializers for them.
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(forOp);
+    LDBG("Loading accumulator to tiles before the loop.");
+  }
 
   // If we don't work with a loop and want to directly store tiles into output
   // memory, then use the original store as insertion point to have its buffer
@@ -992,8 +1013,8 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   // TODO: For keepAccOnTiles fix YieldOp to use mul results.
   // TODO: For keepAccOnTiles move all new forOp results to vector through a
   // buffer.
-  if (candidate.keepAccOnTiles)
-    llvm_unreachable("Not yet supported.");
+  // if (candidate.keepAccOnTiles)
+  //   llvm_unreachable("Not yet supported.");
 
   if (candidate.keepAccInBuf) {
     int resIdx = op.getResult().getUses().begin()->getOperandNumber();
@@ -1035,7 +1056,7 @@ struct ConvertDotToOneDNN
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
-    SmallVector<AmxDotOpCandidate> candidates;
+    SmallVector<AmxDotOpCandidate, 2> candidates;
     mod->walk([this, &candidates](vector::ContractionOp op) {
       AmxDotOpCandidate candidate;
       if (isAmxCandidate(op, convertInt8, convertFp16, convertBf16,
