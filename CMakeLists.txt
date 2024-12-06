@@ -19,7 +19,7 @@ if(NOT WIN32)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 endif()
 
-
+set(DNNLROOT "/home/jovyan/intel/oneapi/dnnl/2024.1")
 
 # Options
 option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
