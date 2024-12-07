@@ -582,7 +582,7 @@ download_and_copy(
       f"https://anaconda.org/nvidia/cuda-cupti/{version}/download/{system}-{arch}/cuda-cupti-{version}-0.tar.bz2")
      (*version.split('.'))))
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+backends = [*BackendInstaller.copy(["nvidia", "amd", "cpu"]), *BackendInstaller.copy_externals()]
 
 
 def add_link_to_backends():
@@ -674,6 +674,7 @@ def get_packages():
         "triton/compiler",
         "triton/language",
         "triton/language/extra",
+        "triton/language/extra/cpu",
         "triton/runtime",
         "triton/backends",
         "triton/tools",
@@ -751,7 +752,7 @@ setup(
             "autopep8",
             "flake8",
             "isort",
-            "numpy",
+            "numpy<2.0.0",
             "pytest",
             "pytest-forked",
             "pytest-xdist",

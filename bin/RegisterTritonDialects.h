@@ -4,6 +4,7 @@
 #include "third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
@@ -16,12 +17,17 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 
+#include "cpu/include/ScalarizePass/ScalarizeInterfaceImpl.h"
+#include "cpu/include/TritonCPUToLLVM/Passes.h"
+#include "cpu/include/TritonCPUTransforms/Passes.h"
+#include "cpu/include/TritonToTritonCPU/Passes.h"
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
 #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 
+#include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/InitAllPasses.h"
@@ -68,12 +74,21 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonAMDGPUInsertInstructionSchedHints();
   mlir::triton::registerTritonAMDGPULowerInstructionSchedHints();
 
+  // CPU passes
+  mlir::triton::cpu::registerTritonToTritonCPUPasses();
+  mlir::triton::cpu::registerTritonCPUTransformsPasses();
+  mlir::triton::cpu::registerTritonCPUToLLVMPasses();
+  mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
+
   // TODO: register Triton & TritonGPU passes
   registry
       .insert<mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
+              mlir::triton::cpu::TritonCPUDialect,
               mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
               mlir::triton::gpu::TritonGPUDialect, mlir::math::MathDialect,
               mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+              mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+              mlir::amx::AMXDialect, mlir::tensor::TensorDialect,
               mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
               mlir::NVVM::NVVMDialect, mlir::triton::nvgpu::NVGPUDialect,
               mlir::triton::amdgpu::TritonAMDGPUDialect,
