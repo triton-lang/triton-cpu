@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#define __STDC_WANT_IEC_60559_TYPES_EXT__
+#include <float.h>
+
 #if defined(_MSC_VER)
 #define EXPORT __declspec(dllexport)
 #elif defined(__GNUC__)
@@ -23,6 +26,42 @@ namespace {
 const int MAX_FLOAT_WIDTH = 8;
 const int FLOAT_PREC = 4;
 const int ELEMS_PER_LINE = 8;
+
+using FLOAT16 = struct _FLOAT16 {
+#ifdef FLT16_MAX
+  _Float16 x;
+#else
+  uint16_t x;
+#endif
+
+  float toFloat32() const {
+#ifdef FLT16_MAX
+    return static_cast<float>(x);
+#else
+    // Based on https://gist.github.com/zhuker/b4bd1fb306c7b04975b712c37c4c4075
+    uint32_t t1;
+    uint32_t t2;
+    uint32_t t3;
+
+    t1 = x & 0x7fffu; // Non-sign bits
+    t2 = x & 0x8000u; // Sign bit
+    t3 = x & 0x7c00u; // Exponent
+
+    t1 <<= 13u; // Align mantissa on MSB
+    t2 <<= 16u; // Shift sign bit into position
+
+    t1 += 0x38000000; // Adjust bias
+
+    t1 = (t3 == 0 ? 0 : t1); // Denormals-as-zero
+
+    t1 |= t2; // Re-insert sign bit
+
+    float out;
+    *((uint32_t *)&out) = t1;
+    return out;
+#endif
+  }
+};
 
 struct FormatInfo {
   bool isInt;
@@ -93,8 +132,8 @@ std::pair<int /* numDigits */, bool /* isNegative */> computeDigitInfo(T val) {
 
 template <>
 std::pair<int /* numDigits */, bool /* isNegative */>
-computeDigitInfo<_Float16>(_Float16 val) {
-  return computeDigitInfo<float>(static_cast<float>(val));
+computeDigitInfo<FLOAT16>(FLOAT16 val) {
+  return computeDigitInfo<float>(val.toFloat32());
 }
 
 template <typename T>
@@ -184,9 +223,9 @@ void printFormattedElement<uint8_t>(std::stringstream &ss, uint8_t val,
 }
 
 template <>
-void printFormattedElement<_Float16>(std::stringstream &ss, _Float16 val,
-                                     const FormatInfo &formatInfo) {
-  printFormattedElement<float>(ss, static_cast<float>(val), formatInfo);
+void printFormattedElement<FLOAT16>(std::stringstream &ss, FLOAT16 val,
+                                    const FormatInfo &formatInfo) {
+  printFormattedElement<float>(ss, val.toFloat32(), formatInfo);
 }
 
 template <typename T>
@@ -260,7 +299,7 @@ void printMemRef(std::stringstream &ss, int32_t rank, void *descriptor,
                     partialFormat, linePrefix);
       return;
     case 16:
-      printToStream(MemRefDescriptor<_Float16>(rank, descriptor), ss,
+      printToStream(MemRefDescriptor<FLOAT16>(rank, descriptor), ss,
                     partialFormat, linePrefix);
       return;
     default:
