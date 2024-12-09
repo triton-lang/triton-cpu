@@ -91,6 +91,12 @@ std::pair<int /* numDigits */, bool /* isNegative */> computeDigitInfo(T val) {
   return {digits, val < 0};
 }
 
+template <>
+std::pair<int /* numDigits */, bool /* isNegative */>
+computeDigitInfo<_Float16>(_Float16 val) {
+  return computeDigitInfo<float>(static_cast<float>(val));
+}
+
 template <typename T>
 std::tuple<int, int, bool> computeDigitStats(const MemRefDescriptor<T> &desc) {
   int maxIntDigits = 0;
@@ -177,6 +183,12 @@ void printFormattedElement<uint8_t>(std::stringstream &ss, uint8_t val,
   printFormattedElement<uint16_t>(ss, val, formatInfo);
 }
 
+template <>
+void printFormattedElement<_Float16>(std::stringstream &ss, _Float16 val,
+                                     const FormatInfo &formatInfo) {
+  printFormattedElement<float>(ss, static_cast<float>(val), formatInfo);
+}
+
 template <typename T>
 void printToStreamRecursive(const MemRefDescriptor<T> &desc,
                             std::stringstream &ss, const FormatInfo &formatInfo,
@@ -245,6 +257,10 @@ void printMemRef(std::stringstream &ss, int32_t rank, void *descriptor,
       return;
     case 32:
       printToStream(MemRefDescriptor<float>(rank, descriptor), ss,
+                    partialFormat, linePrefix);
+      return;
+    case 16:
+      printToStream(MemRefDescriptor<_Float16>(rank, descriptor), ss,
                     partialFormat, linePrefix);
       return;
     default:
