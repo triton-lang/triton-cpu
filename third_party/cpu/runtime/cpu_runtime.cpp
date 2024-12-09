@@ -325,14 +325,13 @@ EXPORT void triton_assert(int32_t pid0, int32_t pid1, int32_t pid2, bool cond,
 EXPORT void triton_print_unranked_memref(int32_t pid0, int32_t pid1,
                                          int32_t pid2, const char *prefix,
                                          UnrankedMemRefType memref, int32_t btw,
-                                         bool isInteger, bool isSignedInteger,
+                                         bool isInteger, bool isSigned,
                                          bool asHex) {
   std::stringstream ss;
   ss << "(" << pid0 << ", " << pid1 << ", " << pid2 << ")" << prefix;
   std::string linePrefix(ss.str().size(), ' ');
-
-  printMemRef(ss, memref.rank, memref.descriptor, btw, isInteger,
-              isSignedInteger, asHex, linePrefix);
+  printMemRef(ss, memref.rank, memref.descriptor, btw, isInteger, isSigned,
+              asHex, linePrefix);
   ss << "\n";
   std::cout << ss.str() << std::flush;
 }
