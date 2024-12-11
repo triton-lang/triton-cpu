@@ -164,6 +164,7 @@ BLOCK_SIZE_K = 8 if DTYPE == torch.float32 else 32
 CACHE_PADDING = os.getenv("CACHE_PADDING", "0") != "0"
 PREPACKED = os.getenv("PREPACKED", "0") != "0"
 PAD_B_ONLY = True
+USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
 USE_GPU = False
 
@@ -197,6 +198,7 @@ def matmul_kernel(
         # Meta-parameters
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
+        USE_BLOCK_POINTERS: tl.constexpr,  #
 ):
     """Kernel for computing the matmul C = A x B.
     A has shape (M, K), B has shape (K, N) and C has shape (M, N)
@@ -219,12 +221,21 @@ def matmul_kernel(
     # Create pointers for the first blocks of A and B.
     # We will advance this pointer as we move in the K direction
     # and accumulate
-    block_offset_m = pid_m * BLOCK_SIZE_M
-    block_offset_n = pid_n * BLOCK_SIZE_N
-    a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
-                                   offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K), order=(1, 0))
-    b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
-                                   offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0))
+    if USE_BLOCK_POINTERS:
+        block_offset_m = pid_m * BLOCK_SIZE_M
+        block_offset_n = pid_n * BLOCK_SIZE_N
+        a_tile_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
+                                       offsets=(block_offset_m, 0), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
+                                       order=(1, 0))
+        b_tile_ptr = tl.make_block_ptr(base=b_ptr, shape=(K, N), strides=(stride_bk, stride_bn),
+                                       offsets=(0, block_offset_n), block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
+                                       order=(1, 0))
+    else:
+        offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+        offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+        offs_k = tl.arange(0, BLOCK_SIZE_K)
+        a_tile_ptr = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+        b_tile_ptr = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     # -----------------------------------------------------------
     # Iterate to compute a block of the C matrix.
@@ -241,18 +252,28 @@ def matmul_kernel(
         # We accumulate along the K dimension.
         accumulator = tl.dot(a, b, accumulator, out_dtype=tl.float32)
         # Advance the ptrs to the next K block.
-        a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
-        b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+        if USE_BLOCK_POINTERS:
+            a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
+            b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+        else:
+            a_tile_ptr += BLOCK_SIZE_K * stride_ak
+            b_tile_ptr += BLOCK_SIZE_K * stride_bk
 
     # Convert the accumulator to the output matrix C's type if needed.
     c = accumulator
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix C.
-    c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
-                                    offsets=(block_offset_m, block_offset_n), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
-                                    order=(1, 0))
-    tl.store(c_block_ptr, c)
+    if USE_BLOCK_POINTERS:
+        c_tile_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
+                                       offsets=(block_offset_m, block_offset_n),
+                                       block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
+        tl.store(c_tile_ptr, c)
+    else:
+        offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        c_tile_ptr = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    tl.store(c_tile_ptr, c)
 
 
 # %%
@@ -306,6 +327,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K:
         c.stride(0), c.stride(1),  #
         BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
+        USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
         num_threads=num_threads,  #
     )
     return c
@@ -393,7 +415,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
         ylabel='GFLOPS',  # Label name for the y-axis.
         plot_name=
         # Name for the plot. Used also as a file name for saving the plot.
-        f'matmul-performance-{DTYPE} (CACHE_PADDING={CACHE_PADDING} PREPACKED={PREPACKED} PAD_B_ONLY={PAD_B_ONLY} GROUP_SIZE_M={GROUP_SIZE_M})',
+        f'matmul-performance-{DTYPE} (USE_BLOCK_POINTERS={USE_BLOCK_POINTERS} CACHE_PADDING={CACHE_PADDING} PREPACKED={PREPACKED} PAD_B_ONLY={PAD_B_ONLY} GROUP_SIZE_M={GROUP_SIZE_M})',
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(M, N, K, provider):

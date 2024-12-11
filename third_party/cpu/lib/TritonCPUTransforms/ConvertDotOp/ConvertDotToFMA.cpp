@@ -24,8 +24,7 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
-// This structure is used to hold candidates for conversion to AMX
-// Mul[F|I]Op operations.
+// This structure is used to hold candidates for conversion to FMA operations.
 struct FmaDotOpCandidate {
   // Operation to convert.
   cpu::DotOp op;
@@ -48,10 +47,10 @@ struct FmaDotOpCandidate {
   MemBuffer rhsBuf;
 };
 
-// Check if input and output types can be handled by AMX (possibly, using
-// additional casts for input/output). Returns true if AMX usage is possible.
-// In this case, tile element type fields of the candidate structure are
-// filled with actual types to be used in lowering.
+// Check if input and output types can be handled by FMA (possibly, using
+// additional casts for input/output). Returns true if FMA lowering is possible.
+// In this case, element type fields of the candidate structure are filled
+// with actual types to be used in lowering.
 bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
                     Type resElemTy, FmaDotOpCandidate &candidate) {
   MLIRContext *ctx = lhsElemTy.getContext();
@@ -88,7 +87,7 @@ bool checkInputShapes(VectorType lhsTy, VectorType resTy) {
   return true;
 }
 
-// Check if specified ContractionOp can be lowered to AMX operations.
+// Check if specified ContractionOp can be lowered to FMA operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
 bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate) {
@@ -314,9 +313,9 @@ LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
     if (k != lhsTy.getDimSize(1) - 1)
       nextRhsVec = loadRow(loc, rhsVecTy, rhsBuf, k + 1, rewriter);
 
-    // Prefetch RHS to L2 cache.
+    // Prefetch RHS to LLC cache.
     if (!rhsPrefetchIndices.empty())
-      prefetch(loc, candidate.rhsBuf, k, 0, rhsPrefetchIndices, 3, rewriter);
+      prefetch(loc, candidate.rhsBuf, k, 0, rhsPrefetchIndices, 1, rewriter);
 
     Value nextLhsBroadcasted =
         broadcastElem(loc, accVecTy, lhsBuf, 0, k, rewriter);
@@ -328,10 +327,13 @@ LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
         nextLhsBroadcasted =
             broadcastElem(loc, accVecTy, lhsBuf, m + 1, k, rewriter);
 
-      // Prefetch LHS to L0 cache.
-      if (!lhsPrefetchIndices.empty() &&
-          ((k * candidate.accRows + m) % 16 == 0))
-        prefetch(loc, candidate.lhsBuf, m, k, lhsPrefetchIndices, 1, rewriter);
+      // Prefetch LHS to L1 cache.
+      if (!lhsPrefetchIndices.empty()) {
+        if ((candidate.lhsBuf.transposed && (m % 8 == 0)) ||
+            (!candidate.lhsBuf.transposed && (k % 8 == 0)))
+          prefetch(loc, candidate.lhsBuf, m, k, lhsPrefetchIndices, 3,
+                   rewriter);
+      }
 
       accVecs[m] = rewriter.create<vector::FMAOp>(loc, rhsVec, lhsBroadcasted,
                                                   accVecs[m]);
@@ -342,7 +344,7 @@ LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
     // In this case we have the whole accumulator/result on tiles. Loop
     // carried dependencies are not in place yet and should be added.
     // After the loop, resulting tiles should either be stored to the
-    // output buffer, or moved to a vector though a temporary buffer.
+    // output buffer, or moved to a vector through a temporary buffer.
 
     // We don't need the original accumulator and contraction op anymore.
     // Directly yield orig accumulator value, so it would be later removed

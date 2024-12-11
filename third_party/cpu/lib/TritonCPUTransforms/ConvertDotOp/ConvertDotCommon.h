@@ -29,8 +29,8 @@ struct MemBuffer {
 };
 
 // Check if accumulator value is updated in a loop and has no other
-// usages than a dot op, that updates it. Tile loads/stores and casts
-// for such accumulators can be done outside of the loop.
+// usages than a dot op that updates it. Loads, stores, and casts
+// for such accumulator can be done outside of the loop.
 bool isLoopCarriedAcc(Value acc);
 
 // Get initial value for a loop-carried accumulator.
