@@ -222,6 +222,17 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call",
   // let hasVerifier = 1;
 }
 
+def TTC_BrgemmNeedsPacking : TTC_Op<"brgemm_needs_packing",
+    [MemoryEffects<[MemRead<GlobalMemory>]>]> {
+  let summary = "";
+
+  let arguments = (ins
+    Index:$kernel_hash
+  );
+
+  let results = (outs BoolLike:$result);
+}
+
 def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   let summary = "";
 

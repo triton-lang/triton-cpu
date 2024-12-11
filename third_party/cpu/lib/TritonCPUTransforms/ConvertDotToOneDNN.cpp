@@ -1,5 +1,6 @@
 #include "cpu/include/TritonCPUTransforms/OptCommon.h"
 
+#include "cpu/include/Analysis/TensorPtrShapeInfo.h"
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -66,6 +67,8 @@ struct AmxBuffer {
   Value memRef;
   SmallVector<Value, 2> indices;
   SmallVector<Value, 2> step;
+
+  Value origTritonBlockPtr;
 
   bool empty() const { return !memRef; }
 };
@@ -357,11 +360,12 @@ template <typename T> bool hasMaskOrBoundsCheck(T op) {
 // replaced with tile stores. In this case fill appropriate fields in the
 // candidate structure.
 void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
-  if (val.hasOneUse()) {
+  if (val.hasOneUse() && false) {
     auto store = dyn_cast<vector::TransferWriteOp>(*val.user_begin());
-    if (store && !hasMaskOrBoundsCheck(store))
+    if (store) // && !hasMaskOrBoundsCheck(store))
       candidate.outBuf = AmxBuffer{store.getSource(), store.getIndices()};
     candidate.origStore = store;
+    LDBG("[findOutputBuffer] cand outbuf: " << candidate.outBuf.memRef);
   }
 }
 
@@ -439,10 +443,17 @@ void findInputBuffer(Value val, bool allowTransposed, AmxBuffer &buf) {
     return;
   }
 
+  // CHeck that steaps are loop invariants.
   buf.step = advance.getOffsets();
   LLVM_DEBUG(DBGS() << "  Step: ";
              llvm::interleaveComma(advance.getOffsets(), llvm::dbgs());
              llvm::dbgs() << "\n");
+  OpOperand *tritonPtr = forOp.getTiedLoopInit(blockPtrArg);
+  if (!tritonPtr) {
+    LDBG("  Skip triton ptr. No Tied block ptr.");
+    return;
+  }
+  buf.origTritonBlockPtr = tritonPtr->get();
 }
 
 // Check if specified ContractionOp can be lowered to AMX operations.
@@ -739,49 +750,84 @@ void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
   // rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
 }
 
-LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
-                               PatternRewriter &rewriter) {
+void replaceLoop(AmxDotOpCandidate &candidate,
+                 ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis,
+                 PatternRewriter &rewriter) {
   vector::ContractionOp op = candidate.op;
   Location loc = op.getLoc();
   MLIRContext *ctx = op.getContext();
 
-  VectorType lhsTy = cast<VectorType>(op.getLhs().getType());
-  VectorType rhsTy = cast<VectorType>(op.getRhs().getType());
-  VectorType accTy =
-      cast<VectorType>(op.getAcc().getType()); // BLOCK_M x BLOCK_N
-  VectorType resTy = cast<VectorType>(op.getResultType());
+  auto extractMemref = [&](Value ptr) {
+    auto tensorTy = dyn_cast<RankedTensorType>(
+        dyn_cast<PointerType>(ptr.getType()).getPointeeType());
+    auto elemTy = tensorTy.getElementType();
+    auto shapeInfo = shapeAnalysis.getPtrShapeInfo(ptr);
+    Type memRefTy;
+    if (shapeInfo && shapeInfo->getRank() > 0) {
+      auto layout = StridedLayoutAttr::get(ctx, 0, shapeInfo->getStrides());
+      memRefTy = MemRefType::get(shapeInfo->getShape(), elemTy, layout);
+    } else {
+      SmallVector<int64_t> dynVals(tensorTy.getRank(), ShapedType::kDynamic);
+      auto layout = StridedLayoutAttr::get(ctx, 0, dynVals);
+      memRefTy = MemRefType::get(dynVals, elemTy, layout);
+    }
+    return rewriter.create<ExtractMemRefOp>(loc, memRefTy, ptr);
+  };
 
-  VectorType lhsTileTy =
-      lhsTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileK}),
-                      candidate.lhsTileElemTy);
-  VectorType rhsTileTy = getSwizzledRhsTileType(
-      rhsTy.cloneWith(SmallVector<int64_t>({candidate.tileK, candidate.tileN}),
-                      candidate.rhsTileElemTy));
-  VectorType accTileTy =
-      accTy.cloneWith(SmallVector<int64_t>({candidate.tileM, candidate.tileN}),
-                      candidate.accTileElemTy);
+  VectorType lhsTy = cast<VectorType>(candidate.op.getLhs().getType());
+  VectorType rhsTy = cast<VectorType>(candidate.op.getRhs().getType());
+  auto addSubView = [&](Value vecVal, ValueRange indices, Value memRef) {
+    LDBG("  Reusing the original memref for a buffer: " << memRef);
+    auto vecTy = cast<VectorType>(vecVal.getType());
+    auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
+    auto ctx = rewriter.getContext();
+    // Value memRef_view = rewriter.create<memref::SubViewOp>(
+    //     loc, memRefTy, memRef, {0, 0}, indices,
+    //     metadata.getStrides());
+    SmallVector<int64_t> strides(vecTy.getRank(), 1);
 
-  // TypedValue<Type> acc_tmp = op.getAcc();
+    Value memRef_view = rewriter.create<memref::SubViewOp>(
+        loc, memRef, getAsOpFoldResult(indices),
+        getAsIndexOpFoldResult(ctx, vecTy.getShape()),
+        getAsIndexOpFoldResult(ctx, strides));
+    return memRef_view;
+  };
+
+  auto lhsTritonPtr = candidate.lhsBuf.origTritonBlockPtr;
+  auto lhsMemRef = extractMemref(lhsTritonPtr);
+  // auto lhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
+  auto lhsIndices =
+      rewriter.create<ExtractIndicesOp>(loc, lhsTritonPtr).getResults();
+  auto lhsSubView = addSubView(candidate.op.getLhs(), lhsIndices, lhsMemRef);
+  candidate.lhsBuf.memRef = lhsSubView;
+  candidate.lhsBuf.indices = lhsIndices;
+
+  auto rhsTritonPtr = candidate.rhsBuf.origTritonBlockPtr;
+  auto rhsMemRef = extractMemref(rhsTritonPtr);
+  // auto rhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
+  auto rhsIndices =
+      rewriter.create<ExtractIndicesOp>(loc, rhsTritonPtr).getResults();
+  auto rhsSubView = addSubView(candidate.op.getRhs(), rhsIndices, rhsMemRef);
+  candidate.rhsBuf.memRef = rhsSubView;
+  candidate.rhsBuf.indices = rhsIndices;
+}
+
+LogicalResult
+convertCandidate(AmxDotOpCandidate &candidate,
+                 ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
+                 PatternRewriter &rewriter) {
+  vector::ContractionOp op = candidate.op;
+  Location loc = op.getLoc();
+  MLIRContext *ctx = op.getContext();
+
   scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-  // BlockArgument accBbArg = dyn_cast<BlockArgument>(acc_tmp);
-
-  // if (!forOp || !accBbArg) {
-  //   llvm::errs() << "no for op \n";
-  // }
-
-  // OpOperand *accArg = forOp.getTiedLoopInit(accBbArg);
-
-  // Loop induction variable
-  // Value loopIv = forOp.getInductionVar();
-  // forOp.getRegionIterArgs();
-
-  if (candidate.keepAccOnTiles) {
+  if (candidate.keepAccOnTiles && forOp) {
     // Initial tile values are loaded before the loop and then directly
     // used within the loop. Later, new iter values will be added to
     // add loop carried-dependencies for accumulator tiles and accInitTiles
     // will be used as initializers for them.
-    OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPoint(forOp);
+    replaceLoop(candidate, shapeInfoAnalysis, rewriter);
     LDBG("Loading accumulator to tiles before the loop.");
   }
 
@@ -798,25 +844,8 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   ModuleOp module = op->template getParentOfType<ModuleOp>();
 
-  SmallVector<Value, 10> operands;
-  SmallVector<Type, 10> operandTypes;
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   FloatType float32 = FloatType::getF32(rewriter.getContext());
-  // IndexType indexTy = IndexType::get(rewriter.getContext());
-
-  // Value strideA, strideB;
-  // std::optional<Value> batchSize;
-  // if (posBatch) {
-  //   auto posBatchInA = *getPosInCodomain(*posBatch, indexingMaps[0], ctx);
-  //   auto posBatchInB = *getPosInCodomain(*posBatch, indexingMaps[1], ctx);
-  //   batchSize = metadataA.getSizes()[posBatchInA];
-  //   strideA = metadataA.getStrides()[posBatchInA];
-  //   strideB = metadataB.getStrides()[posBatchInB];
-  // }
-
-  // auto dtype = xsmm::utils::getDataType(rewriter, inputs[0].getType());
-  // auto outDtype = xsmm::utils::getDataType(rewriter, inputs[2].getType());
-
   IndexType indexType = rewriter.getIndexType();
 
   auto getMemrefMetadata = [&](Value operand, Value indices_base,
@@ -832,12 +861,12 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
         operand);
   };
 
-  auto A = getMemrefFromVectorOperand(op.getLhs());
-  auto B = getMemrefFromVectorOperand(op.getRhs());
-
-  auto metadataA = getMemrefMetadata(A.memRef, A.indices[0], A.indices[1]);
-  auto metadataB = getMemrefMetadata(B.memRef, B.indices[0], B.indices[1]);
-  // auto metadataC = getMemrefMetadata(C);
+  auto metadataA =
+      getMemrefMetadata(candidate.lhsBuf.memRef, candidate.lhsBuf.indices[0],
+                        candidate.lhsBuf.indices[1]);
+  auto metadataB =
+      getMemrefMetadata(candidate.rhsBuf.memRef, candidate.rhsBuf.indices[0],
+                        candidate.rhsBuf.indices[1]);
 
   auto posMInA = 0; //*getPosInCodomain(posM, indexingMaps[0], ctx);
   auto posNInB = 1; //*getPosInCodomain(posN, indexingMaps[1], ctx);
@@ -858,9 +887,10 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   // they are in the same order with BrgemmDispatchOp inputs;
-  llvm::errs() << "Inps: M - " << candidate.tileM << ", N - " << candidate.tileN
-               << ", K - " << candidate.tileK << " lhsType - " << lhsTy
-               << " rhsType - " << rhsTy << "\n";
+  // llvm::errs() << "Inps: M - " << candidate.tileM << ", N - " <<
+  // candidate.tileN
+  //              << ", K - " << candidate.tileK << " lhsType - " << lhsTy
+  //              << " rhsType - " << rhsTy << "\n";
 
   auto block_m = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
@@ -902,35 +932,14 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   auto c_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeCAttr);
 
   auto memrefElemType =
-      dyn_cast<MemRefType>(A.memRef.getType()).getElementType();
-  // auto memrefType = indexType::get(memrefElemType, 0);
+      dyn_cast<MemRefType>(candidate.lhsBuf.memRef.getType()).getElementType();
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), block_m, block_n, block_k, batch_size, lda,
       ldb, n, a_dt, b_dt, c_dt);
 
-  // Cast input data if required and prepare input buffer. It might be temporary
-  // buffers with stored vectors or the original input memory.
-  Value lhs = maybeCast(loc, op.getLhs(), candidate.lhsTileElemTy, rewriter);
-  LDBG("Preparing LHS.");
-  AmxBuffer lhsBuf =
-      prepareTensorBuffer(rewriter, loc, lhs, metadataA, false, allocaPoint);
-  auto lhsMemRefTy = cast<MemRefType>(lhsBuf.memRef.getType());
-  LDBG("Lhs shape: " << lhsMemRefTy);
-
   // We will check if packing required and insert transform call if needed
   // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
-  Value rhs = maybeCast(loc, op.getRhs(), candidate.rhsTileElemTy, rewriter);
-
-  /*
-  operands[2] * n_calls // K_k * n_calls
-  operands[1] // N
-  // pack_type::no_trans
-  operands[1] // in_ld // N
-  operands[1] // out_ld // ldb // N
-  operands[8] // b_dt
-  operands[8] // b_dt
-  */
 
   // TODO FIXME
   // n_calls should be passed from smwhr
@@ -946,31 +955,93 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
                        op.getRhs().getType().getElementTypeBitWidth()));
   // auto ldb_ind = rewriter.create<arith::IndexCastOp>(
   //     loc, IndexType::get(rewriter.getContext()), ldb);
-  // auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
-  //     loc, IndexType::get(rewriter.getContext()), b_data_type_size);
+  auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
+      loc, IndexType::get(rewriter.getContext()), b_data_type_size);
 
-  // auto blocked_B_size = rewriter.create<arith::MulIOp>(loc, ldb,
-  // block_k_ind); LDBG("blocked_B_size [1]: " << blocked_B_size);
-  // blocked_B_size =
-  //     rewriter.create<arith::MulIOp>(loc, blocked_B_size,
-  //     b_data_type_size_ind);
-  // LDBG("blocked_B_size [2]: " << blocked_B_size);
+  Value block_k_ver = block_k;
+  Value b_data_type_size_ver = b_data_type_size;
+  if (!ldb.getType().isInteger()) {
+    block_k_ver = block_k_ind;
+    b_data_type_size_ver = b_data_type_size_ind;
+  }
+  auto blocked_B_size = rewriter.create<arith::MulIOp>(loc, ldb, block_k_ver);
+  LDBG("blocked_B_size [1]: " << blocked_B_size);
+  blocked_B_size =
+      rewriter.create<arith::MulIOp>(loc, blocked_B_size, b_data_type_size_ver);
+  LDBG("blocked_B_size [2]: " << blocked_B_size);
 
-  // Value transform = rewriter.create<triton::cpu::TransformCreate>(
-  //     loc, memrefType, k, block_n, in_ld, ldb, b_dt, b_dt, block_k,
-  //     n_calls);
+  Value transform = rewriter.create<triton::cpu::TransformCreate>(
+      loc, rewriter.getIndexType(), k, block_n, in_ld, ldb, b_dt, b_dt, block_k,
+      n_calls);
+  if (candidate.keepAccOnTiles && forOp) {
+    // Just a stub, dont know why we should use Vector TYpe here
+    auto vecTy = cast<VectorType>(candidate.op.getRhs().getType());
+    auto transf_op = transform.getDefiningOp<triton::cpu::TransformCreate>();
 
+    SmallVector<Value, 3> blocked_shape{transf_op.getBlockK(), transf_op.getOutLd(), transf_op.getNCalls()};
+    AmxBuffer buf = allocateTmpBuffer(
+        loc,
+        blocked_shape,
+        vecTy.getElementType(), allocaPoint, rewriter);
+
+    LDBG("  Reusing the original memref for a buffer: "
+         << candidate.rhsBuf.memRef);
+
+    auto need_packing = rewriter.create<triton::cpu::BrgemmNeedsPacking>(
+        loc, rewriter.getI1Type(), brgemm);
+
+    // K, N, in_pack, in_ld, out_ld, in_dt, out_dt
+    // Value transform =
+    // auto transform_call = rewriter.create<triton::cpu::TransformCall>(loc,
+    // transform, rhsMemRef,
+    //                                             buf.memRef);
+
+    auto memRefTy = cast<MemRefType>(buf.memRef.getType());
+    auto unrankedResTy = UnrankedMemRefType::get(memRefTy.getElementType(), memRefTy.getMemorySpace());
+
+    auto ifOp = rewriter.create<scf::IfOp>(
+        loc, buf.memRef.getType(), need_packing, /*withElseRegion=*/true);
+    auto thenB = ifOp.getThenBodyBuilder();
+    auto yield = thenB.create<scf::YieldOp>(loc, buf.memRef);
+    auto tcall = thenB.create<triton::cpu::TransformCall>(
+        loc, transform, candidate.rhsBuf.memRef, buf.memRef);
+    tcall->moveBefore(yield);
+    buf.memRef.getDefiningOp()->moveBefore(tcall);
+    transform.getDefiningOp()->moveBefore(tcall);
+    // Value memRef_view =
+    //     thenB.create<memref::CastOp>(loc, unrankedResTy, buf.memRef);
+    // transform_call->moveBefore(yield);
+
+    auto elseB = ifOp.getElseBodyBuilder();
+
+    // auto non_block = rewriter.create<arith::ConstantOp>(
+    //   loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 1));
+    SmallVector<int64_t, 3> non_blocked_shape{memRefTy.getShape()};
+    non_blocked_shape[2] = IntegerAttr::get(rewriter.getI64Type(), 1).getInt();
+    // Value memRef_view = rewriter.create<memref::SubViewOp>(
+    //     loc, memRefTy, memRef, {0, 0}, indices,
+    //     metadata.getStrides());
+    // SmallVector<int64_t> strides(vecTy.getRank(), 1); 
+    Value memRef_view =
+        elseB.create<memref::ExpandShapeOp>(loc, non_blocked_shape, candidate.rhsBuf.memRef, SmallVector<ReassociationIndices>{{0}, {1, 2}});
+    Value memRef_casted =
+        elseB.create<memref::CastOp>(loc, buf.memRef.getType(), memRef_view);
+    // Value memRef_view =
+    //     elseB.create<memref::CastOp>(loc, unrankedResTy, candidate.rhsBuf.memRef);
+
+    elseB.create<scf::YieldOp>(loc, memRef_casted);
+
+    candidate.rhsBuf.memRef = ifOp.getResult(0);
+  }
   // LDBG("TF creation: " << transform);
-  LDBG("Preparing RHS.");
-  AmxBuffer rhsBuf = prepareTensorBuffer(rewriter, loc, rhs, metadataB, true,
-                                         allocaPoint); //, transform);
-  auto rhsMemRefTy = cast<MemRefType>(rhsBuf.memRef.getType());
-  LDBG("Rhs shape: " << rhsMemRefTy);
 
   Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
 
+  LDBG("keepAcconBuff: " << candidate.keepAccInBuf
+                         << " keppOnTiles: " << candidate.keepAccOnTiles);
   if (candidate.keepAccInBuf || candidate.keepAccOnTiles) {
+    LDBG("Setting insertion op to forOp. (accToStore)");
     forOp = cast<scf::ForOp>(op->getParentOp());
     accToStore = getInitAccValue(acc);
   }
@@ -980,14 +1051,19 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     // If accumulator is bufferized then we should move initial values before
     // the loop.
     OpBuilder::InsertionGuard g(rewriter);
-    if (candidate.keepAccInBuf)
+    if (candidate.keepAccOnTiles) {
+      LDBG("Setting insertion op to forOp. (accBuf)");
       rewriter.setInsertionPoint(forOp);
+    }
     accBuf =
         prepareTensorBuffer(rewriter, loc, accToStore, {}, false, allocaPoint);
   }
 
   AmxBuffer resBuf = prepareResultBuffer(
       loc, op.getResult(), accBuf, candidate.outBuf, allocaPoint, rewriter);
+
+  LDBG("[prepareResultBuffer] prepared acc buf: " << accBuf.memRef);
+  LDBG("[prepareResultBuffer] prepared res buf: " << resBuf.memRef);
 
   SmallVector<SmallVector<Value>> accTiles;
   if (candidate.keepAccOnTiles)
@@ -1005,8 +1081,8 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
                                                   rewriter.getIndexAttr(0));
 
   rewriter.create<triton::cpu::BrgemmCall>(
-      loc, brgemm, lhsBuf.memRef, rhsBuf.memRef, resBuf.memRef, accBuf.memRef,
-      stepA, stepB, num_batches);
+      loc, brgemm, candidate.lhsBuf.memRef, candidate.rhsBuf.memRef,
+      resBuf.memRef, accBuf.memRef, stepA, stepB, num_batches);
 
   rewriter.create<triton::cpu::ReleaseHW>(loc);
 
@@ -1016,6 +1092,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   // if (candidate.keepAccOnTiles)
   //   llvm_unreachable("Not yet supported.");
 
+  /*
   if (candidate.keepAccInBuf) {
     int resIdx = op.getResult().getUses().begin()->getOperandNumber();
     Value loopRes = forOp.getResult(resIdx);
@@ -1031,18 +1108,29 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     // For now, just use init value for unused ForOp result instead of
     // its removal.
     rewriter.replaceOp(op, op.getAcc());
-  } else if (candidate.outBuf.empty()) {
+  } else
+  */
+  if (candidate.outBuf.empty()) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal = rewriter.create<vector::TransferReadOp>(
         loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices);
     // We might need to cast back to the original type.
-    newVal = maybeCast(loc, newVal, accTy.getElementType(), rewriter);
-    rewriter.replaceOp(op, newVal);
+    newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
+    // rewriter.replaceOp(op, newVal);
+    // rewriter.eraseOp(*op.getResult().user_begin());
+    // rewriter.eraseOp(op);
+    LDBG("Printing module before replace:");
+    LDBG(module);
+
+    rewriter.replaceOp(forOp, ValueRange{newVal, candidate.lhsBuf.memRef,
+                                         candidate.rhsBuf.memRef});
   } else {
     LDBG("Removing original operation and its use.");
     rewriter.eraseOp(*op.getResult().user_begin());
     rewriter.eraseOp(op);
   }
+
+  LDBG(module);
 
   return success();
 }
@@ -1055,6 +1143,8 @@ struct ConvertDotToOneDNN
 
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
+
+    ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
 
     SmallVector<AmxDotOpCandidate, 2> candidates;
     mod->walk([this, &candidates](vector::ContractionOp op) {
@@ -1085,7 +1175,7 @@ struct ConvertDotToOneDNN
       LDBG("Starting conversion of candidate: " << candidate.op);
       PatternRewriter rewriter(context);
       rewriter.setInsertionPoint(candidate.op);
-      if (succeeded(convertCandidate(candidate, rewriter))) {
+      if (succeeded(convertCandidate(candidate, shapeInfoAnalysis, rewriter))) {
         LDBG("Conversion succeeded!");
       } else {
         LDBG("Conversion failed!");
