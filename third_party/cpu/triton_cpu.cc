@@ -91,6 +91,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
         convertInt8, convertFp16, convertBf16));
   });
+  m.def("add_convert_dot_to_fma", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToFMA());
+  });
   m.def("add_convert_dot_generic", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotGeneric());
   });
