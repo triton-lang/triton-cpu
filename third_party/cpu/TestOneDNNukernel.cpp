@@ -11,11 +11,19 @@
 #include <oneapi/dnnl/dnnl_ukernel.hpp>
 #include <oneapi/dnnl/dnnl_ukernel_types.h>
 
+#include <map>
+#include <mutex>
+#include <shared_mutex>
+
 using namespace dnnl;
 using namespace dnnl::ukernel;
 
 using tag = memory::format_tag;
 using dt = memory::data_type;
+
+using read_lock_guard_t = std::shared_lock<std::shared_mutex>;
+using write_lock_guard_t = std::unique_lock<std::shared_mutex>;
+static std::shared_mutex g_brgemm_lock;
 
 #ifdef Nope
 static inline int64_t getDnnlDataTypeVal(RewriterBase &rewriter,
@@ -168,6 +176,155 @@ inline dnnl::memory::dim product(const dnnl::memory::dims &dims) {
                          std::multiplies<dnnl::memory::dim>());
 }
 
+void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
+                            int64_t batch_size, int64_t lda, int64_t ldb,
+                            int64_t ldc, int64_t dtypeA, int64_t dtypeB,
+                            int64_t dtypeC) {
+  using K = std::array<int64_t, 10>;
+  std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
+            << ", bath - " << batch_size << ", lda - " << lda << ", ldb - "
+            << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
+            << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
+  K key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
+
+  static std::map<K, dnnl::ukernel::brgemm> savedUkernels;
+  {
+    read_lock_guard_t r_g(g_brgemm_lock);
+    if (savedUkernels.count(key) != 0) {
+      return &savedUkernels.find(key)->second;
+    }
+  }
+
+  write_lock_guard_t w_g(g_brgemm_lock);
+
+  if (savedUkernels.count(key) != 0) {
+    return &savedUkernels.find(key)->second;
+  }
+
+  auto dnnl_dtypeA = static_cast<dnnl::memory::data_type>(dtypeA);
+  auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
+  auto dnnl_dtypeC = static_cast<dnnl::memory::data_type>(dtypeC);
+
+  std::cout << std::boolalpha;
+  std::cout << "Is fp32? " << (dnnl_dtypeA == dt::f32) << "\n";
+
+  dnnl::ukernel::brgemm brg;
+  brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
+                              dnnl_dtypeB, dnnl_dtypeC);
+
+  std::cout << "Brg: " << &brg << "\n";
+  // Instruct the kernel to append the result to C tensor.
+  brg.set_add_C(true);
+  // Finalize the initialization.
+  brg.finalize();
+  // Generate the executable JIT code for the objects.
+  brg.generate();
+
+  auto it = savedUkernels.insert({key, brg});
+  std::cout << "Ptr: " << &it.first->second << "\n";
+  return &it.first->second;
+}
+
+void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
+                               int64_t out_ld, int64_t inDtype,
+                               int64_t outDtype) {
+  using K_t = std::array<int64_t, 6>;
+  K_t key{K, N, in_ld, out_ld, inDtype, outDtype};
+
+  static std::map<K_t, dnnl::ukernel::transform> savedUkernels;
+  {
+    read_lock_guard_t r_g(g_brgemm_lock);
+    if (savedUkernels.count(key) != 0) {
+      return &savedUkernels.find(key)->second;
+    }
+  }
+
+  write_lock_guard_t w_g(g_brgemm_lock);
+
+  if (savedUkernels.count(key) != 0) {
+    return &savedUkernels.find(key)->second;
+  }
+
+  // Packing B tensor routine. The BRGeMM ukernel expects B passed in a
+  // special VNNI format for low precision data types, e.g., bfloat16_t.
+  // Note: the routine doesn't provide a `batch_size` argument in the
+  // constructor as it can be either incorporated into `K` dimension, or
+  // manually iterated over in a for-loop on the user side.
+  dnnl::ukernel::transform pack_B(
+      /* K = */ K, /* N = */ N,
+      /* in_pack_type = */ pack_type::no_trans,
+      /* in_ld = */ in_ld,
+      /* out_ld = */ out_ld,
+      /* in_dt = */ static_cast<dnnl::memory::data_type>(inDtype),
+      /* out_dt = */ static_cast<dnnl::memory::data_type>(outDtype));
+
+  // Pack B routine execution.
+  // Note: usually should be split to process only that part of B that the
+  // ukernel will execute.
+  pack_B.generate();
+
+  auto it = savedUkernels.insert({key, pack_B});
+  return &it.first->second;
+}
+
+void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
+              void *original_B_ptr, void *C_ptr, void *scratchpad,
+              int64_t A_step_in_bytes, int64_t B_step_in_bytes,
+              int64_t B_block_size_in_bytes, int64_t num_batches,
+              bool skip_packing = false) {
+
+  void *blocked_data = original_B_ptr;
+  std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
+            << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " << C_ptr
+            << ", scr: " << scratchpad << "\n";
+  std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes << " "
+            << B_block_size_in_bytes << " n: " << num_batches << "\n";
+
+  auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
+  auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
+  std::cout << " vanilla check pack: "
+            << ((brg->get_B_pack_type() == pack_type::pack32) ? "true"
+                                                              : "false")
+            << "\n";
+  bool need_packing =
+      brg->get_B_pack_type() == pack_type::pack32 && !skip_packing;
+  if (need_packing) {
+    std::cout << "Will be packed. \n";
+    // output
+
+    // blocked_B_size = block_K * block_n * dtype; // ldb * K_k *
+    // memory::data_type_size(b_dt);
+
+    blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
+
+    pack_B->execute(original_B_ptr, blocked_data);
+  }
+
+  brg->set_hw_context();
+
+  std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
+  for (memory::dim i = 0; i < num_batches; i++) {
+    const memory::dim A_offset_i =
+        i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
+    const memory::dim B_offset_i =
+        need_packing ? i * B_block_size_in_bytes : i * B_step_in_bytes;
+    A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
+  }
+
+  size_t scratchpad_size = brg->get_scratchpad_size();
+  std::vector<uint8_t> scratchpad_sm(scratchpad_size);
+
+  //  An execute call. `A_B` is a vector of pointers to A and packed B
+  //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
+  brg->execute(A_ptr, blocked_data, A_B_offsets, C_ptr, scratchpad_sm.data());
+
+  dnnl::ukernel::brgemm::release_hw_context();
+
+  if (need_packing) {
+    delete blocked_data;
+  };
+}
+
 int main() {
   // brgemm_example();
   // return 0;
@@ -181,7 +338,7 @@ int main() {
 
   // ukernel dimensions.
   // K is for a whole tensor, K_k is for a single ukernel.
-  const memory::dim M = 4, K = 8, K_k = 2, N = 16;
+  const memory::dim M = 32, K = 32, K_k = 16, N = 32;
   if (K % K_k != 0) {
     printf("K_k must divide K.\n");
     return 0;
@@ -257,8 +414,8 @@ int main() {
   auto C_mem = memory(C_md, engine);
   auto D_mem = memory(D_md, engine);
 
-  const auto *A_ptr = reinterpret_cast<uint16_t *>(A_mem.get_data_handle());
-  auto *B_ptr = reinterpret_cast<uint16_t *>(B_mem.get_data_handle());
+  const auto *A_ptr = reinterpret_cast<float *>(A_mem.get_data_handle());
+  auto *B_ptr = reinterpret_cast<float *>(B_mem.get_data_handle());
 
   const size_t a_dt_size =
       memory::data_type_size(A_mem.get_desc().get_data_type());
@@ -273,6 +430,61 @@ int main() {
   for (memory::dim i = 0; i < M * N; i++) {
     C_ptr[i] = 0;
   }
+
+  auto brg_k =
+      create_brgemm_ukernel(M, N, K_k, batch_size, lda, ldb, ldc, 3, 3, 3);
+  auto tfrm = create_transform_ukernel(K_k * n_calls, N, N, ldb, 3, 3);
+
+  // void *B_base_ptr = B_ptr;
+
+  // blocked_B_size = ldb * K_k * memory::data_type_size(b_dt);
+
+  call_all(tfrm, brg_k, (void *)A_ptr, (void *)B_ptr, (void *)C_ptr, nullptr,
+           K_k * a_dt_size, N * K_k * b_dt_size,
+           ldb * K_k * memory::data_type_size(b_dt), batch_size);
+
+  printf("( m, n)  val after \"brg\" call\n");
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      printf("Acc buffer(C_ptr) res: (%2d, %2d) Ref:%12f\n", m, n,
+             C_ptr[m * N + n]);
+      // if (scratchpad.size() != 0) {
+      //   printf("Out buffer res: (%2d, %2d) Ref:%12f\n", m, n,
+      //          scratchpad[m * N + n]);
+      // }
+    }
+  }
+
+  bool to_throw = false;
+  printf("( m,  n,  k)  val\n");
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      D_user_data[m * N + n] = 0;
+      for (int k = 0; k < K; k++) {
+        printf("(%2d, %2d, %2d) A: %12f     B: %12f\n", m, n, k,
+               A_user_data[m * K + k], B_user_data[k * N + n]);
+        D_user_data[m * N + n] +=
+            A_user_data[m * K + k] * B_user_data[k * N + n];
+      }
+      const float diff = fabsf(D_user_data[m * N + n] - C_ptr[m * N + n]);
+      if (diff > 1.19e-7) {
+        to_throw = true;
+        if (true) {
+          printf("Error: (%2d, %2d) Ref:%12g Got:%12g Diff:%12g\n", m, n,
+                 D_user_data[m * N + n], C_ptr[m * N + n], diff);
+        }
+      }
+      // else {
+      //   printf("Matched res: (%2d, %2d) Ref:%12f\n", m, n,
+      //          D_user_data[m * N + n]);
+      // }
+    }
+  }
+  if (to_throw) {
+    throw status::runtime_error;
+  }
+
+  return 0;
 
   // Create BRGeMM ukernel objects.
   // There are two objects:
@@ -390,7 +602,7 @@ int main() {
   // A simplified fast verification that ukernel returned expected results.
   // Note: potential off-by-1 or 2 errors may pop up. This could be solved
   // with more sparse filling.
-  bool to_throw = false;
+  // bool to_throw = false;
   printf("( m,  n,  k)  val\n");
   for (int m = 0; m < M; m++) {
     for (int n = 0; n < N; n++) {

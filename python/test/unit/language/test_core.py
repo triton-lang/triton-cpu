@@ -5744,7 +5744,7 @@ def matmul_blocked_kernel(  #
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("M, N, K", [(32, 32, 32)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 32, 16)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(32, 16, 16)])
 @pytest.mark.parametrize("in_type_str", ['float32'])
 @pytest.mark.parametrize("low_precision_acc", [0])
 def test_dot_blocked(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):

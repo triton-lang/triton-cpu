@@ -153,6 +153,64 @@ EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
   return &it.first->second;
 }
 
+EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
+                     void *original_B_ptr, void *C_ptr, void *scratchpad,
+                     int64_t A_step_in_bytes, int64_t B_step_in_bytes,
+                     int64_t B_block_size_in_bytes, int64_t num_batches,
+                     bool skip_packing = false) {
+
+  uint8_t *blocked_data = (uint8_t *)original_B_ptr;
+  std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
+            << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " << C_ptr
+            << ", scr: " << scratchpad << "\n";
+  std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes << " "
+            << B_block_size_in_bytes << " n: " << num_batches << "\n";
+
+  auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
+  auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
+  std::cout << " vanilla check pack: "
+            << ((brg->get_B_pack_type() == pack_type::pack32) ? "true"
+                                                              : "false")
+            << "\n";
+  bool need_packing =
+      brg->get_B_pack_type() == pack_type::pack32 && !skip_packing;
+  if (need_packing) {
+    std::cout << "Will be packed. \n";
+    // output
+
+    // blocked_B_size = block_K * block_n * dtype; // ldb * K_k *
+    // memory::data_type_size(b_dt);
+
+    blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
+
+    pack_B->execute(original_B_ptr, blocked_data);
+  }
+
+  brg->set_hw_context();
+
+  std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
+  for (memory::dim i = 0; i < num_batches; i++) {
+    const memory::dim A_offset_i =
+        i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
+    const memory::dim B_offset_i =
+        need_packing ? i * B_block_size_in_bytes : i * B_step_in_bytes;
+    A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
+  }
+
+  size_t scratchpad_size = brg->get_scratchpad_size();
+  std::vector<uint8_t> scratchpad_sm(scratchpad_size);
+
+  //  An execute call. `A_B` is a vector of pointers to A and packed B
+  //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
+  brg->execute(A_ptr, blocked_data, A_B_offsets, C_ptr, scratchpad_sm.data());
+
+  dnnl::ukernel::brgemm::release_hw_context();
+
+  if (need_packing) {
+    delete blocked_data;
+  };
+}
+
 EXPORT void call_transform(const void *transform_k, const void *original_data,
                            void *blocked_data) {
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);

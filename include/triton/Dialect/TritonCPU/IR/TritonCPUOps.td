@@ -233,6 +233,27 @@ def TTC_BrgemmNeedsPacking : TTC_Op<"brgemm_needs_packing",
   let results = (outs BoolLike:$result);
 }
 
+def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let arguments = (ins
+    Index:$transform_kernel_hash,
+    Index:$brgemm_kernel_hash,
+    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
+    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
+    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
+
+    AnyTypeOf<[AnyInteger, Index]>:$stepA,
+    AnyTypeOf<[AnyInteger, Index]>:$stepB,
+    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize, 
+    AnyTypeOf<[AnyInteger, Index]>:$numBatches
+  );
+}
+
 def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   let summary = "";
 

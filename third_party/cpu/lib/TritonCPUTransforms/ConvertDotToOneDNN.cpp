@@ -750,6 +750,22 @@ void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
   // rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
 }
 
+void checkInputBtw(SmallVector<Value> &inps, PatternRewriter &rewriter) {
+  for (auto i = 0; i < inps.size(); i++) {
+    auto inp = inps[i];
+    Type inpT = inp.getType();
+    if (!inpT.isInteger()) {
+      continue;
+    }
+    if (inpT.getIntOrFloatBitWidth() != 64) {
+      LDBG("Type: " << inpT << " val: " << inp);
+      inps[i] = rewriter.create<arith::IndexCastOp>(
+          inp.getLoc(), IndexType::get(rewriter.getContext()), inp);
+      LDBG("created: " << inps[i]);
+    }
+  }
+}
+
 void replaceLoop(AmxDotOpCandidate &candidate,
                  ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis,
                  PatternRewriter &rewriter) {
@@ -820,7 +836,13 @@ convertCandidate(AmxDotOpCandidate &candidate,
   Location loc = op.getLoc();
   MLIRContext *ctx = op.getContext();
 
+  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+  FloatType float32 = FloatType::getF32(rewriter.getContext());
+  IndexType indexType = rewriter.getIndexType();
+
   scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+  Value num_batches = rewriter.create<arith::ConstantOp>(
+      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 1));
   if (candidate.keepAccOnTiles && forOp) {
     // Initial tile values are loaded before the loop and then directly
     // used within the loop. Later, new iter values will be added to
@@ -829,6 +851,11 @@ convertCandidate(AmxDotOpCandidate &candidate,
     rewriter.setInsertionPoint(forOp);
     replaceLoop(candidate, shapeInfoAnalysis, rewriter);
     LDBG("Loading accumulator to tiles before the loop.");
+
+    auto loopRange = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
+                                                    forOp.getLowerBound());
+    num_batches =
+        rewriter.create<arith::DivUIOp>(loc, loopRange, forOp.getStep());
   }
 
   // If we don't work with a loop and want to directly store tiles into output
@@ -844,12 +871,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   ModuleOp module = op->template getParentOfType<ModuleOp>();
 
-  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
-  FloatType float32 = FloatType::getF32(rewriter.getContext());
-  IndexType indexType = rewriter.getIndexType();
-
-  auto getMemrefMetadata = [&](Value operand, Value indices_base,
-                               Value indices_size) {
+  auto getMemrefMetadata = [&](Value operand) {
     auto memrefType = dyn_cast<MemRefType>(operand.getType());
     assert(memrefType && "Expect a memref value");
     MemRefType baseMemrefType =
@@ -861,27 +883,24 @@ convertCandidate(AmxDotOpCandidate &candidate,
         operand);
   };
 
-  auto metadataA =
-      getMemrefMetadata(candidate.lhsBuf.memRef, candidate.lhsBuf.indices[0],
-                        candidate.lhsBuf.indices[1]);
-  auto metadataB =
-      getMemrefMetadata(candidate.rhsBuf.memRef, candidate.rhsBuf.indices[0],
-                        candidate.rhsBuf.indices[1]);
+  auto metadataA = getMemrefMetadata(candidate.lhsBuf.memRef);
+  auto metadataB = getMemrefMetadata(candidate.rhsBuf.memRef);
 
-  auto posMInA = 0; //*getPosInCodomain(posM, indexingMaps[0], ctx);
-  auto posNInB = 1; //*getPosInCodomain(posN, indexingMaps[1], ctx);
-  auto posKInA = 1; //*getPosInCodomain(posK, indexingMaps[0], ctx);
-  auto posKInB = 0; //*getPosInCodomain(posK, indexingMaps[1], ctx);
+  // auto posMInA = 0; //*getPosInCodomain(posM, indexingMaps[0], ctx);
+  // auto posNInB = 1; //*getPosInCodomain(posN, indexingMaps[1], ctx);
+  // auto posKInA = 1; //*getPosInCodomain(posK, indexingMaps[0], ctx);
+  // auto posKInB = 0; //*getPosInCodomain(posK, indexingMaps[1], ctx);
 
-  auto m = metadataA.getSizes()[posMInA];
-  auto n = metadataB.getSizes()[posNInB];
-  auto k = metadataA.getSizes()[posKInA];
+  // auto m = metadataA.getSizes()[posMInA];
+  // auto n = metadataB.getSizes()[posNInB];
+  // auto k = metadataA.getSizes()[posKInA];
 
-  auto posLeadingDimA = posMInA; // TODO: account for transposes...
-  auto lda_dyn = metadataA.getStrides()[posLeadingDimA];
-  auto posLeadingDimB = posKInB; // TODO: account for transposes...
-  auto ldb_dyn = m;              // metadataB.getStrides()[posLeadingDimB];
-  // auto posLeadingDimC = 0; // *getPosInCodomain( posM, indexingMaps[2], ctx);
+  // auto posLeadingDimA = posMInA; // TODO: account for transposes...
+  // auto lda_dyn = metadataA.getStrides()[posLeadingDimA];
+  // auto posLeadingDimB = posKInB; // TODO: account for transposes...
+  // auto ldb_dyn = m;              // metadataB.getStrides()[posLeadingDimB];
+  // // auto posLeadingDimC = 0; // *getPosInCodomain( posM, indexingMaps[2],
+  // ctx);
   // // TODO: account for transposes... auto ldc =
   // metadataC.getStrides()[posLeadingDimC];
 
@@ -902,10 +921,11 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto block_k_ind = rewriter.create<arith::IndexCastOp>(
       loc, IndexType::get(rewriter.getContext()), block_k);
 
-  auto batch_size = rewriter.create<arith::DivUIOp>(loc, k, block_k_ind);
+  // auto batch_size = rewriter.create<arith::DivUIOp>(loc, k, block_k_ind);
 
   auto lda = block_n;
   auto ldb = block_m;
+  auto ldc = block_n;
 
   // dtypeA, dtypeB, dtypeC
   SmallVector<Attribute, 2> brgemmDtypes{
@@ -934,17 +954,24 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto memrefElemType =
       dyn_cast<MemRefType>(candidate.lhsBuf.memRef.getType()).getElementType();
 
+  Value num_batches_ind = num_batches;
+  if (!num_batches.getType().isIndex()) {
+    num_batches_ind = rewriter.create<arith::IndexCastOp>(
+      loc, IndexType::get(rewriter.getContext()), num_batches);
+  }
+  Value k = rewriter.create<arith::MulIOp>(loc, block_k_ind, num_batches_ind);
+
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, rewriter.getIndexType(), block_m, block_n, block_k, batch_size, lda,
-      ldb, n, a_dt, b_dt, c_dt);
+      loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind, lda,
+      ldb, ldc, a_dt, b_dt, c_dt);
 
   // We will check if packing required and insert transform call if needed
   // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
 
   // TODO FIXME
   // n_calls should be passed from smwhr
-  auto n_calls = batch_size; // rewriter.create<arith::ConstantOp>(loc,
-                             // integer64, n_calls_attr);
+  // auto n_calls = batch_size; // rewriter.create<arith::ConstantOp>(loc,
+  //                            // integer64, n_calls_attr);
 
   auto in_ld = block_n;
   // auto ldb = operands[1];
@@ -952,7 +979,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto b_data_type_size = rewriter.create<arith::ConstantOp>(
       loc, integer64,
       IntegerAttr::get(rewriter.getI64Type(),
-                       op.getRhs().getType().getElementTypeBitWidth()));
+                       op.getRhs().getType().getElementTypeBitWidth() / 8));
   // auto ldb_ind = rewriter.create<arith::IndexCastOp>(
   //     loc, IndexType::get(rewriter.getContext()), ldb);
   auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
@@ -972,68 +999,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   Value transform = rewriter.create<triton::cpu::TransformCreate>(
       loc, rewriter.getIndexType(), k, block_n, in_ld, ldb, b_dt, b_dt, block_k,
-      n_calls);
-  if (candidate.keepAccOnTiles && forOp) {
-    // Just a stub, dont know why we should use Vector TYpe here
-    auto vecTy = cast<VectorType>(candidate.op.getRhs().getType());
-    auto transf_op = transform.getDefiningOp<triton::cpu::TransformCreate>();
-
-    SmallVector<Value, 3> blocked_shape{transf_op.getBlockK(), transf_op.getOutLd(), transf_op.getNCalls()};
-    AmxBuffer buf = allocateTmpBuffer(
-        loc,
-        blocked_shape,
-        vecTy.getElementType(), allocaPoint, rewriter);
-
-    LDBG("  Reusing the original memref for a buffer: "
-         << candidate.rhsBuf.memRef);
-
-    auto need_packing = rewriter.create<triton::cpu::BrgemmNeedsPacking>(
-        loc, rewriter.getI1Type(), brgemm);
-
-    // K, N, in_pack, in_ld, out_ld, in_dt, out_dt
-    // Value transform =
-    // auto transform_call = rewriter.create<triton::cpu::TransformCall>(loc,
-    // transform, rhsMemRef,
-    //                                             buf.memRef);
-
-    auto memRefTy = cast<MemRefType>(buf.memRef.getType());
-    auto unrankedResTy = UnrankedMemRefType::get(memRefTy.getElementType(), memRefTy.getMemorySpace());
-
-    auto ifOp = rewriter.create<scf::IfOp>(
-        loc, buf.memRef.getType(), need_packing, /*withElseRegion=*/true);
-    auto thenB = ifOp.getThenBodyBuilder();
-    auto yield = thenB.create<scf::YieldOp>(loc, buf.memRef);
-    auto tcall = thenB.create<triton::cpu::TransformCall>(
-        loc, transform, candidate.rhsBuf.memRef, buf.memRef);
-    tcall->moveBefore(yield);
-    buf.memRef.getDefiningOp()->moveBefore(tcall);
-    transform.getDefiningOp()->moveBefore(tcall);
-    // Value memRef_view =
-    //     thenB.create<memref::CastOp>(loc, unrankedResTy, buf.memRef);
-    // transform_call->moveBefore(yield);
-
-    auto elseB = ifOp.getElseBodyBuilder();
-
-    // auto non_block = rewriter.create<arith::ConstantOp>(
-    //   loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 1));
-    SmallVector<int64_t, 3> non_blocked_shape{memRefTy.getShape()};
-    non_blocked_shape[2] = IntegerAttr::get(rewriter.getI64Type(), 1).getInt();
-    // Value memRef_view = rewriter.create<memref::SubViewOp>(
-    //     loc, memRefTy, memRef, {0, 0}, indices,
-    //     metadata.getStrides());
-    // SmallVector<int64_t> strides(vecTy.getRank(), 1); 
-    Value memRef_view =
-        elseB.create<memref::ExpandShapeOp>(loc, non_blocked_shape, candidate.rhsBuf.memRef, SmallVector<ReassociationIndices>{{0}, {1, 2}});
-    Value memRef_casted =
-        elseB.create<memref::CastOp>(loc, buf.memRef.getType(), memRef_view);
-    // Value memRef_view =
-    //     elseB.create<memref::CastOp>(loc, unrankedResTy, candidate.rhsBuf.memRef);
-
-    elseB.create<scf::YieldOp>(loc, memRef_casted);
-
-    candidate.rhsBuf.memRef = ifOp.getResult(0);
-  }
-  // LDBG("TF creation: " << transform);
+      num_batches_ind);
 
   Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
@@ -1071,45 +1037,73 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   // SmallVector<AffineMap> indexingMaps = op.getIndexingMapsArray();
 
-  rewriter.create<triton::cpu::ConfigureHW>(loc, brgemm);
+  // auto loopRange = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
+  //                                                 forOp.getLowerBound());
+  // Value num_batches =
+  //     rewriter.create<arith::DivUIOp>(loc, loopRange, forOp.getStep());
 
-  auto num_batches = rewriter.create<arith::ConstantOp>(
-      loc, indexType, rewriter.getIndexAttr(1));
+  // auto num_batches = rewriter.create<arith::ConstantOp>(
+  //     loc, indexType, rewriter.getIndexAttr(1));
   auto stepA = rewriter.create<arith::ConstantOp>(loc, indexType,
                                                   rewriter.getIndexAttr(0));
   auto stepB = rewriter.create<arith::ConstantOp>(loc, indexType,
                                                   rewriter.getIndexAttr(0));
 
-  rewriter.create<triton::cpu::BrgemmCall>(
-      loc, brgemm, candidate.lhsBuf.memRef, candidate.rhsBuf.memRef,
-      resBuf.memRef, accBuf.memRef, stepA, stepB, num_batches);
+  auto lhsSteps = candidate.lhsBuf.step;
+  auto lhsMemrefType = dyn_cast<MemRefType>(candidate.lhsBuf.memRef.getType());
+  auto lhsStrides = metadataA.getStrides();
+  Value lhsAccSize = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value lhsDtSize = rewriter.create<arith::ConstantIndexOp>(
+      loc, lhsMemrefType.getElementTypeBitWidth() / 8);
+  for (int i = 0; i < metadataA.getStrides().size(); i++) {
+    Value cast_lhs_stride = lhsStrides[i];
+    Value cast_lhs_steps = lhsSteps[i];
+    if (!cast_lhs_stride.getType().isIndex()) {
+      cast_lhs_stride = rewriter.create<arith::IndexCastOp>(
+          loc, IndexType::get(rewriter.getContext()), cast_lhs_stride);
+    }
+    if (!cast_lhs_steps.getType().isIndex()) {
+      cast_lhs_steps = rewriter.create<arith::IndexCastOp>(
+          loc, IndexType::get(rewriter.getContext()), cast_lhs_steps);
+    }
+    auto tmp =
+        rewriter.create<arith::MulIOp>(loc, cast_lhs_stride, cast_lhs_steps);
+    lhsAccSize = rewriter.create<arith::AddIOp>(loc, tmp, lhsAccSize);
+  }
+  lhsAccSize = rewriter.create<arith::MulIOp>(loc, lhsAccSize, lhsDtSize);
 
-  rewriter.create<triton::cpu::ReleaseHW>(loc);
+  auto rhsSteps = candidate.rhsBuf.step;
+  auto rhsStrides = metadataB.getStrides();
+  auto rhsMemrefType = dyn_cast<MemRefType>(candidate.rhsBuf.memRef.getType());
+  Value rhsAccSize = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value rhsDtSize = rewriter.create<arith::ConstantIndexOp>(
+      loc, rhsMemrefType.getElementTypeBitWidth() / 8);
+  for (int i = 0; i < metadataA.getStrides().size(); i++) {
+    Value cast_rhs_stride = rhsStrides[i];
+    Value cast_rhs_steps = rhsSteps[i];
+    if (!cast_rhs_stride.getType().isIndex()) {
+      cast_rhs_stride = rewriter.create<arith::IndexCastOp>(
+          loc, IndexType::get(rewriter.getContext()), cast_rhs_stride);
+    }
+    if (!cast_rhs_steps.getType().isIndex()) {
+      cast_rhs_steps = rewriter.create<arith::IndexCastOp>(
+          loc, IndexType::get(rewriter.getContext()), cast_rhs_steps);
+    }
+    auto tmp =
+        rewriter.create<arith::MulIOp>(loc, cast_rhs_stride, cast_rhs_steps);
+    rhsAccSize = rewriter.create<arith::AddIOp>(loc, tmp, rhsAccSize);
+  }
+  rhsAccSize = rewriter.create<arith::MulIOp>(loc, rhsAccSize, rhsDtSize);
 
-  // TODO: For keepAccOnTiles fix YieldOp to use mul results.
-  // TODO: For keepAccOnTiles move all new forOp results to vector through a
-  // buffer.
-  // if (candidate.keepAccOnTiles)
-  //   llvm_unreachable("Not yet supported.");
+  SmallVector<Value> sizeAndSteps{lhsAccSize, rhsAccSize, blocked_B_size,
+                                  num_batches_ind};
+  checkInputBtw(sizeAndSteps, rewriter);
 
-  /*
-  if (candidate.keepAccInBuf) {
-    int resIdx = op.getResult().getUses().begin()->getOperandNumber();
-    Value loopRes = forOp.getResult(resIdx);
-    LDBG(
-        "Loading buffererized accumulator to a vector to replace loop result.");
-    OpBuilder::InsertionGuard g(rewriter);
-    rewriter.setInsertionPointAfter(forOp);
-    Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices);
-    // We might need to cast back to the original type.
-    newVal = maybeCast(loc, newVal, accTy.getElementType(), rewriter);
-    rewriter.replaceAllUsesWith(loopRes, newVal);
-    // For now, just use init value for unused ForOp result instead of
-    // its removal.
-    rewriter.replaceOp(op, op.getAcc());
-  } else
-  */
+  rewriter.create<triton::cpu::CallBrgemmWithTransform>(
+      loc, transform, brgemm, candidate.lhsBuf.memRef, candidate.rhsBuf.memRef,
+      resBuf.memRef, accBuf.memRef, sizeAndSteps[0], sizeAndSteps[1],
+      sizeAndSteps[2], sizeAndSteps[3]);
+
   if (candidate.outBuf.empty()) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal = rewriter.create<vector::TransferReadOp>(

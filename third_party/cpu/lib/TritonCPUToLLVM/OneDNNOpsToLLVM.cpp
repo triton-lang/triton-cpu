@@ -289,6 +289,69 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
   };
 };
 
+struct CallBrgemmWithTransformConversion
+    : public ConvertOpToLLVMPattern<CallBrgemmWithTransform> {
+  using ConvertOpToLLVMPattern<CallBrgemmWithTransform>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(CallBrgemmWithTransform brgemmOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
+
+    auto loc = brgemmOp.getLoc();
+    auto ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    // auto brgem_kernel_params_op =
+    //     adaptor.getKernelHash()
+    //         .getDefiningOp<triton::cpu::BrgemmCreate>();
+    // if (brgem_kernel_params_op == nullptr) {
+    //   return failure();
+    // }
+
+    // std::string dispatchName = "create_Brgemm_ukernel";
+    std::string invokeName = "call_all";
+
+    auto tf_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
+        loc, ptr_ty(ctx), adaptor.getTransformKernelHash());
+    auto brgemm_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
+        loc, ptr_ty(ctx), adaptor.getBrgemmKernelHash());
+
+    // auto b_step = rewriter.create<LLVM::MulOp>(loc, i64_ty,
+    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getKK()),
+    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getN()));
+
+    auto brgemmArgs = SmallVector<Value>{
+        tf_kernel_hash_ptr,
+        brgemm_kernel_hash_ptr,
+        MemRefDescriptor(adaptor.getAPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getBPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getCPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getScratchpad()).alignedPtr(rewriter, loc),
+        adaptor.getStepA(),
+        adaptor.getStepB(),
+        adaptor.getBlockedBsize(),
+        adaptor.getNumBatches()};
+    // auto unranked =
+    //     getTypeConverter()->convertType(brgemmOp.getOperand(0).getType());
+    // auto brgemmArgTypes = SmallVector<Type>{
+    //     unranked, unranked, unranked, unranked, unranked,
+    // };
+    auto brgemmArgTypes = SmallVector<Type>{
+        ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
+        ptr_ty(ctx), i64_ty,      i64_ty,      i64_ty,      i64_ty};
+
+    auto dispatched = LLVM::createLLVMCallOp(
+        rewriter, loc,
+        getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
+        brgemmArgs);
+    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+
+    rewriter.replaceOp(brgemmOp, dispatched);
+    return success();
+  };
+};
+
 struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
   using ConvertOpToLLVMPattern<ConfigureHW>::ConvertOpToLLVMPattern;
 
@@ -369,7 +432,8 @@ struct OneDNNOpsToLLVM
 
     patterns.add<TransformCreateConversion, TransformCallConversion,
                  BrgemmCreateConversion, BrgemmCallConversion,
-                 ConfigureHWConversion, ReleaseHWConversion>(typeConverter);
+                 ConfigureHWConversion, ReleaseHWConversion,
+                 CallBrgemmWithTransformConversion>(typeConverter);
     // patterns.add<BrgemmOpConversion>(typeConverter);
     // patterns.add<ConfigOpConversion>(typeConverter);
 
