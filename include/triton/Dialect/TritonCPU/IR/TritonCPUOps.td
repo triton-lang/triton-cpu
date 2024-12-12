@@ -211,7 +211,7 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call",
     Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
 
     Index:$stepA,
-    Index:$stepB, 
+    Index:$stepB,
     Index:$numBatches
   );
 
@@ -249,7 +249,7 @@ def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
 
     AnyTypeOf<[AnyInteger, Index]>:$stepA,
     AnyTypeOf<[AnyInteger, Index]>:$stepB,
-    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize, 
+    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
     AnyTypeOf<[AnyInteger, Index]>:$numBatches
   );
 }

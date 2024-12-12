@@ -957,13 +957,13 @@ convertCandidate(AmxDotOpCandidate &candidate,
   Value num_batches_ind = num_batches;
   if (!num_batches.getType().isIndex()) {
     num_batches_ind = rewriter.create<arith::IndexCastOp>(
-      loc, IndexType::get(rewriter.getContext()), num_batches);
+        loc, IndexType::get(rewriter.getContext()), num_batches);
   }
   Value k = rewriter.create<arith::MulIOp>(loc, block_k_ind, num_batches_ind);
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind, lda,
-      ldb, ldc, a_dt, b_dt, c_dt);
+      loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind,
+      lda, ldb, ldc, a_dt, b_dt, c_dt);
 
   // We will check if packing required and insert transform call if needed
   // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
