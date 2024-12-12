@@ -103,7 +103,7 @@ static inline int64_t getDnnlDataTypeVal(RewriterBase &rewriter,
 // Mul[F|I]Op operations.
 struct AmxDotOpCandidate {
   // Operation to convert.
-  vector::ContractionOp op;
+  triton::cpu::DotOp op;
   // Available LHS, RHS, and accumulator types are limited in AMX and we might
   // require additional casts. Here we keep actual element types used by LHS,
   // RHS, and accumulator in AMX tiles.
@@ -459,21 +459,21 @@ void findInputBuffer(Value val, bool allowTransposed, AmxBuffer &buf) {
 // Check if specified ContractionOp can be lowered to AMX operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
-bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
+bool isAmxCandidate(triton::cpu::DotOp op, bool supportInt8,
                     bool supportFp16, bool supportBf16,
                     AmxDotOpCandidate &candidate) {
   MLIRContext *ctx = op.getContext();
-  VectorType lhsTy = cast<VectorType>(op.getLhs().getType());
-  VectorType rhsTy = cast<VectorType>(op.getRhs().getType());
-  VectorType accTy = cast<VectorType>(op.getAcc().getType());
+  VectorType lhsTy = cast<VectorType>(op.getA().getType());
+  VectorType rhsTy = cast<VectorType>(op.getB().getType());
+  VectorType accTy = cast<VectorType>(op.getC().getType());
   VectorType resTy = cast<VectorType>(op.getType());
 
   LDBG("Considering candidate op: " << op);
 
   // Contraction op is very generic. For now, we generate it only as a
   // result of DotOp conversion. But still check it's what we expect.
-  if (!isDotOp(op))
-    return false;
+  // if (!isDotOp(op))
+  //   return false;
 
   // Check if input and output types match available hardware capabilities.
   // If check is successful then tile element types are filled with types
@@ -488,13 +488,13 @@ bool isAmxCandidate(vector::ContractionOp op, bool supportInt8,
 
   candidate.op = op;
   setupBlockAndTileSizes(lhsTy.getShape(), rhsTy.getShape(), candidate);
-  candidate.keepAccOnTiles = isLoopCarriedAcc(op.getAcc());
+  candidate.keepAccOnTiles = isLoopCarriedAcc(op.getC());
 
   // if (lhsTy.getElementType() == candidate.lhsElemTy)
-  findInputBuffer(op.getLhs(), true, candidate.lhsBuf);
+  findInputBuffer(op.getA(), true, candidate.lhsBuf);
 
   // if (rhsTy.getElementType() == candidate.rhsElemTy)
-  findInputBuffer(op.getRhs(), false, candidate.rhsBuf);
+  findInputBuffer(op.getB(), false, candidate.rhsBuf);
 
   findOutputBuffer(op.getResult(), candidate);
 
@@ -769,7 +769,7 @@ void checkInputBtw(SmallVector<Value> &inps, PatternRewriter &rewriter) {
 void replaceLoop(AmxDotOpCandidate &candidate,
                  ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis,
                  PatternRewriter &rewriter) {
-  vector::ContractionOp op = candidate.op;
+  triton::cpu::DotOp op = candidate.op;
   Location loc = op.getLoc();
   MLIRContext *ctx = op.getContext();
 
@@ -790,8 +790,8 @@ void replaceLoop(AmxDotOpCandidate &candidate,
     return rewriter.create<ExtractMemRefOp>(loc, memRefTy, ptr);
   };
 
-  VectorType lhsTy = cast<VectorType>(candidate.op.getLhs().getType());
-  VectorType rhsTy = cast<VectorType>(candidate.op.getRhs().getType());
+  VectorType lhsTy = cast<VectorType>(candidate.op.getA().getType());
+  VectorType rhsTy = cast<VectorType>(candidate.op.getB().getType());
   auto addSubView = [&](Value vecVal, ValueRange indices, Value memRef) {
     LDBG("  Reusing the original memref for a buffer: " << memRef);
     auto vecTy = cast<VectorType>(vecVal.getType());
@@ -814,7 +814,7 @@ void replaceLoop(AmxDotOpCandidate &candidate,
   // auto lhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
   auto lhsIndices =
       rewriter.create<ExtractIndicesOp>(loc, lhsTritonPtr).getResults();
-  auto lhsSubView = addSubView(candidate.op.getLhs(), lhsIndices, lhsMemRef);
+  auto lhsSubView = addSubView(candidate.op.getA(), lhsIndices, lhsMemRef);
   candidate.lhsBuf.memRef = lhsSubView;
   candidate.lhsBuf.indices = lhsIndices;
 
@@ -823,7 +823,7 @@ void replaceLoop(AmxDotOpCandidate &candidate,
   // auto rhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
   auto rhsIndices =
       rewriter.create<ExtractIndicesOp>(loc, rhsTritonPtr).getResults();
-  auto rhsSubView = addSubView(candidate.op.getRhs(), rhsIndices, rhsMemRef);
+  auto rhsSubView = addSubView(candidate.op.getB(), rhsIndices, rhsMemRef);
   candidate.rhsBuf.memRef = rhsSubView;
   candidate.rhsBuf.indices = rhsIndices;
 }
@@ -832,7 +832,7 @@ LogicalResult
 convertCandidate(AmxDotOpCandidate &candidate,
                  ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
                  PatternRewriter &rewriter) {
-  vector::ContractionOp op = candidate.op;
+  triton::cpu::DotOp op = candidate.op;
   Location loc = op.getLoc();
   MLIRContext *ctx = op.getContext();
 
@@ -929,9 +929,9 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   // dtypeA, dtypeB, dtypeC
   SmallVector<Attribute, 2> brgemmDtypes{
-      TypeAttr::get(getElementTypeOrSelf(op.getLhs().getType())),
-      TypeAttr::get(getElementTypeOrSelf(op.getRhs().getType())),
-      TypeAttr::get(getElementTypeOrSelf(op.getResultType()))};
+      TypeAttr::get(getElementTypeOrSelf(op.getA().getType())),
+      TypeAttr::get(getElementTypeOrSelf(op.getB().getType())),
+      TypeAttr::get(getElementTypeOrSelf(op.getD().getType()))};
 
   LDBG("ElemTypes: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
                      << brgemmDtypes[2]);
@@ -979,7 +979,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto b_data_type_size = rewriter.create<arith::ConstantOp>(
       loc, integer64,
       IntegerAttr::get(rewriter.getI64Type(),
-                       op.getRhs().getType().getElementTypeBitWidth() / 8));
+                       op.getB().getType().getElementTypeBitWidth() / 8));
   // auto ldb_ind = rewriter.create<arith::IndexCastOp>(
   //     loc, IndexType::get(rewriter.getContext()), ldb);
   auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
@@ -1001,7 +1001,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
       loc, rewriter.getIndexType(), k, block_n, in_ld, ldb, b_dt, b_dt, block_k,
       num_batches_ind);
 
-  Value acc = maybeCast(loc, op.getAcc(), candidate.accTileElemTy, rewriter);
+  Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;
 
   LDBG("keepAcconBuff: " << candidate.keepAccInBuf
@@ -1141,7 +1141,7 @@ struct ConvertDotToOneDNN
     ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
 
     SmallVector<AmxDotOpCandidate, 2> candidates;
-    mod->walk([this, &candidates](vector::ContractionOp op) {
+    mod->walk([this, &candidates](triton::cpu::DotOp op) {
       AmxDotOpCandidate candidate;
       if (isAmxCandidate(op, convertInt8, convertFp16, convertBf16,
                          candidate)) {
