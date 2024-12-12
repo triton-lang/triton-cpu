@@ -156,7 +156,7 @@ import triton.language as tl
 import os
 
 DTYPE = getattr(torch, (os.getenv("DTYPE", "float32")))
-# Chosse block size depending on dtype. We have more register
+# Choose block size depending on dtype. We have more register
 # capacity for bfloat16/float16 compared to float32.
 BLOCK_SIZE_M = 8 if DTYPE == torch.float32 else 32
 BLOCK_SIZE_N = 32
@@ -306,7 +306,7 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
     if c is None:
         # Allocates output.
-        c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+        c = torch.empty((M, N), device=a.device, dtype=torch.float32)
     else:
         assert c.shape == (M, N), "Incompatible dimensions"
 
