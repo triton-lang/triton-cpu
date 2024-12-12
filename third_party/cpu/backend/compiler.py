@@ -175,6 +175,8 @@ class CPUBackend(BaseBackend):
             amx_fp16 = False
             amx_bf16 = 'amx-bf16' in self.cpu_features
             cpu.passes.ttcpuir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
+        if 'avx512f' in self.cpu_features:
+            cpu.passes.ttcpuir.add_convert_dot_to_fma(pm)
         cpu.passes.ttcpuir.add_convert_dot_generic(pm)
         promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
