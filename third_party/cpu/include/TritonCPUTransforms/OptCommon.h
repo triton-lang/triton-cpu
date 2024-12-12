@@ -125,12 +125,14 @@ inline Value shapeCast(Location loc, Value in,
 } // namespace mlir
 
 #define int_cst(ty, val) intCst(loc, ty, val, rewriter)
+#define index_cst(val) rewriter.create<arith::ConstantIndexOp>(loc, val)
 #define cst_like(src, val) cstLike(loc, src, val, rewriter)
 
 #define op_addi(lhs, rhs) rewriter.create<arith::AddIOp>(loc, lhs, rhs)
 #define op_addf(lhs, rhs) rewriter.create<arith::AddFOp>(loc, lhs, rhs)
 #define op_subi(lhs, rhs) rewriter.create<arith::SubIOp>(loc, lhs, rhs)
 #define op_subf(lhs, rhs) rewriter.create<arith::SubFOp>(loc, lhs, rhs)
+#define op_muli(lhs, rhs) rewriter.create<arith::MulIOp>(loc, lhs, rhs)
 #define op_mulf(lhs, rhs) rewriter.create<arith::MulFOp>(loc, lhs, rhs)
 #define op_bitcast(ty, val) rewriter.create<arith::BitcastOp>(loc, ty, val)
 #define op_lshr(lhs, rhs) rewriter.create<arith::ShRUIOp>(loc, lhs, rhs)
@@ -146,6 +148,15 @@ inline Value shapeCast(Location loc, Value in,
   rewriter.create<arith::SelectOp>(loc, cond, val, other)
 #define op_sitofp(ty, val) rewriter.create<arith::SIToFPOp>(loc, ty, val)
 #define op_fptosi(ty, val) rewriter.create<arith::FPToSIOp>(loc, ty, val)
+#define op_read(ty, memRef, indices)                                           \
+  rewriter.create<vector::TransferReadOp>(loc, ty, memRef, indices)
+#define op_write(val, memRef, indices)                                         \
+  rewriter.create<vector::TransferWriteOp>(loc, val, memRef, indices)
+#define op_interleave(lhs, rhs)                                                \
+  rewriter.create<vector::InterleaveOp>(loc, lhs, rhs)
+#define op_extract(vec, idx) rewriter.create<vector::ExtractOp>(loc, vec, idx)
+#define op_store(val, mem, idx)                                                \
+  rewriter.create<vector::StoreOp>(loc, val, mem, idx)
 
 #define op_icmp_eq(lhs, rhs)                                                   \
   rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs)
