@@ -38,30 +38,6 @@ using namespace mlir::triton;
 using namespace mlir::triton::cpu;
 
 namespace {
-
-static func::CallOp createFuncCall(RewriterBase &rewriter, Location loc,
-                                   ModuleOp module, const std::string &funcName,
-                                   ArrayRef<Value> operands,
-                                   ArrayRef<Type> operandTypes,
-                                   ArrayRef<Type> resultTypes) {
-  FlatSymbolRefAttr fnName = SymbolRefAttr::get(module->getContext(), funcName);
-  auto fnType = rewriter.getFunctionType(operandTypes, resultTypes);
-
-  if (!module.lookupSymbol(fnName.getAttr())) {
-    OpBuilder::InsertionGuard guard(rewriter);
-    // Insert before module terminator.
-    rewriter.setInsertionPoint(module.getBody(),
-                               std::prev(module.getBody()->end()));
-    func::FuncOp funcOp =
-        rewriter.create<func::FuncOp>(loc, fnName.getValue(), fnType);
-    funcOp.setPrivate();
-  }
-
-  func::CallOp call = rewriter.create<func::CallOp>(loc, fnName.getValue(),
-                                                    resultTypes, operands);
-  return call;
-}
-
 // This struct describes buffers used to load/store AMX tiles.
 struct AmxBuffer {
   Value memRef;
@@ -139,53 +115,6 @@ struct AmxDotOpCandidate {
   AmxBuffer lhsBuf;
   AmxBuffer rhsBuf;
 };
-
-bool checkIdxMap(Attribute attr, unsigned int v1, unsigned int v2) {
-  auto map = cast<AffineMapAttr>(attr).getAffineMap();
-  return map ==
-         AffineMap::getMultiDimMapWithTargets(3, {v1, v2}, attr.getContext());
-}
-
-// Return true if specified contraction op is actually a converted DotOp.
-bool isDotOp(vector::ContractionOp op) {
-  // First, check ranks of inputs.
-  if (cast<VectorType>(op.getLhs().getType()).getRank() != 2 ||
-      cast<VectorType>(op.getRhs().getType()).getRank() != 2 ||
-      cast<VectorType>(op.getAcc().getType()).getRank() != 2) {
-    LDBG("Drop candidate with rank != 2");
-    return false;
-  }
-
-  // Matmul uses add as a combining function.
-  if (op.getKind() != vector::CombiningKind::ADD) {
-    LDBG("Drop candidate with combining function " << op.getKind());
-    return false;
-  }
-
-  // Expect two parallel and one reduction iterators.
-  auto iterTypes = op.getIteratorTypes();
-  if (iterTypes.size() != 3 ||
-      cast<vector::IteratorTypeAttr>(iterTypes[0]).getValue() !=
-          vector::IteratorType::parallel ||
-      cast<vector::IteratorTypeAttr>(iterTypes[1]).getValue() !=
-          vector::IteratorType::parallel ||
-      cast<vector::IteratorTypeAttr>(iterTypes[2]).getValue() !=
-          vector::IteratorType::reduction) {
-    LDBG("Drop candidate with mismatched iterator types.");
-    return false;
-  }
-
-  // Check affine maps.
-  // TODO: be less restrictive on maps to allow transposed inputs?
-  auto idxMaps = op.getIndexingMaps();
-  if (!checkIdxMap(idxMaps[0], 0, 2) || !checkIdxMap(idxMaps[1], 2, 1) ||
-      !checkIdxMap(idxMaps[2], 0, 1)) {
-    LDBG("Drop candidate with mismatched affine maps.");
-    return false;
-  }
-
-  return true;
-}
 
 // Check if input and output types can be handled by AMX (possibly, using
 // additional casts for input/output). Returns tru if AMX usage is possible.
@@ -332,14 +261,9 @@ void setupBlockAndTileSizes(ArrayRef<int64_t> lhsShape,
   int64_t tileN = n;
   int64_t tileK = k;
 
-  int64_t accBlocksM = m / tileM;
-  int64_t accBlocksN = n / tileN;
-
   candidate.tileM = tileM;
   candidate.tileN = tileN;
   candidate.tileK = tileK;
-  candidate.tilesInBlockM = accBlocksM;
-  candidate.tilesInBlockN = accBlocksN;
 }
 
 // Check if vector transfer read/write operation uses a mask
@@ -459,9 +383,8 @@ void findInputBuffer(Value val, bool allowTransposed, AmxBuffer &buf) {
 // Check if specified ContractionOp can be lowered to AMX operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
-bool isAmxCandidate(triton::cpu::DotOp op, bool supportInt8,
-                    bool supportFp16, bool supportBf16,
-                    AmxDotOpCandidate &candidate) {
+bool isAmxCandidate(triton::cpu::DotOp op, bool supportInt8, bool supportFp16,
+                    bool supportBf16, AmxDotOpCandidate &candidate) {
   MLIRContext *ctx = op.getContext();
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
@@ -470,18 +393,6 @@ bool isAmxCandidate(triton::cpu::DotOp op, bool supportInt8,
 
   LDBG("Considering candidate op: " << op);
 
-  // Contraction op is very generic. For now, we generate it only as a
-  // result of DotOp conversion. But still check it's what we expect.
-  // if (!isDotOp(op))
-  //   return false;
-
-  // Check if input and output types match available hardware capabilities.
-  // If check is successful then tile element types are filled with types
-  // to use in AMX operations.
-  // if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
-  //                     accTy.getElementType(), resTy.getElementType(),
-  //                     candidate))
-  //   return false;
   candidate.lhsTileElemTy = lhsTy.getElementType();
   candidate.rhsTileElemTy = rhsTy.getElementType();
   candidate.accTileElemTy = accTy.getElementType();
@@ -650,14 +561,15 @@ AmxBuffer prepareTensorBuffer(PatternRewriter &rewriter, Location loc,
     auto vecTy = cast<VectorType>(val.getType());
     auto transf_op = transform.getDefiningOp<triton::cpu::TransformCreate>();
 
-    AmxBuffer buf = allocateTmpBuffer(
-        loc,
-        {transf_op.getBlockK(), transf_op.getOutLd(), transf_op.getNCalls()},
-        vecTy.getElementType(), allocaPoint, rewriter);
+    assert("Used( " && false);
+    // AmxBuffer buf = allocateTmpBuffer(
+    //     loc,
+    //     {transf_op.getBlockK(), transf_op.getOutLd(), transf_op.getNCalls()},
+    //     vecTy.getElementType(), allocaPoint, rewriter);
 
-    LDBG("  Reusing the original memref for a buffer: " << memRef);
-    transformIntoBuf(loc, transform, memRef, buf.memRef, rewriter);
-    return buf;
+    // LDBG("  Reusing the original memref for a buffer: " << memRef);
+    // transformIntoBuf(loc, transform, memRef, buf.memRef, rewriter);
+    // return buf;
   }
 
   auto vecTy = cast<VectorType>(val.getType());
@@ -695,59 +607,6 @@ AmxBuffer prepareResultBuffer(Location loc, Value val, const AmxBuffer &accBuf,
   LDBG("Allocating buffer for the result.");
   return allocateTmpBuffer(loc, cast<VectorType>(val.getType()), allocaPoint,
                            rewriter);
-}
-
-Value shiftIndex(Location loc, Value index, int64_t offs,
-                 PatternRewriter &rewriter) {
-  if (!offs)
-    return index;
-
-  // Do constant folding right away here for better code readability
-  // after the pass.
-  auto cstOp = dyn_cast<arith::ConstantOp>(index.getDefiningOp());
-  if (cstOp) {
-    int64_t oldVal = cast<IntegerAttr>(cstOp.getValue()).getInt();
-    return rewriter.create<arith::ConstantIndexOp>(loc, oldVal + offs);
-  }
-
-  Value offsVal = rewriter.create<arith::ConstantIndexOp>(loc, offs);
-  return rewriter.create<arith::AddIOp>(loc, index.getType(), index, offsVal);
-}
-
-SmallVector<Value, 2> shiftIndices(Location loc, ArrayRef<Value> indices,
-                                   VectorType tileTy, int64_t tilesInBlockM,
-                                   int64_t tilesInBlockN, int64_t blockM,
-                                   int64_t blockN, int64_t tileM, int64_t tileN,
-                                   PatternRewriter &rewriter) {
-  int64_t blockOffsM = blockM * tilesInBlockM * tileTy.getDimSize(0);
-  int64_t blockOffsN = blockN * tilesInBlockN * tileTy.getDimSize(1);
-  int64_t tileOffsM = blockOffsM + tileM * tileTy.getDimSize(0);
-  int64_t tileOffsN = blockOffsN + tileN * tileTy.getDimSize(1);
-  return {shiftIndex(loc, indices[0], tileOffsM, rewriter),
-          shiftIndex(loc, indices[1], tileOffsN, rewriter)};
-}
-
-Value loadTile(Location loc, VectorType tileTy, const AmxBuffer &buf,
-               int64_t tilesInBlockM, int64_t tilesInBlockN, int64_t blockM,
-               int64_t blockN, int64_t tileM, int64_t tileN,
-               PatternRewriter &rewriter) {
-  auto indices =
-      shiftIndices(loc, buf.indices, tileTy, tilesInBlockM, tilesInBlockN,
-                   blockM, blockN, tileM, tileN, rewriter);
-  llvm::errs() << "Should create Load Tile\n";
-  return buf.memRef; // rewriter.create<amx::TileLoadOp>(loc, tileTy,
-                     // buf.memRef, indices);
-}
-
-void storeTile(Location loc, VectorType tileTy, Value val, const AmxBuffer &buf,
-               int64_t tilesInBlockM, int64_t tilesInBlockN, int64_t blockM,
-               int64_t blockN, int64_t tileM, int64_t tileN,
-               PatternRewriter &rewriter) {
-  auto indices =
-      shiftIndices(loc, buf.indices, tileTy, tilesInBlockM, tilesInBlockN,
-                   blockM, blockN, tileM, tileN, rewriter);
-  llvm::errs() << "Should create Store Tile\n";
-  // rewriter.create<amx::TileStoreOp>(loc, buf.memRef, indices, val);
 }
 
 void checkInputBtw(SmallVector<Value> &inps, PatternRewriter &rewriter) {
@@ -911,10 +770,11 @@ convertCandidate(AmxDotOpCandidate &candidate,
   //              << ", K - " << candidate.tileK << " lhsType - " << lhsTy
   //              << " rhsType - " << rhsTy << "\n";
 
+  llvm::errs() << "M N K - " << candidate.tileM << " " << candidate.tileN << " " << candidate.tileK << "\n";
   auto block_m = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
   auto block_n = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
+      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileN));
   auto block_k = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileK));
 
@@ -959,7 +819,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
     num_batches_ind = rewriter.create<arith::IndexCastOp>(
         loc, IndexType::get(rewriter.getContext()), num_batches);
   }
-  Value k = rewriter.create<arith::MulIOp>(loc, block_k_ind, num_batches_ind);
+  // Value k = rewriter.create<arith::MulIOp>(loc, block_k_ind,
+  // num_batches_ind);
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind,
@@ -967,11 +828,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   // We will check if packing required and insert transform call if needed
   // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
-
-  // TODO FIXME
-  // n_calls should be passed from smwhr
-  // auto n_calls = batch_size; // rewriter.create<arith::ConstantOp>(loc,
-  //                            // integer64, n_calls_attr);
 
   auto in_ld = block_n;
   // auto ldb = operands[1];
@@ -998,8 +854,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
   LDBG("blocked_B_size [2]: " << blocked_B_size);
 
   Value transform = rewriter.create<triton::cpu::TransformCreate>(
-      loc, rewriter.getIndexType(), k, block_n, in_ld, ldb, b_dt, b_dt, block_k,
-      num_batches_ind);
+      loc, rewriter.getIndexType(), block_k, block_n, in_ld, ldb, b_dt, b_dt);
 
   Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;

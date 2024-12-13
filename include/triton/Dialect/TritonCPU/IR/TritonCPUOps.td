@@ -292,10 +292,7 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
     AnyTypeOf<[AnyInteger, Index]>:$in_ld,
     AnyTypeOf<[AnyInteger, Index]>:$out_ld,
     I64:$in_dt,
-    I64:$out_dt,
-
-    AnyTypeOf<[I64, Index]>:$block_k,
-    AnyTypeOf<[I64, Index]>:$n_calls
+    I64:$out_dt
   );
 
   let results = (outs Index:$result);

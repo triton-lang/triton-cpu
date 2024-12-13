@@ -537,7 +537,7 @@ int main() {
     // Note: the routine doesn't provide a `batch_size` argument in the
     // constructor as it can be either incorporated into `K` dimension, or
     // manually iterated over in a for-loop on the user side.
-    transform pack_B(/* K = */ K_k * n_calls, /* N = */ N,
+    transform pack_B(/* K = */ K_k, /* N = */ N,
                      /* in_pack_type = */ pack_type::no_trans, /* in_ld = */ N,
                      /* out_ld = */ ldb, /* in_dt = */ b_dt,
                      /* out_dt = */ b_dt);

@@ -92,7 +92,6 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
                               dnnl_dtypeB, dnnl_dtypeC);
 
-  std::cout << "Brg: " << &brg << "\n";
   // Instruct the kernel to append the result to C tensor.
   brg.set_add_C(true);
   // Finalize the initialization.
@@ -101,15 +100,8 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   brg.generate();
 
   auto it = savedUkernels.insert({key, brg});
-  std::cout << "Ptr: " << &it.first->second << "\n";
   return &it.first->second;
 }
-
-// Size of the packed tensor.
-// blocked_B_size = ldb * K_k * memory::data_type_size(b_dt);
-
-// B_blocked = new uint16_t[blocked_B_size * n_calls];
-// B_base_ptr = B_blocked;
 
 EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
                                       int64_t out_ld, int64_t inDtype,
@@ -160,6 +152,7 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
                      bool skip_packing = false) {
 
   uint8_t *blocked_data = (uint8_t *)original_B_ptr;
+  uint8_t *B_ptr_calc = (uint8_t *)original_B_ptr;
   std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
             << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " << C_ptr
             << ", scr: " << scratchpad << "\n";
@@ -188,12 +181,27 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
 
   brg->set_hw_context();
 
+  if (need_packing) {
+    std::cout << "[packed]  b_ptr_calc: " << (void *)B_ptr_calc
+              << " blocked_ptr: " << (void *)blocked_data << "\n";
+  } else {
+    std::cout << "[unpacked]  b_ptr_calc: " << (void *)B_ptr_calc
+              << " blocked_ptr: " << (void *)blocked_data << "\n";
+  }
+
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
   for (memory::dim i = 0; i < num_batches; i++) {
     const memory::dim A_offset_i =
         i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
-    const memory::dim B_offset_i =
-        need_packing ? i * B_block_size_in_bytes : i * B_step_in_bytes;
+
+    memory::dim B_offset_i;
+    if (need_packing) {
+      pack_B->execute(B_ptr_calc + i * B_step_in_bytes,
+                      blocked_data + i * B_block_size_in_bytes);
+      B_offset_i = i * B_block_size_in_bytes;
+    } else {
+      B_offset_i = i * B_step_in_bytes;
+    }
     A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
   }
 

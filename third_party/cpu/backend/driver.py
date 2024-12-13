@@ -62,9 +62,9 @@ class CPUUtils(object):
         pass
 
     def load_binary(self, name, kernel, shared_mem, device):
-        # lib_path = "/home/jovyan/triton-cpu/libkernel.so"
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
-        # with open(lib_path, "wb") as f:
+        lib_path = "/home/jovyan/triton-cpu/libkernel.so"
+        # with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
+        with open(lib_path, "wb") as f:
             f.write(kernel)
             f.flush()
             import ctypes
