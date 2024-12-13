@@ -24,7 +24,7 @@ import triton
 import triton.language as tl
 
 GPU_BLOCK_SIZE = 1024
-CPU_BLOCK_SIZE = 4096
+CPU_BLOCK_SIZE = 16
 # Single Thread Threshold
 CPU_ST_THRESHOLD = 65536
 USE_GPU = False
@@ -224,7 +224,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=['size'],  # Argument names to use as an x-axis for the plot.
-        x_vals=[2**i for i in range(12, 28, 1)],  # Different possible values for `x_name`.
+        x_vals=[2**i for i in range(12, 18, 1)],  # Different possible values for `x_name`.
         x_log=True,  # x axis is logarithmic.
         line_arg='provider',  # Argument name whose value corresponds to a different line in the plot.
         line_vals=LINE_VALS,  # Possible values for `line_arg`.
@@ -280,4 +280,4 @@ def benchmark(size, provider):
 # %%
 # We can now run the decorated function above. Pass `print_data=True` to see the performance number, `show_plots=True` to plot them, and/or
 # `save_path='/path/to/results/' to save them to disk along with raw CSV data:
-benchmark.run(print_data=True, show_plots=True)
+benchmark.run(print_data=True, show_plots=False)
