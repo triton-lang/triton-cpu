@@ -770,7 +770,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
   //              << ", K - " << candidate.tileK << " lhsType - " << lhsTy
   //              << " rhsType - " << rhsTy << "\n";
 
-  llvm::errs() << "M N K - " << candidate.tileM << " " << candidate.tileN << " " << candidate.tileK << "\n";
+  llvm::errs() << "M N K - " << candidate.tileM << " " << candidate.tileN << " "
+               << candidate.tileK << "\n";
   auto block_m = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
   auto block_n = rewriter.create<arith::ConstantOp>(
