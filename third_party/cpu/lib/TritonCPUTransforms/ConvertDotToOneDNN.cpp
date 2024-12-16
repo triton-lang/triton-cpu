@@ -92,12 +92,6 @@ struct AmxDotOpCandidate {
   int64_t tileM;
   int64_t tileN;
   int64_t tileK;
-  // We have a limited number of available tiles, so if input/output is too
-  // big to fit available tiles, we need to split them into blocks. Here we
-  // keep a number of tiles in accumulator block. K dimension for input blocks
-  // is always 1 tile now.
-  int64_t tilesInBlockM;
-  int64_t tilesInBlockN;
   // If accumulator is updated in a loop, then this flag indicates if we
   // should keep it in tiles the whole loop and move back to vectors only
   // after the loop.
@@ -115,85 +109,6 @@ struct AmxDotOpCandidate {
   AmxBuffer lhsBuf;
   AmxBuffer rhsBuf;
 };
-
-// Check if input and output types can be handled by AMX (possibly, using
-// additional casts for input/output). Returns tru if AMX usage is possible.
-// In this case, tile element type fields of the candidate structure are
-// filled with actual types to be used in lowering.
-bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                    Type resElemTy, AmxDotOpCandidate &candidate) {
-  MLIRContext *ctx = lhsElemTy.getContext();
-
-  // This function indicates when VNNI granularity packing is expected by the
-  // kernel.
-  //
-  // Note: used in benchdnn only, not used inside the library.
-  // Note: for `bf32` (or brgattr.fpmath_mode_ == bf16) the function returns
-  //   `true` because the data transformation to vnni layout is internal and
-  //   transparent to the user.
-
-  if (lhsElemTy.getIntOrFloatBitWidth() < 16 &&
-      rhsElemTy.getIntOrFloatBitWidth() < 16) {
-    LDBG("Packing will be applied for types smaller than 16 bits.");
-    // Do something to insert transform and use it result
-  }
-
-  // For integer case only i8 is allowed for LHS and RHS.
-  if (lhsElemTy.getIntOrFloatBitWidth() < 32 &&
-      rhsElemTy.getIntOrFloatBitWidth() < 32) {
-    LDBG("Packing can be applied for types smaller than 32 bits.");
-
-    // 16 bit case
-    if (!lhsElemTy.isInteger() && !rhsElemTy.isInteger()) {
-      // Transform is conditional, maybe should wrapped with get_B_pack check
-    } else {
-      // Transform required
-    }
-  }
-  // Transform is not required
-
-  // Accumulator should be i32. If it's smaller, we will use casts.
-  if (!accElemTy.isInteger() || accElemTy.getIntOrFloatBitWidth() > 32 ||
-      !resElemTy.isInteger() || resElemTy.getIntOrFloatBitWidth() > 32) {
-    LDBG("Drop candidate with unsupported output integer type.");
-    return false;
-  }
-
-  candidate.lhsTileElemTy = IntegerType::get(ctx, 8);
-  candidate.rhsTileElemTy = IntegerType::get(ctx, 8);
-  candidate.accTileElemTy = IntegerType::get(ctx, 32);
-
-  // Try to find common input type.
-  Type commonInputElemTy = lhsElemTy;
-
-  candidate.lhsTileElemTy = commonInputElemTy;
-  candidate.rhsTileElemTy = commonInputElemTy;
-  candidate.accTileElemTy = Float32Type::get(ctx);
-
-  return true;
-
-  if (lhsElemTy.getIntOrFloatBitWidth() == 16) {
-    commonInputElemTy = lhsElemTy;
-    if (rhsElemTy.getIntOrFloatBitWidth() == 16 &&
-        rhsElemTy != commonInputElemTy) {
-      LDBG("Drop candidate with mismatched input types.");
-      return false;
-    }
-  } else if (rhsElemTy.getIntOrFloatBitWidth() == 16)
-    commonInputElemTy = rhsElemTy;
-
-  // Accumulator type should be FP32, we can use casts if it is smaller.
-  if (accElemTy.getIntOrFloatBitWidth() > 32) {
-    LDBG("Drop candidate with unsupported accumulator type.");
-    return false;
-  }
-
-  candidate.lhsTileElemTy = commonInputElemTy;
-  candidate.rhsTileElemTy = commonInputElemTy;
-  candidate.accTileElemTy = Float32Type::get(ctx);
-
-  return true;
-}
 
 // Check if accumulator value is updated in a loop and has no other
 // usages than a dot op, that updates it. Tile loads/stores and casts
@@ -656,9 +571,6 @@ void replaceLoop(AmxDotOpCandidate &candidate,
     auto vecTy = cast<VectorType>(vecVal.getType());
     auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
     auto ctx = rewriter.getContext();
-    // Value memRef_view = rewriter.create<memref::SubViewOp>(
-    //     loc, memRefTy, memRef, {0, 0}, indices,
-    //     metadata.getStrides());
     SmallVector<int64_t> strides(vecTy.getRank(), 1);
 
     Value memRef_view = rewriter.create<memref::SubViewOp>(
@@ -745,31 +657,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto metadataA = getMemrefMetadata(candidate.lhsBuf.memRef);
   auto metadataB = getMemrefMetadata(candidate.rhsBuf.memRef);
 
-  // auto posMInA = 0; //*getPosInCodomain(posM, indexingMaps[0], ctx);
-  // auto posNInB = 1; //*getPosInCodomain(posN, indexingMaps[1], ctx);
-  // auto posKInA = 1; //*getPosInCodomain(posK, indexingMaps[0], ctx);
-  // auto posKInB = 0; //*getPosInCodomain(posK, indexingMaps[1], ctx);
-
-  // auto m = metadataA.getSizes()[posMInA];
-  // auto n = metadataB.getSizes()[posNInB];
-  // auto k = metadataA.getSizes()[posKInA];
-
-  // auto posLeadingDimA = posMInA; // TODO: account for transposes...
-  // auto lda_dyn = metadataA.getStrides()[posLeadingDimA];
-  // auto posLeadingDimB = posKInB; // TODO: account for transposes...
-  // auto ldb_dyn = m;              // metadataB.getStrides()[posLeadingDimB];
-  // // auto posLeadingDimC = 0; // *getPosInCodomain( posM, indexingMaps[2],
-  // ctx);
-  // // TODO: account for transposes... auto ldc =
-  // metadataC.getStrides()[posLeadingDimC];
-
-  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  // they are in the same order with BrgemmDispatchOp inputs;
-  // llvm::errs() << "Inps: M - " << candidate.tileM << ", N - " <<
-  // candidate.tileN
-  //              << ", K - " << candidate.tileK << " lhsType - " << lhsTy
-  //              << " rhsType - " << rhsTy << "\n";
-
   llvm::errs() << "M N K - " << candidate.tileM << " " << candidate.tileN << " "
                << candidate.tileK << "\n";
   auto block_m = rewriter.create<arith::ConstantOp>(
@@ -781,8 +668,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   auto block_k_ind = rewriter.create<arith::IndexCastOp>(
       loc, IndexType::get(rewriter.getContext()), block_k);
-
-  // auto batch_size = rewriter.create<arith::DivUIOp>(loc, k, block_k_ind);
 
   auto lda = block_n;
   auto ldb = block_m;
@@ -797,8 +682,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
   LDBG("ElemTypes: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
                      << brgemmDtypes[2]);
 
-  // create dispatch op
-  // auto flags = rewriter.getArrayAttr(brgemmFlags);
   auto dtypes = rewriter.getArrayAttr(brgemmDtypes);
 
   auto dtypeAAttr = IntegerAttr::get(rewriter.getI64Type(),
@@ -827,18 +710,12 @@ convertCandidate(AmxDotOpCandidate &candidate,
       loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind,
       lda, ldb, ldc, a_dt, b_dt, c_dt);
 
-  // We will check if packing required and insert transform call if needed
-  // const bool need_pack = brg.get_B_pack_type() == pack_type::pack32;
-
   auto in_ld = block_n;
-  // auto ldb = operands[1];
 
   auto b_data_type_size = rewriter.create<arith::ConstantOp>(
       loc, integer64,
       IntegerAttr::get(rewriter.getI64Type(),
                        op.getB().getType().getElementTypeBitWidth() / 8));
-  // auto ldb_ind = rewriter.create<arith::IndexCastOp>(
-  //     loc, IndexType::get(rewriter.getContext()), ldb);
   auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
       loc, IndexType::get(rewriter.getContext()), b_data_type_size);
 
@@ -888,18 +765,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
   LDBG("[prepareResultBuffer] prepared res buf: " << resBuf.memRef);
 
   SmallVector<SmallVector<Value>> accTiles;
-  if (candidate.keepAccOnTiles)
-    assert("keepAcc is true, Move Loop req");
 
-  // SmallVector<AffineMap> indexingMaps = op.getIndexingMapsArray();
-
-  // auto loopRange = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
-  //                                                 forOp.getLowerBound());
-  // Value num_batches =
-  //     rewriter.create<arith::DivUIOp>(loc, loopRange, forOp.getStep());
-
-  // auto num_batches = rewriter.create<arith::ConstantOp>(
-  //     loc, indexType, rewriter.getIndexAttr(1));
   auto stepA = rewriter.create<arith::ConstantOp>(loc, indexType,
                                                   rewriter.getIndexAttr(0));
   auto stepB = rewriter.create<arith::ConstantOp>(loc, indexType,
@@ -1010,8 +876,6 @@ struct ConvertDotToOneDNN
           LDBG("  TileM: " << candidate.tileM);
           LDBG("  TileN: " << candidate.tileN);
           LDBG("  TileK: " << candidate.tileK);
-          LDBG("  TilesInBlockM: " << candidate.tilesInBlockM);
-          LDBG("  TilesInBlockN: " << candidate.tilesInBlockN);
           LDBG("  KeepAccOnTiles: " << candidate.keepAccOnTiles);
           LDBG("  KeepAccInBuf: " << candidate.keepAccInBuf);
           LDBG("  Has output buffer: " << (bool)!candidate.outBuf.empty());

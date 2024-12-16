@@ -63,14 +63,14 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
                                    int64_t batch_size, int64_t lda, int64_t ldb,
                                    int64_t ldc, int64_t dtypeA, int64_t dtypeB,
                                    int64_t dtypeC) {
-  using K = std::array<int64_t, 10>;
+  using KeyT = std::array<int64_t, 10>;
   std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
             << ", bath - " << batch_size << ", lda - " << lda << ", ldb - "
             << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
             << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
-  K key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
+  KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
-  static std::map<K, dnnl::ukernel::brgemm> savedUkernels;
+  static std::map<KeyT, dnnl::ukernel::brgemm> savedUkernels;
   {
     read_lock_guard_t r_g(g_brgemm_lock);
     if (savedUkernels.count(key) != 0) {
@@ -206,6 +206,7 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   }
 
   size_t scratchpad_size = brg->get_scratchpad_size();
+  std::cout << "scratchpad size: " << scratchpad_size << "\n";
   std::vector<uint8_t> scratchpad_sm(scratchpad_size);
 
   //  An execute call. `A_B` is a vector of pointers to A and packed B
