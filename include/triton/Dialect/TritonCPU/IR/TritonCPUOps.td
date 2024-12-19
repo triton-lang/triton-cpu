@@ -191,4 +191,162 @@ def TTC_DotOp : TTC_Op<"dot", [Pure,
     }];
 }
 
+def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, Index]>:$M,
+    AnyTypeOf<[AnyInteger, Index]>:$N,
+    AnyTypeOf<[AnyInteger, Index]>:$K_k,
+    AnyTypeOf<[AnyInteger, Index]>:$batch_size,
+    AnyTypeOf<[AnyInteger, Index]>:$lda,
+    AnyTypeOf<[AnyInteger, Index]>:$ldb,
+    AnyTypeOf<[AnyInteger, Index]>:$ldc,
+    I64:$dtypeA,
+    I64:$dtypeB,
+    I64:$dtypeC
+  );
+
+  let results = (outs Index:$result);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_BrgemmCall : TTC_Op<"brgemm_call",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    Index:$kernel_hash,
+    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
+    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
+    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
+
+    Index:$stepA,
+    Index:$stepB,
+    Index:$numBatches
+  );
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_BrgemmNeedsPacking : TTC_Op<"brgemm_needs_packing",
+    [MemoryEffects<[MemRead<GlobalMemory>]>]> {
+  let summary = "";
+
+  let arguments = (ins
+    Index:$kernel_hash
+  );
+
+  let results = (outs BoolLike:$result);
+}
+
+def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let arguments = (ins
+    Index:$transform_kernel_hash,
+    Index:$brgemm_kernel_hash,
+    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
+    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
+    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
+
+    AnyTypeOf<[AnyInteger, Index]>:$stepA,
+    AnyTypeOf<[AnyInteger, Index]>:$stepB,
+    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
+    AnyTypeOf<[AnyInteger, Index]>:$numBatches
+  );
+}
+
+def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, Index]>:$K,
+    AnyTypeOf<[AnyInteger, Index]>:$N,
+    // I64:$in_pack_type,
+    AnyTypeOf<[AnyInteger, Index]>:$in_ld,
+    AnyTypeOf<[AnyInteger, Index]>:$out_ld,
+    I64:$in_dt,
+    I64:$out_dt
+  );
+
+  let results = (outs Index:$result);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_TransformCall : TTC_Op<"transform_call",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    Index:$kernel_hash,
+    Arg<AnyMemRef, "", [MemRead]>:$in_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$out_blocked_ptr
+  );
+}
+
+def TTC_ConfigureHW : TTC_Op<"configure_hw", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins Index:$brgemm_kernel_hash);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
+def TTC_ReleaseHW : TTC_Op<"release_hw", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins);
+
+  // let assemblyFormat = [{
+  //   $prefix attr-dict (`:` $val^ `:` type($val))?
+  // }];
+
+  // let hasVerifier = 1;
+}
+
 #endif

@@ -5,6 +5,7 @@ add_triton_library(TritonCPUTransforms
     ConvertDotOp/ConvertDotToFMA.cpp
     Canonicalize.cpp
     ConvertDotProduct.cpp
+    ConvertDotToOneDNN.cpp
     ConvertUnsupportedOps.cpp
     DecomposeFpConversions.cpp
     OptimizeMasks.cpp
