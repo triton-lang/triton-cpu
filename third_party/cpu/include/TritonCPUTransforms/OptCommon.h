@@ -149,9 +149,12 @@ inline Value shapeCast(Location loc, Value in,
 #define op_sitofp(ty, val) rewriter.create<arith::SIToFPOp>(loc, ty, val)
 #define op_fptosi(ty, val) rewriter.create<arith::FPToSIOp>(loc, ty, val)
 #define op_read(ty, memRef, indices)                                           \
-  rewriter.create<vector::TransferReadOp>(loc, ty, memRef, indices)
+  rewriter.create<vector::TransferReadOp>(                                     \
+      loc, ty, memRef, indices, SmallVector<bool>(ty.getRank(), true))
 #define op_write(val, memRef, indices)                                         \
-  rewriter.create<vector::TransferWriteOp>(loc, val, memRef, indices)
+  rewriter.create<vector::TransferWriteOp>(                                    \
+      loc, val, memRef, indices,                                               \
+      SmallVector<bool>(cast<VectorType>(val.getType()).getRank(), true))
 #define op_interleave(lhs, rhs)                                                \
   rewriter.create<vector::InterleaveOp>(loc, lhs, rhs)
 #define op_extract(vec, idx) rewriter.create<vector::ExtractOp>(loc, vec, idx)
