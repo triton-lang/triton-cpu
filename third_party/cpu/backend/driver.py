@@ -12,6 +12,7 @@ from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 
+from pathlib import Path
 from triton._C.libtriton import llvm
 
 _dirname = os.getenv("TRITON_SYS_PATH", default="/usr/local")
@@ -22,9 +23,18 @@ except AttributeError:
     # resources.files() doesn't exist for Python < 3.9
     _triton_C_dir = importlib.resources.path(triton, "_C").__enter__()
 
-include_dirs = [os.path.join(_dirname, "include")]
-library_dirs = [os.path.join(_dirname, "lib"), _triton_C_dir]
+include_dirs = []
+library_dirs = [_triton_C_dir]
 libraries = ["stdc++"]
+
+# Skip non-existent paths
+sys_include_dir = os.path.join(_dirname, "include")
+if os.path.exists(sys_include_dir):
+    include_dirs.append(sys_include_dir)
+
+sys_lib_dir = os.path.join(_dirname, "lib")
+if os.path.exists(sys_lib_dir):
+    library_dirs.append(sys_lib_dir)
 
 
 def compile_module_from_src(src, name):
