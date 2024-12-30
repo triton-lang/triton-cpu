@@ -327,6 +327,11 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
 
   LDBG("Considering candidate op: " << op);
 
+  if (accTy.getRank() != 2) {
+    LDBG("  Drop candidate. Only 2D case is supported.");
+    return false;
+  }
+
   candidate.lhsTileElemTy = lhsTy.getElementType();
   candidate.rhsTileElemTy = rhsTy.getElementType();
   candidate.accTileElemTy = accTy.getElementType();
