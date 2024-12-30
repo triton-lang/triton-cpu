@@ -591,7 +591,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   // FloatType float32 = FloatType::getF32(rewriter.getContext());
-  IndexType indexType = rewriter.getIndexType();
+  // IndexType indexType = rewriter.getIndexType();
 
   scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
   Value num_batches = rewriter.create<arith::ConstantOp>(
@@ -636,9 +636,56 @@ convertCandidate(AmxDotOpCandidate &candidate,
   auto block_k_ind = rewriter.create<arith::IndexCastOp>(
       loc, IndexType::get(rewriter.getContext()), block_k);
 
-  auto lda = block_n;
-  auto ldb = block_m;
-  auto ldc = block_n;
+  if (candidate.lhsBuf.empty()) {
+    candidate.lhsBuf =
+        storeToTmpBuffer(loc, candidate.op.getA(), allocaPoint, rewriter);
+  }
+
+  if (candidate.rhsBuf.empty()) {
+    candidate.rhsBuf =
+        storeToTmpBuffer(loc, candidate.op.getB(), allocaPoint, rewriter);
+  }
+
+  Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
+  Value accToStore = acc;
+
+  LDBG("isAccHoisted: " << candidate.isAccLoopCarried << " is inps invariants: "
+                        << candidate.isInputsAccessWithInvariants);
+  if (candidate.isAccLoopCarried) {
+    LDBG("Setting insertion op to forOp. (accToStore)");
+    forOp = cast<scf::ForOp>(op->getParentOp());
+    accToStore = getInitAccValue(acc);
+  }
+
+  MemBuffer accBuf;
+  {
+    // If accumulator is bufferized then we should move initial values before
+    // the loop.
+    OpBuilder::InsertionGuard g(rewriter);
+    if (candidate.isAccLoopCarried) {
+      LDBG("Setting insertion op to forOp. (accBuf)");
+      rewriter.setInsertionPoint(forOp);
+    }
+    accBuf =
+        prepareTensorBuffer(rewriter, loc, accToStore, {}, false, allocaPoint);
+  }
+
+  MemBuffer resBuf = prepareResultBuffer(
+      loc, op.getResult(), accBuf, candidate.outBuf, allocaPoint, rewriter);
+
+  auto metadataA = rewriter.create<memref::ExtractStridedMetadataOp>(
+      loc, candidate.lhsBuf.memRef);
+  auto metadataB = rewriter.create<memref::ExtractStridedMetadataOp>(
+      loc, candidate.rhsBuf.memRef);
+  auto metadataAcc =
+      rewriter.create<memref::ExtractStridedMetadataOp>(loc, accBuf.memRef);
+
+  Value lda = metadataA.getStrides()[metadataA.getStrides().size() - 2];
+  Value ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
+  Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
+  lda = rewriter.create<arith::IndexCastOp>(loc, integer64, lda);
+  ldb = rewriter.create<arith::IndexCastOp>(loc, integer64, ldb);
+  ldc = rewriter.create<arith::IndexCastOp>(loc, integer64, ldc);
 
   // dtypeA, dtypeB, dtypeC
   SmallVector<Attribute, 2> brgemmDtypes{
@@ -694,33 +741,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
   Value transform = rewriter.create<triton::cpu::TransformCreate>(
       loc, rewriter.getIndexType(), block_k, block_n, in_ld, ldb, b_dt, b_dt);
 
-  Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
-  Value accToStore = acc;
-
-  LDBG("isAccHoisted: " << candidate.isAccLoopCarried << " is inps invariants: "
-                        << candidate.isInputsAccessWithInvariants);
-  if (candidate.isAccLoopCarried) {
-    LDBG("Setting insertion op to forOp. (accToStore)");
-    forOp = cast<scf::ForOp>(op->getParentOp());
-    accToStore = getInitAccValue(acc);
-  }
-
-  MemBuffer accBuf;
-  {
-    // If accumulator is bufferized then we should move initial values before
-    // the loop.
-    OpBuilder::InsertionGuard g(rewriter);
-    if (candidate.isAccLoopCarried) {
-      LDBG("Setting insertion op to forOp. (accBuf)");
-      rewriter.setInsertionPoint(forOp);
-    }
-    accBuf =
-        prepareTensorBuffer(rewriter, loc, accToStore, {}, false, allocaPoint);
-  }
-
-  MemBuffer resBuf = prepareResultBuffer(
-      loc, op.getResult(), accBuf, candidate.outBuf, allocaPoint, rewriter);
-
   LDBG("[prepareResultBuffer] prepared acc buf: " << accBuf.memRef);
   LDBG("[prepareResultBuffer] prepared res buf: " << resBuf.memRef);
   LDBG("lhsBuf: {   memref "
@@ -735,30 +755,6 @@ convertCandidate(AmxDotOpCandidate &candidate,
        << "              step " << candidate.rhsBuf.step.size() << "\n"
        << "          blockptr " << candidate.rhsBuf.origTritonBlockPtr << "\n"
        << "        transposed " << candidate.rhsBuf.transposed << "\n} \n");
-
-  if (candidate.lhsBuf.empty()) {
-    candidate.lhsBuf =
-        storeToTmpBuffer(loc, candidate.op.getA(), allocaPoint, rewriter);
-  }
-  if (candidate.rhsBuf.empty()) {
-    candidate.rhsBuf =
-        storeToTmpBuffer(loc, candidate.op.getB(), allocaPoint, rewriter);
-  }
-
-  auto getMemrefMetadata = [&](Value operand) {
-    auto memrefType = dyn_cast<MemRefType>(operand.getType());
-    assert(memrefType && "Expect a memref value");
-    MemRefType baseMemrefType =
-        MemRefType::get({}, memrefType.getElementType());
-    SmallVector<Type> sizesTypes(memrefType.getRank(), indexType);
-    SmallVector<Type> stridesTypes(memrefType.getRank(), indexType);
-    return rewriter.create<memref::ExtractStridedMetadataOp>(
-        loc, baseMemrefType, /*offsetType=*/indexType, sizesTypes, stridesTypes,
-        operand);
-  };
-
-  auto metadataA = getMemrefMetadata(candidate.lhsBuf.memRef);
-  auto metadataB = getMemrefMetadata(candidate.rhsBuf.memRef);
 
   auto zero = rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 0));
