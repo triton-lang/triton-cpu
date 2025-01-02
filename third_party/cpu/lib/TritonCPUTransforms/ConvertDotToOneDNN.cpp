@@ -51,97 +51,44 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
-static inline int64_t getDnnlDataTypeVal(RewriterBase &rewriter,
-                                         Attribute attr) {
-  auto context = rewriter.getContext();
-  auto tattr = dyn_cast_or_null<TypeAttr>(attr);
-  assert(tattr);
-  if (tattr == TypeAttr::get(FloatType::getF32(context))) {
+static inline int64_t getDnnlDataTypeVal(Type ty) {
+  ty = getElementTypeOrSelf(ty);
+  if (ty.isF32())
     return static_cast<int64_t>(dnnl_f32);
-  } else if (tattr == TypeAttr::get(FloatType::getF64(context))) {
+  if (ty.isF64())
     return static_cast<int64_t>(dnnl_f64);
-  } else if (tattr == TypeAttr::get(FloatType::getBF16(context))) {
+  if (ty.isBF16())
     return static_cast<int64_t>(dnnl_bf16);
-  } else if (tattr == TypeAttr::get(FloatType::getF16(context))) {
+  if (ty.isF16())
     return static_cast<int64_t>(dnnl_f16);
-  } else if (tattr == TypeAttr::get(
-                          IntegerType::get(context, 32, IntegerType::Signed))) {
-    return static_cast<int64_t>(dnnl_s32);
-  } else if (tattr ==
-             TypeAttr::get(IntegerType::get(context, 8, IntegerType::Signed))) {
-    return static_cast<int64_t>(dnnl_s8);
-  } else if (tattr == TypeAttr::get(IntegerType::get(context, 8,
-                                                     IntegerType::Unsigned))) {
-    return static_cast<int64_t>(dnnl_u8);
-  }
-  return static_cast<int64_t>(dnnl_data_type_undef);
+  llvm_unreachable("Unexpected type for conversion to DNNL type.");
 }
 
-// This structure is used to hold candidates for conversion to AMX
-// Mul[F|I]Op operations.
-struct AmxDotOpCandidate {
+// This structure is used to hold candidates for conversion to ukernel calls.
+struct DotOpCandidate {
   // Operation to convert.
   triton::cpu::DotOp op;
 
-  scf::ForOp forOp = nullptr;
-  // Available LHS, RHS, and accumulator types are limited in AMX and we might
-  // require additional casts. Here we keep actual element types used by LHS,
-  // RHS, and accumulator in AMX tiles.
-  Type lhsTileElemTy;
-  Type rhsTileElemTy;
-  Type accTileElemTy;
-  // AMX tile row size is limited by 64 bytes, so M and N dimensions are limited
-  // by 16 because accumulator always has 4-byte elements. K dimension for tiles
-  // is limited by 64 / <size of input element>. Here we keep actual tile sizes.
-  int64_t tileM;
-  int64_t tileN;
-  int64_t tileK;
+  // Block sizes.
+  int64_t blockM;
+  int64_t blockN;
+  int64_t blockK;
   // If accumulator is updated in a loop, then this flag indicates if we
   // should keep it in tiles the whole loop and move back to vectors only
   // after the loop.
   bool isAccLoopCarried = false;
-  bool isInputsAccessWithInvariants = false;
-  // If we want to keep accumulator in tiles but it's too big, then we might
-  // keep it bufferized instead.
-  bool canDotOpMovedOutCycle = false;
+  bool canFuseLoop = false;
 
   // If output buffer is used then keep the original vector store here.
   Operation *origStore = nullptr;
 
-  // If resulting tiles are not required to be trasfered to vectors and can be
-  // directly stored to the output memory instead, then this field holds a
-  // buffer to use.
-  MemBuffer outBuf;
+  // If input data is available in memory then input buffers hold it.
   MemBuffer lhsBuf;
   MemBuffer rhsBuf;
+  // If result is written to a memory, then we can use it directly for
+  // ukernel calls.
+  MemBuffer outBuf;
 };
-
-// Return a value that holds the resulting loop carried accumulator value.
-// It's one of ForOp results.
-// Value getResValueForLoopCarriedAcc(vector::ContractionOp op) {
-//   Value updAcc = op.getResult();
-//   auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-//   auto &use = *updAcc.getUses().begin();
-//   return forOp.getResult(use.getOperandNumber());
-// }
-
-// Choose tile and block sizes for the candidate. Tile sizes are determined
-// by input shapes and types. Block sizes are chosen to minimize number of
-// tile loads/stores including tile register spills.
-void setupBlockAndTileSizes(ArrayRef<int64_t> lhsShape,
-                            ArrayRef<int64_t> rhsShape,
-                            AmxDotOpCandidate &candidate) {
-  int64_t m = lhsShape[0];
-  int64_t n = rhsShape[1];
-  int64_t k = rhsShape[0];
-  int64_t tileM = m;
-  int64_t tileN = n;
-  int64_t tileK = k;
-
-  candidate.tileM = tileM;
-  candidate.tileN = tileN;
-  candidate.tileK = tileK;
-}
 
 // Check if vector transfer read/write operation uses a mask
 // or involves a bounds check.
@@ -157,156 +104,11 @@ template <typename T> bool hasMaskOrBoundsCheck(T op) {
   return hasBoundsCheck || mask;
 }
 
-// Check if a value is used only for a store and that this store can be
-// replaced with tile stores. In this case fill appropriate fields in the
-// candidate structure.
-// void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
-//   if (val.hasOneUse() && false) {
-//     auto store = dyn_cast<vector::TransferWriteOp>(*val.user_begin());
-//     if (store && !hasMaskOrBoundsCheck(store))
-//       candidate.outBuf = MemBuffer{store.getSource(), store.getIndices()};
-//     candidate.origStore = store;
-//     LDBG("[findOutputBuffer] cand outbuf: " << candidate.outBuf.memRef);
-//   }
-// }
-
-// Check if val is available in memory.
-void findInputBuffer(Value val, bool allowTransposed, MemBuffer &buf,
-                     scf::ForOp &ptrToForOp) {
-
-  if (allowTransposed) {
-    auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
-    if (transposeOp) {
-      val = transposeOp.getVector();
-      buf.transposed = true;
-    }
-  }
-
-  auto valLoad = val.getDefiningOp<vector::TransferReadOp>();
-  if (!valLoad || hasMaskOrBoundsCheck(valLoad)) {
-    LDBG("Couldn't find a buffer with input: " << val);
-    return;
-  }
-
-  buf.memRef = valLoad.getSource();
-  buf.indices = valLoad.getIndices();
-  LLVM_DEBUG(
-      DBGS() << "Found buffer with input: " << val << "\n";
-      DBGS() << "  MemRef: " << buf.memRef << "\n"; DBGS() << "  Indices: ";
-      llvm::interleaveComma(buf.indices, llvm::dbgs()); llvm::dbgs() << "\n");
-
-  auto forOp = dyn_cast<scf::ForOp>(valLoad->getParentOp());
-  if (!forOp) {
-    LDBG("  Skip steps. Not in a for-loop.");
-    return;
-  }
-
-  if (!ptrToForOp)
-    ptrToForOp = forOp;
-
-  auto extractMemRef = buf.memRef.getDefiningOp<ExtractMemRefOp>();
-  if (!extractMemRef) {
-    LDBG("  Skip steps. No ExtractMemRefOp.");
-    return;
-  }
-
-  ExtractIndicesOp extractIndices;
-  for (auto index : buf.indices) {
-    auto def = index.getDefiningOp<ExtractIndicesOp>();
-    if (!def || (extractIndices && def != extractIndices)) {
-      LDBG("  Skip steps. No ExtractIndicesOp.");
-      return;
-    }
-    extractIndices = def;
-  }
-
-  if (extractMemRef.getSrc() != extractIndices.getSrc()) {
-    LDBG("  Skip steps. Mismatched ExtractMemRefOp and ExtractIndicesOp.");
-    return;
-  }
-
-  BlockArgument blockPtrArg = dyn_cast<BlockArgument>(extractMemRef.getSrc());
-  if (!blockPtrArg) {
-    LDBG("  Skip steps. No block pointer arg.");
-    return;
-  }
-
-  OpOperand *yieldOp = forOp.getTiedLoopYieldedValue(blockPtrArg);
-  if (!yieldOp) {
-    LDBG("  Skip steps. No block pointer in yield.");
-    return;
-  }
-
-  auto advance = yieldOp->get().getDefiningOp<AdvanceOp>();
-  if (!advance) {
-    LDBG("  Skip steps. No AdvanceOp.");
-    return;
-  }
-
-  if (advance.getPtr() != blockPtrArg) {
-    LDBG("  Skip steps. AdvanceOp doesn't use block pointer arg.");
-    return;
-  }
-
-  // CHeck that steaps are loop invariants.
-  buf.step = advance.getOffsets();
-  LLVM_DEBUG(DBGS() << "  Step: ";
-             llvm::interleaveComma(advance.getOffsets(), llvm::dbgs());
-             llvm::dbgs() << "\n");
-
-  // Add code for invariant check
-  OpOperand *tritonPtr = forOp.getTiedLoopInit(blockPtrArg);
-  if (!tritonPtr) {
-    LDBG("  Skip triton ptr. No Tied block ptr.");
-    return;
-  }
-
-  buf.origTritonBlockPtr = tritonPtr->get();
-}
-
-static bool canBeHoisted(Operation *op,
-                         function_ref<bool(OpOperand &)> condition) {
-  // Do not move terminators.
-  if (op->hasTrait<OpTrait::IsTerminator>())
-    return false;
-
-  // Walk the nested operations and check that all used values are either
-  // defined outside of the loop or in a nested region, but not at the level of
-  // the loop body.
-  auto walkFn = [&](Operation *child) {
-    for (OpOperand &operand : child->getOpOperands()) {
-      // Ignore values defined in a nested region.
-      if (op->isAncestor(operand.get().getParentRegion()->getParentOp()))
-        continue;
-      if (!condition(operand))
-        return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  };
-  return !op->walk(walkFn).wasInterrupted();
-}
-
-static bool canBeHoisted(Operation *op,
-                         function_ref<bool(Value)> definedOutside) {
-  return canBeHoisted(
-      op, [&](OpOperand &operand) { return definedOutside(operand.get()); });
-}
-
-bool isOpsLoopInvariantCode(SmallVector<Operation *, 4> ops,
-                            LoopLikeOpInterface loopLike) {
-
-  auto region = loopLike.getLoopRegions();
-  auto definedOutside = [&](Value value) {
-    // return isDefinedOutsideRegion(value, region);
-    return loopLike.isDefinedOutsideOfLoop(value);
-  };
-
-  for (Operation *op : ops) {
-    LLVM_DEBUG(llvm::dbgs() << "Original loop:\n"
-                            << *op->getParentOp() << "\n");
-
-    LLVM_DEBUG(llvm::dbgs() << "Checking op: " << *op << "\n");
-    if (!canBeHoisted(op, definedOutside)) {
+bool isLoopInvariant(SmallVector<Value> vals, LoopLikeOpInterface loopLike) {
+  for (Value val : vals) {
+    LDBG("Checking value for invariance: " << val);
+    if (!loopLike.isDefinedOutsideOfLoop(val)) {
+      LDBG("  Not invariant");
       return false;
     }
   }
@@ -314,7 +116,7 @@ bool isOpsLoopInvariantCode(SmallVector<Operation *, 4> ops,
 }
 
 bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                    Type resElemTy, AmxDotOpCandidate &candidate) {
+                    Type resElemTy) {
   // Integer types are not supported yet.
   if (lhsElemTy.isInteger() || rhsElemTy.isInteger() || resElemTy.isInteger()) {
     LDBG("Drop candidate. Integer types are not supported.");
@@ -338,9 +140,14 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   return true;
 }
 
-bool checkInputShapes(VectorType lhsTy, VectorType resTy) {
+bool checkInputShapes(VectorType lhsTy, VectorType resTy,
+                      DotOpCandidate &candidate) {
   if (lhsTy.getRank() != 2)
     return false;
+
+  candidate.blockM = resTy.getDimSize(0);
+  candidate.blockN = resTy.getDimSize(1);
+  candidate.blockK = lhsTy.getDimSize(1);
 
   return true;
 }
@@ -350,7 +157,7 @@ bool checkInputShapes(VectorType lhsTy, VectorType resTy) {
 // structure is filled with detailed transformation info.
 bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
                        bool supportFp16, bool supportBf16,
-                       AmxDotOpCandidate &candidate) {
+                       DotOpCandidate &candidate) {
   // MLIRContext *ctx = op.getContext();
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
@@ -366,52 +173,28 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
 
   // Check input/output types.
   if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
-                      accTy.getElementType(), resTy.getElementType(),
-                      candidate))
+                      accTy.getElementType(), resTy.getElementType()))
     return false;
 
   // Check input shapes.
-  if (!checkInputShapes(lhsTy, resTy))
+  if (!checkInputShapes(lhsTy, resTy, candidate))
     return false;
 
-  candidate.lhsTileElemTy = lhsTy.getElementType();
-  candidate.rhsTileElemTy = rhsTy.getElementType();
-  candidate.accTileElemTy = accTy.getElementType();
-
   candidate.op = op;
-  setupBlockAndTileSizes(lhsTy.getShape(), rhsTy.getShape(), candidate);
-
   candidate.isAccLoopCarried = isLoopCarriedAcc(op.getC());
+  candidate.lhsBuf = findInputBuffer(op.getA(), true);
+  candidate.rhsBuf = findInputBuffer(op.getB(), false);
 
-  // if (lhsTy.getElementType() == candidate.lhsElemTy)
-  findInputBuffer(op.getA(), true, candidate.lhsBuf, candidate.forOp);
+  // Check if we can fuse dot op loop into a single brgemm call.
+  if (candidate.isAccLoopCarried && !candidate.lhsBuf.step.empty() &&
+      !candidate.rhsBuf.step.empty()) {
+    SmallVector<Value> valsToCheck;
+    valsToCheck.append(candidate.lhsBuf.step);
+    valsToCheck.append(candidate.rhsBuf.step);
 
-  // if (rhsTy.getElementType() == candidate.rhsElemTy)
-  findInputBuffer(op.getB(), false, candidate.rhsBuf, candidate.forOp);
-
-  // maybe we should just check that loop exists
-  if (candidate.isAccLoopCarried) {
-    // candidate.lhsBuf.indices;
-    if (candidate.lhsBuf.indices.empty() || candidate.rhsBuf.indices.empty() ||
-        candidate.lhsBuf.step.empty() || candidate.rhsBuf.step.empty()) {
-      // can't do
-      return true;
-    }
-
-    SmallVector<Value, 4> toCHeckVals;
-    toCHeckVals.append(candidate.lhsBuf.indices);
-    toCHeckVals.append(candidate.lhsBuf.step);
-    toCHeckVals.append(candidate.rhsBuf.indices);
-    toCHeckVals.append(candidate.rhsBuf.step);
-
-    SmallVector<Operation *, 4> toCheckInvariance;
-    auto toOp = [](Value val) -> Operation * { return val.getDefiningOp(); };
-    std::transform(toCHeckVals.begin(), toCHeckVals.end(),
-                   toCheckInvariance.begin(), toOp);
-
-    candidate.isInputsAccessWithInvariants =
-        isOpsLoopInvariantCode(toCheckInvariance, candidate.forOp);
-  };
+    auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
+    candidate.canFuseLoop = isLoopInvariant(valsToCheck, forOp);
+  }
 
   // We don't need this I guess
   // findOutputBuffer(op.getResult(), candidate);
@@ -525,23 +308,7 @@ MemBuffer prepareResultBuffer(Location loc, Value val, const MemBuffer &accBuf,
                                 allocaPoint, rewriter);
 }
 
-void checkInputBtw(SmallVector<Value> &inps, PatternRewriter &rewriter) {
-  for (uint i = 0; i < inps.size(); i++) {
-    auto inp = inps[i];
-    Type inpT = inp.getType();
-    if (!inpT.isInteger()) {
-      continue;
-    }
-    if (inpT.getIntOrFloatBitWidth() != 64) {
-      LDBG("Type: " << inpT << " val: " << inp);
-      inps[i] = rewriter.create<arith::IndexCastOp>(
-          inp.getLoc(), IndexType::get(rewriter.getContext()), inp);
-      LDBG("created: " << inps[i]);
-    }
-  }
-}
-
-void replaceLoop(AmxDotOpCandidate &candidate,
+void replaceLoop(DotOpCandidate &candidate,
                  ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis,
                  PatternRewriter &rewriter) {
   triton::cpu::DotOp op = candidate.op;
@@ -582,7 +349,7 @@ void replaceLoop(AmxDotOpCandidate &candidate,
     return memRef_view;
   };
 
-  auto lhsTritonPtr = candidate.lhsBuf.origTritonBlockPtr;
+  auto lhsTritonPtr = candidate.lhsBuf.origBlockPtr;
   auto lhsMemRef = extractMemref(lhsTritonPtr);
   // auto lhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
   auto lhsIndices =
@@ -591,7 +358,7 @@ void replaceLoop(AmxDotOpCandidate &candidate,
   candidate.lhsBuf.memRef = lhsSubView;
   candidate.lhsBuf.indices = lhsIndices;
 
-  auto rhsTritonPtr = candidate.rhsBuf.origTritonBlockPtr;
+  auto rhsTritonPtr = candidate.rhsBuf.origBlockPtr;
   auto rhsMemRef = extractMemref(rhsTritonPtr);
   // auto rhsRank = dyn_cast<MemRefType>(memRef.getType()).getRank();
   auto rhsIndices =
@@ -599,6 +366,27 @@ void replaceLoop(AmxDotOpCandidate &candidate,
   auto rhsSubView = addSubView(candidate.op.getB(), rhsIndices, rhsMemRef);
   candidate.rhsBuf.memRef = rhsSubView;
   candidate.rhsBuf.indices = rhsIndices;
+}
+
+Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
+                         ArrayRef<Value> steps, PatternRewriter &rewriter) {
+  Value res = index_cst(0);
+  if (steps.empty())
+    return res;
+
+  SmallVector<Value> strides = meta.getStrides();
+  for (uint i = 0; i < strides.size(); i++) {
+    Value stride = strides[i];
+    Value step = steps[i];
+    if (!step.getType().isIndex())
+      step = op_index_cast(rewriter.getIndexType(), step);
+    res = op_addi(res, op_muli(step, stride));
+  }
+
+  Value dtSize = index_cst(
+      getElementTypeOrSelf(meta.getBaseBuffer()).getIntOrFloatBitWidth() / 8);
+  res = op_muli(res, dtSize);
+  return res;
 }
 
 // 1. DotOp is replaced with BRGEMM call (aka loop collapse)
@@ -629,7 +417,7 @@ void replaceLoop(AmxDotOpCandidate &candidate,
 //   - The original dot op is removed
 
 LogicalResult
-convertCandidate(AmxDotOpCandidate &candidate,
+convertCandidate(DotOpCandidate &candidate,
                  ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
                  PatternRewriter &rewriter) {
   triton::cpu::DotOp op = candidate.op;
@@ -637,13 +425,14 @@ convertCandidate(AmxDotOpCandidate &candidate,
   // MLIRContext *ctx = op.getContext();
 
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+  VectorType resTy = cast<VectorType>(op.getResult().getType());
+  Type resElemTy = resTy.getElementType();
   // FloatType float32 = FloatType::getF32(rewriter.getContext());
   // IndexType indexType = rewriter.getIndexType();
 
   scf::ForOp forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-  Value num_batches = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 1));
-  if (candidate.isAccLoopCarried && candidate.isInputsAccessWithInvariants) {
+  Value numBatches = index_cst(1);
+  if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     // We can fully replace the loop with one op.
 
     // Initial tile values are loaded before the loop and then directly
@@ -654,12 +443,10 @@ convertCandidate(AmxDotOpCandidate &candidate,
     replaceLoop(candidate, shapeInfoAnalysis, rewriter);
     LDBG("Loading accumulator to tiles before the loop.");
 
-    auto loopRange = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
-                                                    forOp.getLowerBound());
-    num_batches =
-        rewriter.create<arith::DivUIOp>(loc, loopRange, forOp.getStep());
+    numBatches = op_divui(op_subi(forOp.getUpperBound(), forOp.getLowerBound()),
+                          forOp.getStep());
+    numBatches = op_index_cast(rewriter.getIndexType(), numBatches);
   }
-  llvm::errs() << "Num batches: " << num_batches << "\n";
 
   // If we don't work with a loop and want to directly store tiles into output
   // memory, then use the original store as insertion point to have its buffer
@@ -673,15 +460,9 @@ convertCandidate(AmxDotOpCandidate &candidate,
 
   ModuleOp module = op->template getParentOfType<ModuleOp>();
 
-  auto block_m = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileM));
-  auto block_n = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileN));
-  auto block_k = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), candidate.tileK));
-
-  auto block_k_ind = rewriter.create<arith::IndexCastOp>(
-      loc, IndexType::get(rewriter.getContext()), block_k);
+  auto blockM = int_cst(integer64, candidate.blockM);
+  auto blockN = int_cst(integer64, candidate.blockN);
+  auto blockK = int_cst(integer64, candidate.blockK);
 
   if (candidate.lhsBuf.empty()) {
     candidate.lhsBuf =
@@ -693,15 +474,11 @@ convertCandidate(AmxDotOpCandidate &candidate,
         storeToTmpBuffer(loc, candidate.op.getB(), allocaPoint, rewriter);
   }
 
-  Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
-  Value accToStore = acc;
-
-  LDBG("isAccHoisted: " << candidate.isAccLoopCarried << " is inps invariants: "
-                        << candidate.isInputsAccessWithInvariants);
+  Value accToStore = op.getC();
   if (candidate.isAccLoopCarried) {
     LDBG("Setting insertion op to forOp. (accToStore)");
     forOp = cast<scf::ForOp>(op->getParentOp());
-    accToStore = getInitAccValue(acc);
+    accToStore = getInitAccValue(accToStore);
   }
 
   MemBuffer accBuf;
@@ -710,7 +487,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
     // the loop.
     OpBuilder::InsertionGuard g(rewriter);
     if (candidate.isAccLoopCarried) {
-      LDBG("Setting insertion op to forOp. (accBuf)");
+      LDBG("String Setting insertion op to forOp. (accBuf)");
       rewriter.setInsertionPoint(forOp);
     }
     // Currently, acc always needs to be FP32.
@@ -732,63 +509,23 @@ convertCandidate(AmxDotOpCandidate &candidate,
   Value lda = metadataA.getStrides()[metadataA.getStrides().size() - 2];
   Value ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
   Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
-  lda = rewriter.create<arith::IndexCastOp>(loc, integer64, lda);
-  ldb = rewriter.create<arith::IndexCastOp>(loc, integer64, ldb);
-  ldc = rewriter.create<arith::IndexCastOp>(loc, integer64, ldc);
 
-  // dtypeA, dtypeB, dtypeC
-  SmallVector<Attribute, 2> brgemmDtypes{
-      TypeAttr::get(getElementTypeOrSelf(op.getA().getType())),
-      TypeAttr::get(getElementTypeOrSelf(op.getB().getType())),
-      TypeAttr::get(rewriter.getF32Type())};
-
-  LDBG("ElemTypes: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
-                     << brgemmDtypes[2]);
-
-  auto dtypes = rewriter.getArrayAttr(brgemmDtypes);
-
-  auto dtypeAAttr = IntegerAttr::get(rewriter.getI64Type(),
-                                     getDnnlDataTypeVal(rewriter, dtypes[0]));
-  auto dtypeBAttr = IntegerAttr::get(rewriter.getI64Type(),
-                                     getDnnlDataTypeVal(rewriter, dtypes[1]));
-  auto dtypeCAttr = IntegerAttr::get(rewriter.getI64Type(),
-                                     getDnnlDataTypeVal(rewriter, dtypes[2]));
-
-  auto a_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeAAttr);
-  auto b_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeBAttr);
-  auto c_dt = rewriter.create<arith::ConstantOp>(loc, integer64, dtypeCAttr);
-
-  Value num_batches_ind = num_batches;
-  if (!num_batches.getType().isIndex()) {
-    num_batches_ind = rewriter.create<arith::IndexCastOp>(
-        loc, IndexType::get(rewriter.getContext()), num_batches);
-  }
+  auto lhsDnnType = int_cst(integer64, getDnnlDataTypeVal(op.getA().getType()));
+  auto rhsDnnType = int_cst(integer64, getDnnlDataTypeVal(op.getB().getType()));
+  auto accDnnType =
+      int_cst(integer64, getDnnlDataTypeVal(rewriter.getF32Type()));
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
-      loc, rewriter.getIndexType(), block_m, block_n, block_k, num_batches_ind,
-      lda, ldb, ldc, a_dt, b_dt, c_dt);
+      loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
+      ldb, ldc, lhsDnnType, rhsDnnType, accDnnType);
 
-  auto in_ld = block_n;
-
-  auto b_data_type_size = rewriter.create<arith::ConstantOp>(
-      loc, integer64,
-      IntegerAttr::get(rewriter.getI64Type(),
-                       op.getB().getType().getElementTypeBitWidth() / 8));
-  auto b_data_type_size_ind = rewriter.create<arith::IndexCastOp>(
-      loc, IndexType::get(rewriter.getContext()), b_data_type_size);
-
-  Value block_k_ver = block_k;
-  Value b_data_type_size_ver = b_data_type_size;
-  if (!ldb.getType().isInteger()) {
-    block_k_ver = block_k_ind;
-    b_data_type_size_ver = b_data_type_size_ind;
-  }
-  auto blocked_B_size = rewriter.create<arith::MulIOp>(loc, ldb, block_k_ver);
-  blocked_B_size =
-      rewriter.create<arith::MulIOp>(loc, blocked_B_size, b_data_type_size_ver);
+  auto rhsTypeSize =
+      int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
+  Value rhsBlockSizeInBytes = op_muli(op_muli(blockN, blockK), rhsTypeSize);
 
   Value transform = rewriter.create<triton::cpu::TransformCreate>(
-      loc, rewriter.getIndexType(), block_k, block_n, in_ld, ldb, b_dt, b_dt);
+      loc, rewriter.getIndexType(), blockK, blockN, ldb, blockN, rhsDnnType,
+      rhsDnnType);
 
   LDBG("[prepareResultBuffer] prepared acc buf: " << accBuf.memRef);
   LDBG("[prepareResultBuffer] prepared res buf: " << resBuf.memRef);
@@ -796,94 +533,34 @@ convertCandidate(AmxDotOpCandidate &candidate,
        << candidate.lhsBuf.memRef << "\n "
        << "           indices " << candidate.lhsBuf.indices.size() << "\n"
        << "              step " << candidate.lhsBuf.step.size() << "\n"
-       << "          blockptr " << candidate.lhsBuf.origTritonBlockPtr << "\n"
+       << "          blockptr " << candidate.lhsBuf.origBlockPtr << "\n"
        << "        transposed " << candidate.lhsBuf.transposed << "\n} \n");
   LDBG("rhsBuf: {   memref "
        << candidate.rhsBuf.memRef << "\n "
        << "           indices " << candidate.rhsBuf.indices.size() << "\n"
        << "              step " << candidate.rhsBuf.step.size() << "\n"
-       << "          blockptr " << candidate.rhsBuf.origTritonBlockPtr << "\n"
+       << "          blockptr " << candidate.rhsBuf.origBlockPtr << "\n"
        << "        transposed " << candidate.rhsBuf.transposed << "\n} \n");
 
-  auto zero = rewriter.create<arith::ConstantOp>(
-      loc, integer64, IntegerAttr::get(rewriter.getI64Type(), 0));
-
-  auto lhsMemrefType = dyn_cast<MemRefType>(candidate.lhsBuf.memRef.getType());
-  auto lhsStrides = metadataA.getStrides();
-  SmallVector<Value> lhsSteps;
-  if (candidate.lhsBuf.step.empty()) {
-    lhsSteps = SmallVector<Value>(lhsStrides.size(), zero);
-  } else {
-    lhsSteps = candidate.lhsBuf.step;
-  }
-  Value lhsAccSize = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  Value lhsDtSize = rewriter.create<arith::ConstantIndexOp>(
-      loc, lhsMemrefType.getElementTypeBitWidth() / 8);
-
-  for (uint i = 0; i < metadataA.getStrides().size(); i++) {
-    Value cast_lhs_stride = lhsStrides[i];
-    Value cast_lhs_steps = lhsSteps[i];
-    if (!cast_lhs_stride.getType().isIndex()) {
-      cast_lhs_stride = rewriter.create<arith::IndexCastOp>(
-          loc, IndexType::get(rewriter.getContext()), cast_lhs_stride);
-    }
-    if (!cast_lhs_steps.getType().isIndex()) {
-      cast_lhs_steps = rewriter.create<arith::IndexCastOp>(
-          loc, IndexType::get(rewriter.getContext()), cast_lhs_steps);
-    }
-    auto tmp =
-        rewriter.create<arith::MulIOp>(loc, cast_lhs_stride, cast_lhs_steps);
-    lhsAccSize = rewriter.create<arith::AddIOp>(loc, tmp, lhsAccSize);
-  }
-
-  lhsAccSize = rewriter.create<arith::MulIOp>(loc, lhsAccSize, lhsDtSize);
-
-  auto rhsStrides = metadataB.getStrides();
-  SmallVector<Value> rhsSteps;
-  if (candidate.rhsBuf.step.empty()) {
-    rhsSteps = SmallVector<Value>(rhsStrides.size(), zero);
-  } else {
-    rhsSteps = candidate.rhsBuf.step;
-  }
-  auto rhsMemrefType = dyn_cast<MemRefType>(candidate.rhsBuf.memRef.getType());
-  Value rhsAccSize = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  Value rhsDtSize = rewriter.create<arith::ConstantIndexOp>(
-      loc, rhsMemrefType.getElementTypeBitWidth() / 8);
-  for (uint i = 0; i < metadataA.getStrides().size(); i++) {
-    Value cast_rhs_stride = rhsStrides[i];
-    Value cast_rhs_steps = rhsSteps[i];
-    if (!cast_rhs_stride.getType().isIndex()) {
-      cast_rhs_stride = rewriter.create<arith::IndexCastOp>(
-          loc, IndexType::get(rewriter.getContext()), cast_rhs_stride);
-    }
-    if (!cast_rhs_steps.getType().isIndex()) {
-      cast_rhs_steps = rewriter.create<arith::IndexCastOp>(
-          loc, IndexType::get(rewriter.getContext()), cast_rhs_steps);
-    }
-    auto tmp =
-        rewriter.create<arith::MulIOp>(loc, cast_rhs_stride, cast_rhs_steps);
-    rhsAccSize = rewriter.create<arith::AddIOp>(loc, tmp, rhsAccSize);
-  }
-  rhsAccSize = rewriter.create<arith::MulIOp>(loc, rhsAccSize, rhsDtSize);
-
-  SmallVector<Value> sizeAndSteps{lhsAccSize, rhsAccSize, blocked_B_size,
-                                  num_batches_ind};
-  checkInputBtw(sizeAndSteps, rewriter);
+  Value lhsStepInBytes =
+      computeStepInBytes(loc, metadataA, candidate.lhsBuf.step, rewriter);
+  Value rhsStepInBytes =
+      computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
 
   rewriter.create<triton::cpu::CallBrgemmWithTransform>(
       loc, transform, brgemm, candidate.lhsBuf.memRef, candidate.rhsBuf.memRef,
-      resBuf.memRef, accBuf.memRef, sizeAndSteps[0], sizeAndSteps[1],
-      sizeAndSteps[2], sizeAndSteps[3]);
+      resBuf.memRef, accBuf.memRef, lhsStepInBytes, rhsStepInBytes,
+      rhsBlockSizeInBytes, numBatches);
 
-  if (candidate.isAccLoopCarried && candidate.isInputsAccessWithInvariants) {
+  if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
     auto rank = dyn_cast<MemRefType>(resBuf.memRef.getType()).getRank();
     SmallVector<bool, 4> inBounds(rank, false);
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
-        resBuf.indices, inBounds);
+        loc, cast<VectorType>(toFp32(resTy)), resBuf.memRef, resBuf.indices,
+        inBounds);
     // We might need to cast back to the original type.
-    newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
+    newVal = maybeCast(loc, newVal, resElemTy, rewriter);
     // rewriter.replaceOp(op, newVal);
     // rewriter.eraseOp(*op.getResult().user_begin());
     // rewriter.eraseOp(op);
@@ -900,10 +577,10 @@ convertCandidate(AmxDotOpCandidate &candidate,
     auto rank = dyn_cast<MemRefType>(resBuf.memRef.getType()).getRank();
     SmallVector<bool, 4> inBounds(rank, false);
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
-        resBuf.indices, inBounds);
+        loc, cast<VectorType>(toFp32(resTy)), resBuf.memRef, resBuf.indices,
+        inBounds);
     // We might need to cast back to the original type.
-    newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
+    newVal = maybeCast(loc, newVal, resElemTy, rewriter);
     int resIdx = op.getResult().getUses().begin()->getOperandNumber();
     Value loopRes = forOp.getResult(resIdx);
     loopRes.replaceAllUsesWith(newVal);
@@ -913,10 +590,9 @@ convertCandidate(AmxDotOpCandidate &candidate,
   if (candidate.outBuf.empty()) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
-        resBuf.indices);
+        loc, cast<VectorType>(toFp32(resTy)), resBuf.memRef, resBuf.indices);
     // We might need to cast back to the original type.
-    newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
+    newVal = maybeCast(loc, newVal, resElemTy, rewriter);
     op.getResult().replaceAllUsesWith(newVal);
     rewriter.eraseOp(op);
     // rewriter.replaceOp(op, newVal);
@@ -944,31 +620,21 @@ struct ConvertDotToOneDNN
 
     ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
 
-    SmallVector<AmxDotOpCandidate, 2> candidates;
+    SmallVector<DotOpCandidate, 2> candidates;
     mod->walk([this, &candidates](triton::cpu::DotOp op) {
-      AmxDotOpCandidate candidate;
+      DotOpCandidate candidate;
       if (isOneDNNCandidate(op, convertInt8, convertFp16, convertBf16,
                             candidate)) {
         LLVM_DEBUG({
           LDBG("Found OneDNN candidate");
           LDBG("  Op: " << candidate.op);
-          LDBG("  LhsTileElemTy: " << candidate.lhsTileElemTy);
-          LDBG("  RhsTileElemTy: " << candidate.rhsTileElemTy);
-          LDBG("  AccTileElemTy: " << candidate.accTileElemTy);
-          LDBG("  TileM: " << candidate.tileM);
-          LDBG("  TileN: " << candidate.tileN);
-          LDBG("  TileK: " << candidate.tileK);
+          LDBG("  blockM: " << candidate.blockM);
+          LDBG("  blockN: " << candidate.blockN);
+          LDBG("  blockK: " << candidate.blockK);
           LDBG("  isAccLoopCarried: " << candidate.isAccLoopCarried);
-          LDBG("  isInputsAccessWithInvariants: "
-               << candidate.isInputsAccessWithInvariants);
+          LDBG("  canFuseLoop: " << candidate.canFuseLoop);
           LDBG("  Has output buffer: " << (bool)!candidate.outBuf.empty());
         });
-        std::cout << "  isAccLoopCarried: " << std::boolalpha
-                  << candidate.isAccLoopCarried << "\n";
-        std::cout << "  isInputsAccessWithInvariants: " << std::boolalpha
-                  << candidate.isInputsAccessWithInvariants << "\n";
-        std::cout << "  Has output buffer: " << std::boolalpha
-                  << (bool)!candidate.outBuf.empty() << "\n";
         candidates.push_back(candidate);
       }
       return WalkResult::advance();

@@ -22,8 +22,12 @@ struct MemBuffer {
   // on each iteration, then step can hold those index offsets.
   // Empty step doesn't mean indices are loop invariant.
   SmallVector<Value> step;
+  // When step is known, this field holds the initial block
+  // pointer value used in the first iteration.
+  Value origBlockPtr = nullptr;
   // True if buffer holds transposed value.
   bool transposed = false;
+
   // Ttue if buffer holds value in VNNI (interleaved to groups of 32bit)
   // encoding.
   bool vnni = false;
