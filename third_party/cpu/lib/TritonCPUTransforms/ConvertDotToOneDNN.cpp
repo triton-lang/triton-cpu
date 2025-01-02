@@ -313,6 +313,38 @@ bool isOpsLoopInvariantCode(SmallVector<Operation *, 4> ops,
   return true;
 }
 
+bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                    Type resElemTy, AmxDotOpCandidate &candidate) {
+  // Integer types are not supported yet.
+  if (lhsElemTy.isInteger() || rhsElemTy.isInteger() || resElemTy.isInteger()) {
+    LDBG("Drop candidate. Integer types are not supported.");
+    return false;
+  }
+
+  // FP8 input is not supported yet.
+  if (lhsElemTy.getIntOrFloatBitWidth() == 8 ||
+      rhsElemTy.getIntOrFloatBitWidth() == 8) {
+    LDBG("Drop candidate. FP8 input is not supported.");
+    return false;
+  }
+
+  // FP64 result is not supported.
+  if (accElemTy.getIntOrFloatBitWidth() == 64 ||
+      resElemTy.getIntOrFloatBitWidth() == 64) {
+    LDBG("Drop candidate. FP64 result is not supported.");
+    return false;
+  }
+
+  return true;
+}
+
+bool checkInputShapes(VectorType lhsTy, VectorType resTy) {
+  if (lhsTy.getRank() != 2)
+    return false;
+
+  return true;
+}
+
 // Check if specified ContractionOp can be lowered to AMX operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
@@ -323,7 +355,7 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
   VectorType accTy = cast<VectorType>(op.getC().getType());
-  // VectorType resTy = cast<VectorType>(op.getType());
+  VectorType resTy = cast<VectorType>(op.getType());
 
   LDBG("Considering candidate op: " << op);
 
@@ -332,10 +364,15 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
     return false;
   }
 
-  if (accTy.getElementType().isInteger()) {
-    LDBG("  Drop candidate. Integer type is not supported.");
+  // Check input/output types.
+  if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
+                      accTy.getElementType(), resTy.getElementType(),
+                      candidate))
     return false;
-  }
+
+  // Check input shapes.
+  if (!checkInputShapes(lhsTy, resTy))
+    return false;
 
   candidate.lhsTileElemTy = lhsTy.getElementType();
   candidate.rhsTileElemTy = rhsTy.getElementType();
