@@ -332,6 +332,11 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, bool supportInt8,
     return false;
   }
 
+  if (accTy.getElementType().isInteger()) {
+    LDBG("  Drop candidate. Integer type is not supported.");
+    return false;
+  }
+
   candidate.lhsTileElemTy = lhsTy.getElementType();
   candidate.rhsTileElemTy = rhsTy.getElementType();
   candidate.accTileElemTy = accTy.getElementType();
@@ -671,6 +676,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
       LDBG("Setting insertion op to forOp. (accBuf)");
       rewriter.setInsertionPoint(forOp);
     }
+    // Currently, acc always needs to be FP32.
+    accToStore = maybeCast(loc, accToStore, rewriter.getF32Type(), rewriter);
     accBuf =
         prepareTensorBuffer(rewriter, loc, accToStore, {}, false, allocaPoint);
   }
@@ -696,7 +703,7 @@ convertCandidate(AmxDotOpCandidate &candidate,
   SmallVector<Attribute, 2> brgemmDtypes{
       TypeAttr::get(getElementTypeOrSelf(op.getA().getType())),
       TypeAttr::get(getElementTypeOrSelf(op.getB().getType())),
-      TypeAttr::get(getElementTypeOrSelf(op.getD().getType()))};
+      TypeAttr::get(rewriter.getF32Type())};
 
   LDBG("ElemTypes: " << brgemmDtypes[0] << ", " << brgemmDtypes[1] << ", "
                      << brgemmDtypes[2]);
@@ -836,8 +843,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
     auto rank = dyn_cast<MemRefType>(resBuf.memRef.getType()).getRank();
     SmallVector<bool, 4> inBounds(rank, false);
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices,
-        inBounds);
+        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
+        resBuf.indices, inBounds);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
     // rewriter.replaceOp(op, newVal);
@@ -856,8 +863,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
     auto rank = dyn_cast<MemRefType>(resBuf.memRef.getType()).getRank();
     SmallVector<bool, 4> inBounds(rank, false);
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices,
-        inBounds);
+        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
+        resBuf.indices, inBounds);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
     int resIdx = op.getResult().getUses().begin()->getOperandNumber();
@@ -869,7 +876,8 @@ convertCandidate(AmxDotOpCandidate &candidate,
   if (candidate.outBuf.empty()) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal = rewriter.create<vector::TransferReadOp>(
-        loc, cast<VectorType>(acc.getType()), resBuf.memRef, resBuf.indices);
+        loc, cast<VectorType>(toFp32(acc.getType())), resBuf.memRef,
+        resBuf.indices);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, candidate.accTileElemTy, rewriter);
     op.getResult().replaceAllUsesWith(newVal);
