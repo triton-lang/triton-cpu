@@ -66,7 +66,7 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
                                    int64_t dtypeC) {
   using KeyT = std::array<int64_t, 10>;
   std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
-            << ", bath - " << batch_size << ", lda - " << lda << ", ldb - "
+            << ", batch - " << batch_size << ", lda - " << lda << ", ldb - "
             << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
             << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
   KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
@@ -75,8 +75,8 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   {
     read_lock_guard_t r_g(g_brgemm_lock);
     if (savedUkernels.count(key) != 0) {
-      std::cout << "reused kernel: " << &savedUkernels.find(key)->second
-                << "\n";
+      // std::cout << "reused kernel: " << &savedUkernels.find(key)->second
+      //           << "\n";
       return &savedUkernels.find(key)->second;
     }
   }
@@ -84,8 +84,9 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   write_lock_guard_t w_g(g_brgemm_lock);
 
   if (savedUkernels.count(key) != 0) {
-    std::cout << "reused kernel (second): " << &savedUkernels.find(key)->second
-              << "\n";
+    // std::cout << "reused kernel (second): " <<
+    // &savedUkernels.find(key)->second
+    //           << "\n";
     return &savedUkernels.find(key)->second;
   }
 
@@ -106,7 +107,7 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
 
   auto it = savedUkernels.insert({key, brg});
   auto ret = &it.first->second;
-  std::cout << "[create] brg: " << ret << std::endl;
+  // std::cout << "[create] brg: " << ret << std::endl;
   return ret;
 }
 
@@ -160,23 +161,24 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
 
   uint8_t *blocked_data = (uint8_t *)original_B_ptr;
   uint8_t *B_ptr_calc = (uint8_t *)original_B_ptr;
-  std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
-            << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " << C_ptr
-            << ", scr: " << scratchpad << "\n";
-  std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes << " "
-            << B_block_size_in_bytes << " n: " << num_batches << "\n";
+  // std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
+  //           << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " <<
+  //           C_ptr
+  //           << ", scr: " << scratchpad << "\n";
+  // std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes << " "
+  //           << B_block_size_in_bytes << " n: " << num_batches << "\n";
 
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
   auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
-  std::cout << " vanilla check pack: "
-            << ((brg->get_B_pack_type() == pack_type::pack32) ? "true"
-                                                              : "false")
-            << "\n";
+  // std::cout << " vanilla check pack: "
+  //           << ((brg->get_B_pack_type() == pack_type::pack32) ? "true"
+  //                                                             : "false")
+  //           << "\n";
   bool need_packing =
       brg->get_B_pack_type() == pack_type::pack32 && !skip_packing;
   if (need_packing) {
-    std::cout << "Will be packed. \n";
-    // output
+    // std::cout << "Will be packed. \n";
+    //  output
 
     // blocked_B_size = block_K * block_n * dtype; // ldb * K_k *
     // memory::data_type_size(b_dt);
@@ -189,11 +191,11 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   brg->set_hw_context();
 
   if (need_packing) {
-    std::cout << "[packed]  b_ptr_calc: " << (void *)B_ptr_calc
-              << " blocked_ptr: " << (void *)blocked_data << "\n";
+    // std::cout << "[packed]  b_ptr_calc: " << (void *)B_ptr_calc
+    //           << " blocked_ptr: " << (void *)blocked_data << "\n";
   } else {
-    std::cout << "[unpacked]  b_ptr_calc: " << (void *)B_ptr_calc
-              << " blocked_ptr: " << (void *)blocked_data << "\n";
+    // std::cout << "[unpacked]  b_ptr_calc: " << (void *)B_ptr_calc
+    //           << " blocked_ptr: " << (void *)blocked_data << "\n";
   }
 
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
@@ -202,7 +204,6 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
         i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
 
     memory::dim B_offset_i;
-    std::cout << " i: " << i << "\n";
     if (need_packing) {
       pack_B->execute(B_ptr_calc + i * B_step_in_bytes,
                       blocked_data + i * B_block_size_in_bytes);
@@ -214,42 +215,45 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   }
 
   size_t scratchpad_size = brg->get_scratchpad_size();
-  std::cout << "scratchpad size: " << scratchpad_size << "\n";
+  // std::cout << "scratchpad size: " << scratchpad_size << "\n";
   std::vector<uint8_t> scratchpad_sm(scratchpad_size);
   std::stringstream ss;
-  ss << "in ptrs a: \n";
-  for (uint m = 0; m < 32; m++) {
-    for (uint k = 0; k < 16; k++) {
-      ss << ((float *)A_ptr)[16 * m + k] << " ";
+  ss << "A values:\n";
+  for (uint m = 0; m < 16; m++) {
+    for (uint k = 0; k < 32; k++) {
+      ss << ((float *)A_ptr)[32 * m + k] << " ";
     }
     ss << "\n";
   }
-  ss << "in ptrs b: \n";
-  for (uint k = 0; k < 16; k++) {
-    for (uint n = 0; n < 32; n++) {
-      ss << ((float *)blocked_data)[32 * k + n] << " ";
+  ss << "B values:\n";
+  for (uint k = 0; k < 32; k++) {
+    for (uint n = 0; n < 16; n++) {
+      ss << ((float *)blocked_data)[16 * k + n] << " ";
     }
     ss << "\n";
   }
-  ss << "acc ptr (before): \n";
-  for (uint m = 0; m < 32; m++) {
-    for (uint n = 0; n < 32; n++) {
-      ss << ((float *)C_ptr)[32 * m + n] << " ";
+  ss << "ACC input:\n";
+  for (uint m = 0; m < 16; m++) {
+    for (uint n = 0; n < 16; n++) {
+      ss << ((float *)C_ptr)[16 * m + n] << " ";
     }
     ss << "\n";
   }
-
+  ss << "Offsets:\n";
+  for (int i = 0; i < num_batches; ++i)
+    ss << "  " << i << ": " << A_B_offsets[i].first << ", "
+       << A_B_offsets[i].second << "\n";
   //  An execute call. `A_B` is a vector of pointers to A and packed B
   //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
   brg->execute(A_ptr, blocked_data, A_B_offsets, C_ptr, scratchpad_sm.data());
-  ss << "acc ptr: \n";
-  for (uint m = 0; m < 32; m++) {
-    for (uint n = 0; n < 32; n++) {
-      ss << ((float *)C_ptr)[32 * m + n] << " ";
+  ss << "ACC output:\n";
+  for (uint m = 0; m < 16; m++) {
+    for (uint n = 0; n < 16; n++) {
+      ss << ((float *)C_ptr)[16 * m + n] << " ";
     }
     ss << "\n";
   }
-  std::cout << ss.str();
+  // std::cout << ss.str();
 
   dnnl::ukernel::brgemm::release_hw_context();
 
@@ -287,10 +291,11 @@ EXPORT void prepare_hw_context(const void *brg_k) {
 EXPORT void call_brgemm(const void *brg_k, void *A_ptr, void *B_ptr,
                         void *C_ptr, void *scratchpad, int64_t A_step_in_bytes,
                         int64_t B_step_in_bytes, int64_t num_batches) {
-  std::cout << "Call Brg: " << brg_k << ", " << A_ptr << ", " << B_ptr << ", "
-            << C_ptr << ", " << scratchpad << "\n";
-  std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes
-            << " n: " << num_batches << "\n";
+  // std::cout << "Call Brg: " << brg_k << ", " << A_ptr << ", " << B_ptr << ",
+  // "
+  //           << C_ptr << ", " << scratchpad << "\n";
+  // std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes
+  //           << " n: " << num_batches << "\n";
 
   if (A_ptr == nullptr || B_ptr == nullptr || C_ptr == nullptr) {
     std::cout << "----------------FAIL----------------\n";

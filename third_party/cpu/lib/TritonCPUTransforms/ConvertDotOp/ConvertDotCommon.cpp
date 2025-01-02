@@ -200,6 +200,7 @@ MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
   LLVM_DEBUG(DBGS() << "  Step: ";
              llvm::interleaveComma(buf.step, llvm::dbgs());
              llvm::dbgs() << "\n");
+  buf.origBlockPtr = forOp.getTiedLoopInit(blockPtrArg)->get();
 
   return buf;
 }

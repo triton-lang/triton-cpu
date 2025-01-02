@@ -78,13 +78,9 @@ struct TransformCreateConversion
 
     // llvm::errs() << "k int: " << k_int << "\n";
 
-    auto transformArgs =
-        SmallVector<Value>{rewriter.getRemappedValue(transformOp.getK()),
-                           transformOp.getN(),
-                           transformOp.getInLd(),
-                           transformOp.getOutLd(),
-                           transformOp.getInDt(),
-                           transformOp.getOutDt()};
+    auto transformArgs = SmallVector<Value>{
+        adaptor.getK(),     adaptor.getN(),    adaptor.getInLd(),
+        adaptor.getOutLd(), adaptor.getInDt(), adaptor.getOutDt()};
     auto transformArgTypes =
         SmallVector<Type>{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
     // auto transformArgTypes = SmallVector<Type>{
@@ -100,13 +96,13 @@ struct TransformCreateConversion
         transformArgs);
 
     // transformOp.getResult().replaceAllUsesWith(dispatched.getResult());
-    llvm::errs() << "dispatched llvm call: " << dispatched << "\n";
+    // llvm::errs() << "dispatched llvm call: " << dispatched << "\n";
 
     auto mod = transformOp->getParentOfType<ModuleOp>();
 
-    llvm::errs() << "[Fail] Mod op: "
-                 << "=============================\n"
-                 << mod << "\n =============================\n";
+    // llvm::errs() << "[Fail] Mod op: "
+    //              << "=============================\n"
+    //              << mod << "\n =============================\n";
 
     // rewriter.replaceAllOpUsesWith(transformOp, dispatched.getResult());
     rewriter.replaceOp(transformOp, dispatched.getResult());
@@ -120,7 +116,7 @@ struct TransformCallConversion : public ConvertOpToLLVMPattern<TransformCall> {
   LogicalResult
   matchAndRewrite(TransformCall transformOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "invoke orig op call: " << transformOp << "\n";
+    // llvm::errs() << "invoke orig op call: " << transformOp << "\n";
 
     auto loc = transformOp.getLoc();
     auto ctx = rewriter.getContext();
@@ -129,21 +125,18 @@ struct TransformCallConversion : public ConvertOpToLLVMPattern<TransformCall> {
     // std::string dispatchName = "create_transform_ukernel";
     std::string invokeName = "call_transform";
 
-    auto transformArgs = SmallVector<Value>{
-        rewriter.getRemappedValue(transformOp.getOperand(0)),
-        rewriter.getRemappedValue(transformOp.getInPtr()),
-        rewriter.getRemappedValue(transformOp.getOutBlockedPtr())};
+    auto transformArgs =
+        SmallVector<Value>{adaptor.getKernelHash(), adaptor.getInPtr(),
+                           adaptor.getOutBlockedPtr()};
     auto transformArgTypes = SmallVector<Type>{
-        getTypeConverter()->convertType(transformOp.getOperand(0).getType()),
-        getTypeConverter()->convertType(transformOp.getInPtr().getType()),
-        getTypeConverter()->convertType(
-            transformOp.getOutBlockedPtr().getType())};
+        adaptor.getKernelHash().getType(), adaptor.getInPtr().getType(),
+        adaptor.getOutBlockedPtr().getType()};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, transformArgTypes, void_ty(ctx)),
         transformArgs);
-    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(transformOp, dispatched);
     return success();
@@ -161,12 +154,12 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto typeConverter = getTypeConverter();
 
     if (brgemmOp.getResult().getUses().empty()) {
-      llvm::errs() << "!!!!!!!!!uses empty!!!!!!!!!\n";
+      // llvm::errs() << "!!!!!!!!!uses empty!!!!!!!!!\n";
       auto mod = brgemmOp->getParentOfType<ModuleOp>();
 
-      llvm::errs() << "[Fail] Brgemm op: "
-                   << "=============================\n"
-                   << mod << "\n =============================\n";
+      // llvm::errs() << "[Fail] Brgemm op: "
+      //              << "=============================\n"
+      //              << mod << "\n =============================\n";
     }
 
     std::string dispatchName = "create_brgemm_ukernel";
@@ -193,18 +186,11 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
 
     // llvm::errs() << "ldc: " << ldc_int << "\n";
 
-    auto brgemmArgs =
-        SmallVector<Value>{// brgemmOp.getOperands()};
-                           brgemmOp.getM(),
-                           brgemmOp.getN(),
-                           brgemmOp.getKK(),
-                           rewriter.getRemappedValue(brgemmOp.getBatchSize()),
-                           brgemmOp.getLda(),
-                           brgemmOp.getLdb(),
-                           rewriter.getRemappedValue(brgemmOp.getLdc()),
-                           brgemmOp.getDtypeA(),
-                           brgemmOp.getDtypeB(),
-                           brgemmOp.getDtypeC()};
+    auto brgemmArgs = SmallVector<Value>{
+        adaptor.getM(),         adaptor.getN(),      adaptor.getKK(),
+        adaptor.getBatchSize(), adaptor.getLda(),    adaptor.getLdb(),
+        adaptor.getLdc(),       adaptor.getDtypeA(), adaptor.getDtypeB(),
+        adaptor.getDtypeC()};
     SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
                                      i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
 
@@ -217,14 +203,14 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
 
     // brgemmOp.getResult().replaceAllUsesWith(dispatched.getResult());
 
-    llvm::errs() << "brgem res: " << brgemmOp.getResult() << "\n";
-    llvm::errs() << "brgemm result uses: \n";
-    for (auto &use : brgemmOp.getResult().getUses()) {
-      llvm::errs() << "\t" << use.get() << "\n";
-    }
-    llvm::errs() << "uses done ------ \n";
-    llvm::errs() << "brgemm dispatched llvm call: " << dispatched << "\n";
-    // rewriter.replaceAllOpUsesWith(brgemmOp, dispatched.getResult());
+    // llvm::errs() << "brgem res: " << brgemmOp.getResult() << "\n";
+    // llvm::errs() << "brgemm result uses: \n";
+    // for (auto &use : brgemmOp.getResult().getUses()) {
+    //  llvm::errs() << "\t" << use.get() << "\n";
+    //}
+    // llvm::errs() << "uses done ------ \n";
+    // llvm::errs() << "brgemm dispatched llvm call: " << dispatched << "\n";
+    //  rewriter.replaceAllOpUsesWith(brgemmOp, dispatched.getResult());
 
     rewriter.replaceOp(brgemmOp, dispatched.getResult());
     return success();
@@ -237,7 +223,7 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
   LogicalResult
   matchAndRewrite(BrgemmCall brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
+    // llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
 
     auto loc = brgemmOp.getLoc();
     auto ctx = rewriter.getContext();
@@ -255,10 +241,6 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
 
     auto kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
         loc, ptr_ty(ctx), adaptor.getKernelHash());
-
-    // auto b_step = rewriter.create<LLVM::MulOp>(loc, i64_ty,
-    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getKK()),
-    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getN()));
 
     auto brgemmArgs = SmallVector<Value>{
         kernel_hash_ptr,
@@ -282,7 +264,7 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
         brgemmArgs);
-    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(brgemmOp, dispatched);
     return success();
@@ -296,7 +278,7 @@ struct CallBrgemmWithTransformConversion
   LogicalResult
   matchAndRewrite(CallBrgemmWithTransform brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
+    // llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
 
     auto loc = brgemmOp.getLoc();
     auto ctx = rewriter.getContext();
@@ -316,10 +298,6 @@ struct CallBrgemmWithTransformConversion
         loc, ptr_ty(ctx), adaptor.getTransformKernelHash());
     auto brgemm_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
         loc, ptr_ty(ctx), adaptor.getBrgemmKernelHash());
-
-    // auto b_step = rewriter.create<LLVM::MulOp>(loc, i64_ty,
-    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getKK()),
-    //                                            rewriter.getRemappedValue(brgem_kernel_params_op.getN()));
 
     auto brgemmArgs = SmallVector<Value>{
         tf_kernel_hash_ptr,
@@ -345,7 +323,7 @@ struct CallBrgemmWithTransformConversion
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
         brgemmArgs);
-    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(brgemmOp, dispatched);
     return success();
@@ -358,7 +336,7 @@ struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
   LogicalResult
   matchAndRewrite(ConfigureHW configureHwOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "invoke orig op call: " << configureHwOp << "\n";
+    // llvm::errs() << "invoke orig op call: " << configureHwOp << "\n";
 
     auto loc = configureHwOp.getLoc();
     auto ctx = rewriter.getContext();
@@ -367,8 +345,7 @@ struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
     // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "prepare_hw_context";
 
-    auto configureArgs = SmallVector<Value>{
-        rewriter.getRemappedValue(configureHwOp.getOperand())};
+    auto configureArgs = SmallVector<Value>{adaptor.getBrgemmKernelHash()};
     auto configureArgTypes = SmallVector<Type>{
         getTypeConverter()->convertType(configureHwOp.getOperand().getType())};
 
@@ -376,7 +353,7 @@ struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, configureArgTypes, void_ty(ctx)),
         configureArgs);
-    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(configureHwOp, dispatched);
     return success();
@@ -389,7 +366,7 @@ struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
   LogicalResult
   matchAndRewrite(ReleaseHW releaseHwOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "invoke orig op call: " << releaseHwOp << "\n";
+    // llvm::errs() << "invoke orig op call: " << releaseHwOp << "\n";
 
     auto loc = releaseHwOp.getLoc();
     auto ctx = rewriter.getContext();
@@ -405,7 +382,7 @@ struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, releaseArgTypes, void_ty(ctx)),
         releaseArgs);
-    llvm::errs() << "invoked llvm call: " << dispatched << "\n";
+    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(releaseHwOp, dispatched);
     return success();
@@ -440,14 +417,14 @@ struct OneDNNOpsToLLVM
     if (failed(applyPartialConversion(mod, conversionTarget,
                                       std::move(patterns)))) {
 
-      llvm::errs() << "[Fail] Mod op: "
-                   << "=============================\n"
-                   << mod << "\n =============================\n";
+      // llvm::errs() << "[Fail] Mod op: "
+      //              << "=============================\n"
+      //              << mod << "\n =============================\n";
       return signalPassFailure();
     } else {
-      llvm::errs() << "[Succ] Mod op: "
-                   << "=============================\n"
-                   << mod << "\n =============================\n";
+      // llvm::errs() << "[Succ] Mod op: "
+      //              << "=============================\n"
+      //              << mod << "\n =============================\n";
     }
   }
 };
