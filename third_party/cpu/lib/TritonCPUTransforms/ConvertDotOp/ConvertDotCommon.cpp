@@ -29,9 +29,6 @@ bool isLoopCarriedAcc(Value acc) {
     return false;
   }
 
-  // We don't need this I guess
-  // blockArg.getArgNumber();
-
   Value updAcc = acc.getUsers().begin()->getResult(0);
   if (!updAcc.hasOneUse()) {
     LDBG("  No. Has multiple uses.");
@@ -223,8 +220,9 @@ Value maybeCast(Location loc, Value val, Type dstElemTy,
   return rewriter.create<arith::TruncFOp>(loc, dstTy, val);
 }
 
-MemBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
-                            Operation *allocaPoint, PatternRewriter &rewriter) {
+MemBuffer allocateTmpBufferStack(Location loc, VectorType vecTy,
+                                 Operation *allocaPoint,
+                                 PatternRewriter &rewriter) {
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(allocaPoint);
   auto memRefTy = MemRefType::get(vecTy.getShape(), vecTy.getElementType());
@@ -256,8 +254,8 @@ MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
                            PatternRewriter &rewriter) {
   LDBG("Storing vector to a temporary buffer: " << val);
   auto vecTy = cast<VectorType>(val.getType());
-  MemBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
-  rewriter.create<vector::TransferWriteOp>(loc, val, buf.memRef, buf.indices);
+  MemBuffer buf = allocateTmpBufferStack(loc, vecTy, allocaPoint, rewriter);
+  op_write(val, buf.memRef, buf.indices);
   return buf;
 }
 

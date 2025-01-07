@@ -1,7 +1,7 @@
 add_triton_library(TritonCPUToLLVM
     AtomicOpsToLLVM.cpp
     DebugOpsToLLVM.cpp
-    OneDNNOpsToLLVM.cpp
+    UkernelOpsToOneDNNLLVM.cpp
     FuncOpToLLVM.cpp
     GetProgramIdOpToLLVM.cpp
     LowerMultiReduction.cpp

@@ -136,25 +136,23 @@ def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
-def ConvertDotToOneDNN : Pass<"triton-cpu-convert-dot-to-onednn", "mlir::ModuleOp"> {
-    let summary = "Convert dot product op to OneDNN.";
+def ConvertDotOpToUkernelOps : Pass<"triton-cpu-convert-dot-to-ukernels", "mlir::ModuleOp"> {
+    let summary = "Convert dot product op to ukernel ops.";
     let description = [{
-        This pass is used to lower matmul operations to OneDNN.
+        This pass is used to lower DotOp operations to ukernel ops.
     }];
 
     let options = [
-        Option<"convertInt8", "convert-i8",
-               "bool", /*default*/"true",
-               "Use AMX extensions for int8 type.">,
-        Option<"convertFp16", "convert-fp16",
-               "bool", /*default*/"true",
-               "Use AMX extensions for ifp16 type.">,
-        Option<"convertBf16", "convert-bf16",
-               "bool", /*default*/"true",
-               "Use AMX extensions for bf16 type.">,
+        Option<"ukernels", "ukernels",
+               "mlir::triton::cpu::Ukernels", /*default*/"mlir::triton::cpu::Ukernels::OneDNN",
+               "Ukernels provider to be used for replacement of dot op (OneDNN/Xsmm/etc).",
+               [{::llvm::cl::values(
+               clEnumValN(mlir::triton::cpu::Ukernels::OneDNN, "oneDNN",
+                "Use OneDNN as a ukernels provider")
+              )}]>,
     ];
 
-    let constructor = "mlir::triton::cpu::createConvertDotToOneDNN()";
+    let constructor = "mlir::triton::cpu::createConvertDotOpToUkernelOps()";
 
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::vector::VectorDialect",
