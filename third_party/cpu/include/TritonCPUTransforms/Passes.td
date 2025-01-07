@@ -143,15 +143,9 @@ def ConvertDotToOneDNN : Pass<"triton-cpu-convert-dot-to-onednn", "mlir::ModuleO
     }];
 
     let options = [
-        Option<"convertInt8", "convert-i8",
-               "bool", /*default*/"true",
-               "Use AMX extensions for int8 type.">,
-        Option<"convertFp16", "convert-fp16",
-               "bool", /*default*/"true",
-               "Use AMX extensions for ifp16 type.">,
-        Option<"convertBf16", "convert-bf16",
-               "bool", /*default*/"true",
-               "Use AMX extensions for bf16 type.">,
+        Option<"canReplace", "replace",
+               "bool", /*default*/"false",
+               "Use OneDNN uKernel for matmul.">
     ];
 
     let constructor = "mlir::triton::cpu::createConvertDotToOneDNN()";

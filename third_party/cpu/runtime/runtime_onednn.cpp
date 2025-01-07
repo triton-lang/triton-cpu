@@ -1,16 +1,18 @@
-// #include <cpu/x64/amx_tile_configure.hpp>
-// #include <cpu/x64/brgemm/brgemm.hpp>
-// #include <cpu/x64/brgemm/brgemm_types.hpp>
-// #include <cpu/x64/cpu_isa_traits.hpp>
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_types.h"
+#include "oneapi/dnnl/dnnl_ukernel.hpp"
+#include "oneapi/dnnl/dnnl_ukernel_types.h"
+#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
+#error "DNNL Ukerenel ismissing"
+#endif
+#endif
 
-#include <oneapi/dnnl/dnnl_types.h>
-#include <oneapi/dnnl/dnnl_ukernel.hpp>
-#include <oneapi/dnnl/dnnl_ukernel_types.h>
-
+#include <cassert>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
 
 #if defined(_MSC_VER)
 #define EXPORT __declspec(dllexport)
@@ -19,11 +21,11 @@
 #else
 #define EXPORT
 #endif
-#include <sstream>
 
-// using namespace dnnl::impl::cpu::x64;
+#if defined(ONEDNN_AVAILABLE)
 using namespace dnnl;
 using namespace dnnl::ukernel;
+#endif
 
 namespace dnnl {
 namespace impl {
@@ -44,20 +46,6 @@ using read_lock_guard_t = std::shared_lock<std::shared_mutex>;
 using write_lock_guard_t = std::unique_lock<std::shared_mutex>;
 static std::shared_mutex g_brgemm_lock;
 
-// TODO(haixin): use syscall to determine page size?
-static constexpr size_t SCRATCH_SIZE = 2 * 4096;
-// TODO(haixin): need to use custom thread management for scratch in the future?
-static thread_local char scratch[SCRATCH_SIZE] = {0};
-
-namespace {
-template <typename T> struct RawMemRefDescriptor {
-  const T *allocated;
-  const T *aligned;
-  intptr_t offset;
-  intptr_t sizesAndStrides[];
-};
-} // namespace
-
 extern "C" {
 
 EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
@@ -65,18 +53,16 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
                                    int64_t ldc, int64_t dtypeA, int64_t dtypeB,
                                    int64_t dtypeC) {
   using KeyT = std::array<int64_t, 10>;
-  std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
-            << ", batch - " << batch_size << ", lda - " << lda << ", ldb - "
-            << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
-            << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
+  // std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
+  //           << ", batch - " << batch_size << ", lda - " << lda << ", ldb - "
+  //           << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
+  //           << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
   KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
   static std::map<KeyT, dnnl::ukernel::brgemm> savedUkernels;
   {
     read_lock_guard_t r_g(g_brgemm_lock);
     if (savedUkernels.count(key) != 0) {
-      // std::cout << "reused kernel: " << &savedUkernels.find(key)->second
-      //           << "\n";
       return &savedUkernels.find(key)->second;
     }
   }
@@ -84,9 +70,6 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
   write_lock_guard_t w_g(g_brgemm_lock);
 
   if (savedUkernels.count(key) != 0) {
-    // std::cout << "reused kernel (second): " <<
-    // &savedUkernels.find(key)->second
-    //           << "\n";
     return &savedUkernels.find(key)->second;
   }
 
@@ -107,7 +90,6 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
 
   auto it = savedUkernels.insert({key, brg});
   auto ret = &it.first->second;
-  // std::cout << "[create] brg: " << ret << std::endl;
   return ret;
 }
 
@@ -154,54 +136,29 @@ EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
 }
 
 EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
-                     void *original_B_ptr, void *C_ptr, void *scratchpad,
+                     void *original_B_ptr, void *C_ptr, // void *scratchpad,
                      int64_t A_step_in_bytes, int64_t B_step_in_bytes,
                      int64_t B_block_size_in_bytes, int64_t num_batches,
                      bool skip_packing = false) {
 
   uint8_t *blocked_data = (uint8_t *)original_B_ptr;
   uint8_t *B_ptr_calc = (uint8_t *)original_B_ptr;
-  // std::cout << "Call Transform: " << transform_k << " Brg: " << brg_k
-  //           << ", a: " << A_ptr << ", b: " << original_B_ptr << ", c: " <<
-  //           C_ptr
-  //           << ", scr: " << scratchpad << "\n";
-  // std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes << " "
-  //           << B_block_size_in_bytes << " n: " << num_batches << "\n";
 
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
   auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
-  // std::cout << " vanilla check pack: "
-  //           << ((brg->get_B_pack_type() == pack_type::pack32) ? "true"
-  //                                                             : "false")
-  //           << "\n";
+
   bool need_packing =
       brg->get_B_pack_type() == pack_type::pack32 && !skip_packing;
   if (need_packing) {
-    // std::cout << "Will be packed. \n";
-    //  output
-
-    // blocked_B_size = block_K * block_n * dtype; // ldb * K_k *
-    // memory::data_type_size(b_dt);
-
     blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
-
     pack_B->execute(original_B_ptr, blocked_data);
   }
 
   brg->set_hw_context();
 
-  if (need_packing) {
-    // std::cout << "[packed]  b_ptr_calc: " << (void *)B_ptr_calc
-    //           << " blocked_ptr: " << (void *)blocked_data << "\n";
-  } else {
-    // std::cout << "[unpacked]  b_ptr_calc: " << (void *)B_ptr_calc
-    //           << " blocked_ptr: " << (void *)blocked_data << "\n";
-  }
-
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
   for (memory::dim i = 0; i < num_batches; i++) {
-    const memory::dim A_offset_i =
-        i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
+    const memory::dim A_offset_i = i * A_step_in_bytes;
 
     memory::dim B_offset_i;
     if (need_packing) {
@@ -215,45 +172,10 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   }
 
   size_t scratchpad_size = brg->get_scratchpad_size();
-  // std::cout << "scratchpad size: " << scratchpad_size << "\n";
   std::vector<uint8_t> scratchpad_sm(scratchpad_size);
-  std::stringstream ss;
-  ss << "A values:\n";
-  for (uint m = 0; m < 16; m++) {
-    for (uint k = 0; k < 32; k++) {
-      ss << ((float *)A_ptr)[32 * m + k] << " ";
-    }
-    ss << "\n";
-  }
-  ss << "B values:\n";
-  for (uint k = 0; k < 32; k++) {
-    for (uint n = 0; n < 16; n++) {
-      ss << ((float *)blocked_data)[16 * k + n] << " ";
-    }
-    ss << "\n";
-  }
-  ss << "ACC input:\n";
-  for (uint m = 0; m < 16; m++) {
-    for (uint n = 0; n < 16; n++) {
-      ss << ((float *)C_ptr)[16 * m + n] << " ";
-    }
-    ss << "\n";
-  }
-  ss << "Offsets:\n";
-  for (int i = 0; i < num_batches; ++i)
-    ss << "  " << i << ": " << A_B_offsets[i].first << ", "
-       << A_B_offsets[i].second << "\n";
   //  An execute call. `A_B` is a vector of pointers to A and packed B
   //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
   brg->execute(A_ptr, blocked_data, A_B_offsets, C_ptr, scratchpad_sm.data());
-  ss << "ACC output:\n";
-  for (uint m = 0; m < 16; m++) {
-    for (uint n = 0; n < 16; n++) {
-      ss << ((float *)C_ptr)[16 * m + n] << " ";
-    }
-    ss << "\n";
-  }
-  // std::cout << ss.str();
 
   dnnl::ukernel::brgemm::release_hw_context();
 
@@ -264,26 +186,13 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
 
 EXPORT void call_transform(const void *transform_k, const void *original_data,
                            void *blocked_data) {
+  assert(false && "Not tested");
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
   pack_B->execute(original_data, blocked_data);
 }
 
-// Most questionable function - no shure where to leave forming of offsets lists
-// maybe too difficult in client code
-// void prepare_buffers(int64_t batch_size) {
-//   // BRGeMM ukernel execute section.
-//   // Prepare buffers for execution.
-//   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(batch_size);
-//   for (memory::dim i = 0; i < batch_size; i++) {
-//     const memory::dim A_offset_i = i * K_k * a_dt_size;
-//     const memory::dim B_offset_i =
-//         need_pack ? i * blocked_B_size : i * N * K_k * b_dt_size;
-//     A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
-//   }
-// }
-
-// for perf targets
 EXPORT void prepare_hw_context(const void *brg_k) {
+  assert(false && "Not tested");
   auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
   brg->set_hw_context();
 }
@@ -291,23 +200,7 @@ EXPORT void prepare_hw_context(const void *brg_k) {
 EXPORT void call_brgemm(const void *brg_k, void *A_ptr, void *B_ptr,
                         void *C_ptr, void *scratchpad, int64_t A_step_in_bytes,
                         int64_t B_step_in_bytes, int64_t num_batches) {
-  // std::cout << "Call Brg: " << brg_k << ", " << A_ptr << ", " << B_ptr << ",
-  // "
-  //           << C_ptr << ", " << scratchpad << "\n";
-  // std::cout << "steps: " << A_step_in_bytes << " " << B_step_in_bytes
-  //           << " n: " << num_batches << "\n";
-
-  if (A_ptr == nullptr || B_ptr == nullptr || C_ptr == nullptr) {
-    std::cout << "----------------FAIL----------------\n";
-    return;
-  }
-
-  // auto dnnl_dtypeA = static_cast<dnnl::memory::data_type>(dtypeA);
-  // auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
-
-  // const size_t a_dt_size = memory::data_type_size(dnnl_dtypeA);
-  // const size_t b_dt_size = memory::data_type_size(dnnl_dtypeB);
-
+  assert(false && "Not tested");
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
   for (memory::dim i = 0; i < num_batches; i++) {
     const memory::dim A_offset_i =
@@ -321,15 +214,12 @@ EXPORT void call_brgemm(const void *brg_k, void *A_ptr, void *B_ptr,
 
   size_t scratchpad_size = brg->get_scratchpad_size();
   std::vector<float> scratchpad_sm(scratchpad_size);
-  // std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(3);
-  //  An execute call. `A_B` is a vector of pointers to A and packed B
-  //  tensors. `acc_ptr` is a pointer to an accumulator buffer.
   brg->execute(A_ptr, B_ptr, A_B_offsets, C_ptr, scratchpad_sm.data());
 }
 
 // at the end of execution
 EXPORT void release_hw_context() {
-  // Once all computations are done, need to release HW context.
+  assert(false && "Not tested");
   dnnl::ukernel::brgemm::release_hw_context();
 }
 

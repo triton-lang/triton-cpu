@@ -13,10 +13,16 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_types.h"
+#endif
+
 namespace mlir {
 namespace triton {
+namespace cpu {
 #define GEN_PASS_DEF_ONEDNNOPSTOLLVM
 #include "cpu/include/TritonCPUToLLVM/Passes.h.inc"
+} // namespace cpu
 } // namespace triton
 } // namespace mlir
 
@@ -25,6 +31,36 @@ using namespace mlir::triton;
 using namespace mlir::triton::cpu;
 
 namespace {
+
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_config.h"
+#endif
+void assert_on_onednn_missing() {
+#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
+  assert(false && "No OneDNN with uKernels available. Pass will be redundant.");
+#endif
+}
+
+inline Value intLLVMConst(Location loc, Type ty, int64_t val,
+                          PatternRewriter &rewriter) {
+  return rewriter.create<LLVM::ConstantOp>(
+      loc, IntegerAttr::get(getElementTypeOrSelf(ty), val));
+}
+
+static inline int64_t getDnnlDataTypeVal(Type ty) {
+#if defined(DNNL_EXPERIMENTAL_UKERNEL)
+  ty = getElementTypeOrSelf(ty);
+  if (ty.isF32())
+    return static_cast<int64_t>(dnnl_f32);
+  if (ty.isF64())
+    return static_cast<int64_t>(dnnl_f64);
+  if (ty.isBF16())
+    return static_cast<int64_t>(dnnl_bf16);
+  if (ty.isF16())
+    return static_cast<int64_t>(dnnl_f16);
+#endif
+  llvm_unreachable("Unexpected type for conversion to DNNL type.");
+}
 
 class TritonLLVMConversionTarget : public ConversionTarget {
 public:
@@ -63,30 +99,19 @@ struct TransformCreateConversion
   matchAndRewrite(TransformCreate transformOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = transformOp.getLoc();
-    auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
     std::string dispatchName = "create_transform_ukernel";
 
-    // Value k_int = transformOp.getK();
-    // auto val_ty = k_int.getType();
-    // if (val_ty.isIndex()) {
-    // Value k_int =
-    //     rewriter.create<arith::IndexCastOp>(loc, i64_ty, transformOp.getK())
-    //         .getResult();
-    // }
-
-    // llvm::errs() << "k int: " << k_int << "\n";
-
+    IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+    auto inDnnType = intLLVMConst(
+        loc, integer64, getDnnlDataTypeVal(transformOp.getInDt()), rewriter);
+    auto outDnnType = intLLVMConst(
+        loc, integer64, getDnnlDataTypeVal(transformOp.getOutDt()), rewriter);
     auto transformArgs = SmallVector<Value>{
-        adaptor.getK(),     adaptor.getN(),    adaptor.getInLd(),
-        adaptor.getOutLd(), adaptor.getInDt(), adaptor.getOutDt()};
+        adaptor.getK(),     adaptor.getN(), adaptor.getInLd(),
+        adaptor.getOutLd(), inDnnType,      outDnnType};
     auto transformArgTypes =
         SmallVector<Type>{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
-    // auto transformArgTypes = SmallVector<Type>{
-    //     transformOp.getK().getType(),    transformOp.getN().getType(),
-    //     transformOp.getInLd().getType(), transformOp.getOutLd().getType(),
-    //     transformOp.getInDt().getType(), transformOp.getOutDt().getType()};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
@@ -95,16 +120,6 @@ struct TransformCreateConversion
             getTypeConverter()->convertType(transformOp.getResult().getType())),
         transformArgs);
 
-    // transformOp.getResult().replaceAllUsesWith(dispatched.getResult());
-    // llvm::errs() << "dispatched llvm call: " << dispatched << "\n";
-
-    auto mod = transformOp->getParentOfType<ModuleOp>();
-
-    // llvm::errs() << "[Fail] Mod op: "
-    //              << "=============================\n"
-    //              << mod << "\n =============================\n";
-
-    // rewriter.replaceAllOpUsesWith(transformOp, dispatched.getResult());
     rewriter.replaceOp(transformOp, dispatched.getResult());
     return success();
   };
@@ -116,13 +131,10 @@ struct TransformCallConversion : public ConvertOpToLLVMPattern<TransformCall> {
   LogicalResult
   matchAndRewrite(TransformCall transformOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // llvm::errs() << "invoke orig op call: " << transformOp << "\n";
 
     auto loc = transformOp.getLoc();
     auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
-    // std::string dispatchName = "create_transform_ukernel";
     std::string invokeName = "call_transform";
 
     auto transformArgs =
@@ -136,7 +148,6 @@ struct TransformCallConversion : public ConvertOpToLLVMPattern<TransformCall> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, transformArgTypes, void_ty(ctx)),
         transformArgs);
-    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(transformOp, dispatched);
     return success();
@@ -150,47 +161,23 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
   matchAndRewrite(BrgemmCreate brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = brgemmOp.getLoc();
-    auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
-
-    if (brgemmOp.getResult().getUses().empty()) {
-      // llvm::errs() << "!!!!!!!!!uses empty!!!!!!!!!\n";
-      auto mod = brgemmOp->getParentOfType<ModuleOp>();
-
-      // llvm::errs() << "[Fail] Brgemm op: "
-      //              << "=============================\n"
-      //              << mod << "\n =============================\n";
-    }
+    IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 
     std::string dispatchName = "create_brgemm_ukernel";
 
-    // Value batch_size_int = brgemmOp.getBatchSize();
-    // auto val_ty = batch_size_int.getType();
-    // if (val_ty.isIndex()) {
-    // Value batch_size_int = // brgemmOp.getOperand(3);
-    //     rewriter.create<arith::IndexCastOp>(loc, i64_ty,
-    //     brgemmOp.getOperand(3))
-    //         .getResult();
-    // }
+    auto lhsDnnType = intLLVMConst(
+        loc, integer64, getDnnlDataTypeVal(adaptor.getDtypeA()), rewriter);
+    auto rhsDnnType = intLLVMConst(
+        loc, integer64, getDnnlDataTypeVal(adaptor.getDtypeB()), rewriter);
+    auto accDnnType = intLLVMConst(
+        loc, integer64, getDnnlDataTypeVal(adaptor.getDtypeC()), rewriter);
 
-    // llvm::errs() << "bs size: " << batch_size_int << "\n";
-
-    // Value ldc_int = brgemmOp.getLdc();
-    // val_ty = ldc_int.getType();
-    // if (val_ty.isIndex()) {
-    // Value ldc_int = // brgemmOp.getOperand(6);
-    //     rewriter.create<arith::IndexCastOp>(loc, i64_ty,
-    //     brgemmOp.getOperand(6))
-    //         .getResult();
-    // }
-
-    // llvm::errs() << "ldc: " << ldc_int << "\n";
-
-    auto brgemmArgs = SmallVector<Value>{
-        adaptor.getM(),         adaptor.getN(),      adaptor.getKK(),
-        adaptor.getBatchSize(), adaptor.getLda(),    adaptor.getLdb(),
-        adaptor.getLdc(),       adaptor.getDtypeA(), adaptor.getDtypeB(),
-        adaptor.getDtypeC()};
+    auto brgemmArgs =
+        SmallVector<Value>{adaptor.getM(),   adaptor.getN(),
+                           adaptor.getKK(),  adaptor.getBatchSize(),
+                           adaptor.getLda(), adaptor.getLdb(),
+                           adaptor.getLdc(), lhsDnnType,
+                           rhsDnnType,       accDnnType};
     SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
                                      i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
 
@@ -200,17 +187,6 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
             rewriter, dispatchName, brgemmArgTypes,
             getTypeConverter()->convertType(brgemmOp.getResult().getType())),
         brgemmArgs);
-
-    // brgemmOp.getResult().replaceAllUsesWith(dispatched.getResult());
-
-    // llvm::errs() << "brgem res: " << brgemmOp.getResult() << "\n";
-    // llvm::errs() << "brgemm result uses: \n";
-    // for (auto &use : brgemmOp.getResult().getUses()) {
-    //  llvm::errs() << "\t" << use.get() << "\n";
-    //}
-    // llvm::errs() << "uses done ------ \n";
-    // llvm::errs() << "brgemm dispatched llvm call: " << dispatched << "\n";
-    //  rewriter.replaceAllOpUsesWith(brgemmOp, dispatched.getResult());
 
     rewriter.replaceOp(brgemmOp, dispatched.getResult());
     return success();
@@ -223,20 +199,10 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
   LogicalResult
   matchAndRewrite(BrgemmCall brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
 
     auto loc = brgemmOp.getLoc();
     auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
-    // auto brgem_kernel_params_op =
-    //     adaptor.getKernelHash()
-    //         .getDefiningOp<triton::cpu::BrgemmCreate>();
-    // if (brgem_kernel_params_op == nullptr) {
-    //   return failure();
-    // }
-
-    // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "call_brgemm";
 
     auto kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
@@ -251,11 +217,7 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
         adaptor.getStepA(),
         adaptor.getStepB(),
         adaptor.getNumBatches()};
-    // auto unranked =
-    //     getTypeConverter()->convertType(brgemmOp.getOperand(0).getType());
-    // auto brgemmArgTypes = SmallVector<Type>{
-    //     unranked, unranked, unranked, unranked, unranked,
-    // };
+
     auto brgemmArgTypes =
         SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
                           ptr_ty(ctx), i64_ty,      i64_ty,      i64_ty};
@@ -264,7 +226,6 @@ struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
         brgemmArgs);
-    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(brgemmOp, dispatched);
     return success();
@@ -278,20 +239,10 @@ struct CallBrgemmWithTransformConversion
   LogicalResult
   matchAndRewrite(CallBrgemmWithTransform brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // llvm::errs() << "invoke orig op call: " << brgemmOp << "\n";
 
     auto loc = brgemmOp.getLoc();
     auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
-    // auto brgem_kernel_params_op =
-    //     adaptor.getKernelHash()
-    //         .getDefiningOp<triton::cpu::BrgemmCreate>();
-    // if (brgem_kernel_params_op == nullptr) {
-    //   return failure();
-    // }
-
-    // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "call_all";
 
     auto tf_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
@@ -305,25 +256,19 @@ struct CallBrgemmWithTransformConversion
         MemRefDescriptor(adaptor.getAPtr()).alignedPtr(rewriter, loc),
         MemRefDescriptor(adaptor.getBPtr()).alignedPtr(rewriter, loc),
         MemRefDescriptor(adaptor.getCPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getScratchpad()).alignedPtr(rewriter, loc),
         adaptor.getStepA(),
         adaptor.getStepB(),
         adaptor.getBlockedBsize(),
         adaptor.getNumBatches()};
-    // auto unranked =
-    //     getTypeConverter()->convertType(brgemmOp.getOperand(0).getType());
-    // auto brgemmArgTypes = SmallVector<Type>{
-    //     unranked, unranked, unranked, unranked, unranked,
-    // };
+
     auto brgemmArgTypes = SmallVector<Type>{
         ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
-        ptr_ty(ctx), i64_ty,      i64_ty,      i64_ty,      i64_ty};
+        i64_ty,      i64_ty,      i64_ty,      i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
         brgemmArgs);
-    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(brgemmOp, dispatched);
     return success();
@@ -336,13 +281,9 @@ struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
   LogicalResult
   matchAndRewrite(ConfigureHW configureHwOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // llvm::errs() << "invoke orig op call: " << configureHwOp << "\n";
-
     auto loc = configureHwOp.getLoc();
     auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
-    // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "prepare_hw_context";
 
     auto configureArgs = SmallVector<Value>{adaptor.getBrgemmKernelHash()};
@@ -353,7 +294,6 @@ struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, configureArgTypes, void_ty(ctx)),
         configureArgs);
-    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(configureHwOp, dispatched);
     return success();
@@ -366,13 +306,9 @@ struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
   LogicalResult
   matchAndRewrite(ReleaseHW releaseHwOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // llvm::errs() << "invoke orig op call: " << releaseHwOp << "\n";
-
     auto loc = releaseHwOp.getLoc();
     auto ctx = rewriter.getContext();
-    auto typeConverter = getTypeConverter();
 
-    // std::string dispatchName = "create_Brgemm_ukernel";
     std::string invokeName = "release_hw_context";
 
     SmallVector<Value> releaseArgs{};
@@ -382,7 +318,6 @@ struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
         rewriter, loc,
         getFuncDecl(rewriter, invokeName, releaseArgTypes, void_ty(ctx)),
         releaseArgs);
-    // llvm::errs() << "invoked llvm call: " << dispatched << "\n";
 
     rewriter.replaceOp(releaseHwOp, dispatched);
     return success();
@@ -390,12 +325,16 @@ struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
 };
 
 struct OneDNNOpsToLLVM
-    : public triton::impl::OneDNNOpsToLLVMBase<OneDNNOpsToLLVM> {
-  using OneDNNOpsToLLVMBase::OneDNNOpsToLLVMBase;
-
-  OneDNNOpsToLLVM() : OneDNNOpsToLLVMBase() {}
+    : public triton::cpu::impl::OneDNNOpsToLLVMBase<OneDNNOpsToLLVM> {
+  OneDNNOpsToLLVM() = default;
+  OneDNNOpsToLLVM(bool canReplace) { this->canReplace = canReplace; }
 
   void runOnOperation() override {
+    if (!canReplace) {
+      LDBG("Pass disabled.");
+      return;
+    }
+
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
@@ -404,27 +343,15 @@ struct OneDNNOpsToLLVM
     TritonLLVMConversionTarget conversionTarget(*context);
 
     RewritePatternSet patterns(context);
-    // mlir::arith::populateArithToLLVMConversionPatterns(typeConverter,
-    // patterns);
 
     patterns.add<TransformCreateConversion, TransformCallConversion,
                  BrgemmCreateConversion, BrgemmCallConversion,
                  ConfigureHWConversion, ReleaseHWConversion,
                  CallBrgemmWithTransformConversion>(typeConverter);
-    // patterns.add<BrgemmOpConversion>(typeConverter);
-    // patterns.add<ConfigOpConversion>(typeConverter);
 
     if (failed(applyPartialConversion(mod, conversionTarget,
                                       std::move(patterns)))) {
-
-      // llvm::errs() << "[Fail] Mod op: "
-      //              << "=============================\n"
-      //              << mod << "\n =============================\n";
       return signalPassFailure();
-    } else {
-      // llvm::errs() << "[Succ] Mod op: "
-      //              << "=============================\n"
-      //              << mod << "\n =============================\n";
     }
   }
 };
@@ -435,6 +362,14 @@ namespace mlir::triton::cpu {
 
 std::unique_ptr<OperationPass<ModuleOp>> createOneDNNOpsToLLVMPass() {
   return std::make_unique<OneDNNOpsToLLVM>();
+}
+
+std::unique_ptr<OperationPass<ModuleOp>>
+createOneDNNOpsToLLVMPass(bool isReplacementToOneDnnPossible) {
+  if (isReplacementToOneDnnPossible) {
+    assert_on_onednn_missing();
+  }
+  return std::make_unique<OneDNNOpsToLLVM>(isReplacementToOneDnnPossible);
 }
 
 } // namespace mlir::triton::cpu

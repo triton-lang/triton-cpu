@@ -33,6 +33,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createAtomicOpsToLLVMPass();
 std::unique_ptr<OperationPass<ModuleOp>> createDebugOpsToLLVMPass();
 std::unique_ptr<OperationPass<ModuleOp>> createOneDNNOpsToLLVMPass();
 std::unique_ptr<OperationPass<ModuleOp>>
+createOneDNNOpsToLLVMPass(bool canReplace);
+std::unique_ptr<OperationPass<ModuleOp>>
 createMathToVecLibPass(VecLib lib = VecLib::Sleef,
                        std::set<std::string> cpu_features = {});
 

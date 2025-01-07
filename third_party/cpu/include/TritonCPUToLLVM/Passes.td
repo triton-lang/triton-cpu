@@ -69,6 +69,12 @@ def DebugOpsToLLVM : Pass<"triton-cpu-debug-ops-to-llvm", "mlir::ModuleOp"> {
 def OneDNNOpsToLLVM : Pass<"triton-cpu-onednn-ops-to-llvm", "mlir::ModuleOp"> {
     let summary = "Convert Triton OneDNN operations to LLVM.";
     let description = [{}];
+    let options = [
+        Option<"canReplace", "replace",
+               "bool", /*default*/"false",
+               "Use OneDNN uKernel for matmul.">
+    ];
+
     let constructor = "mlir::triton::cpu::createOneDNNOpsToLLVMPass()";
 
     let dependentDialects = ["mlir::arith::ArithDialect",

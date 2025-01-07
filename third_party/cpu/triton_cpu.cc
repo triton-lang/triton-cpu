@@ -28,6 +28,17 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifdef ONEDNN_AVAILABLE
+#include "oneapi/dnnl/dnnl_config.h"
+#endif
+bool is_onednn_available() {
+#ifdef DNNL_EXPERIMENTAL_UKERNEL
+  return true;
+#else
+  return false;
+#endif
+}
+
 namespace py = pybind11;
 
 void init_triton_cpu_passes_ttcpuir(py::module &&m) {
@@ -91,9 +102,11 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_loop_invariant_code_motion", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createLoopInvariantCodeMotionPass());
   });
-  m.def("add_convert_dot_to_onednn", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::cpu::createConvertDotToOneDNN());
-  });
+  m.def("add_convert_dot_to_onednn",
+        [](mlir::PassManager &pm, bool isReplacementToOneDnnPossible) {
+          pm.addPass(mlir::triton::cpu::createConvertDotToOneDNN(
+              isReplacementToOneDnnPossible));
+        });
   m.def("add_convert_dot_to_amx", [](mlir::PassManager &pm, bool convertInt8,
                                      bool convertFp16, bool convertBf16) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
@@ -145,9 +158,11 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_debug_ops_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createDebugOpsToLLVMPass());
   });
-  m.def("add_onednn_ops_to_llvmir", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::cpu::createOneDNNOpsToLLVMPass());
-  });
+  m.def("add_onednn_ops_to_llvmir",
+        [](mlir::PassManager &pm, bool isReplacementToOneDnnPossible) {
+          pm.addPass(mlir::triton::cpu::createOneDNNOpsToLLVMPass(
+              isReplacementToOneDnnPossible));
+        });
   m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
   });
@@ -199,6 +214,8 @@ void init_triton_cpu(py::module &&m) {
     return false;
 #endif // __linux__ && ARCH_REQ_XCOMP_PERM
   });
+
+  m.def("onednn_available", is_onednn_available);
 
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;

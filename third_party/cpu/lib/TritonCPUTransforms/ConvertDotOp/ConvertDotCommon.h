@@ -76,8 +76,14 @@ Value maybeCast(Location loc, Value val, Type dstElemTy,
                 PatternRewriter &rewriter);
 
 // Allocate temporary buffer on stack for specified vector type.
-MemBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
-                            Operation *allocaPoint, PatternRewriter &rewriter);
+MemBuffer allocateTmpBufferStack(Location loc, VectorType vecTy,
+                                 Operation *allocaPoint,
+                                 PatternRewriter &rewriter);
+
+// Allocate temporary buffer on heap for specified vector type.
+MemBuffer allocateTmpBufferHeap(Location loc, VectorType vecTy,
+                                Operation *allocaPoint,
+                                PatternRewriter &rewriter);
 
 // Move index by specified offset. Do constannt folding if possible.
 Value shiftIndex(Location loc, Value index, int64_t offs,

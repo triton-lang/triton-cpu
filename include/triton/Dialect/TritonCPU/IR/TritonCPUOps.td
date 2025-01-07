@@ -205,18 +205,13 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     AnyTypeOf<[AnyInteger, Index]>:$lda,
     AnyTypeOf<[AnyInteger, Index]>:$ldb,
     AnyTypeOf<[AnyInteger, Index]>:$ldc,
-    I64:$dtypeA,
-    I64:$dtypeB,
-    I64:$dtypeC
+    // TODO: Maybe Use properties
+    TypeAttr:$dtypeA,
+    TypeAttr:$dtypeB,
+    TypeAttr:$dtypeC
   );
 
   let results = (outs Index:$result);
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 def TTC_BrgemmCall : TTC_Op<"brgemm_call",
@@ -231,7 +226,6 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call",
     Index:$kernel_hash,
     Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
     Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
-    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
     Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
     Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
 
@@ -239,12 +233,6 @@ def TTC_BrgemmCall : TTC_Op<"brgemm_call",
     Index:$stepB,
     Index:$numBatches
   );
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 def TTC_BrgemmNeedsPacking : TTC_Op<"brgemm_needs_packing",
@@ -268,9 +256,8 @@ def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
     Index:$brgemm_kernel_hash,
     Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
     Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
-    // AnyTypeOf<[TT_Float, TT_Int, TT_Ptr, TTC_Vector]>:$offsets,
     Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
-    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
+    // Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
 
     AnyTypeOf<[AnyInteger, Index]>:$stepA,
     AnyTypeOf<[AnyInteger, Index]>:$stepB,
@@ -288,20 +275,14 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   let arguments = (ins
     AnyTypeOf<[AnyInteger, Index]>:$K,
     AnyTypeOf<[AnyInteger, Index]>:$N,
-    // I64:$in_pack_type,
     AnyTypeOf<[AnyInteger, Index]>:$in_ld,
     AnyTypeOf<[AnyInteger, Index]>:$out_ld,
-    I64:$in_dt,
-    I64:$out_dt
+    // TODO: Maybe Use properties
+    TypeAttr:$in_dt,
+    TypeAttr:$out_dt
   );
 
   let results = (outs Index:$result);
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 def TTC_TransformCall : TTC_Op<"transform_call",
@@ -326,12 +307,6 @@ def TTC_ConfigureHW : TTC_Op<"configure_hw", [MemoryEffects<[MemWrite<GlobalMemo
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins Index:$brgemm_kernel_hash);
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 def TTC_ReleaseHW : TTC_Op<"release_hw", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
@@ -341,12 +316,6 @@ def TTC_ReleaseHW : TTC_Op<"release_hw", [MemoryEffects<[MemWrite<GlobalMemory>]
 
   // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
   let arguments = (ins);
-
-  // let assemblyFormat = [{
-  //   $prefix attr-dict (`:` $val^ `:` type($val))?
-  // }];
-
-  // let hasVerifier = 1;
 }
 
 #endif

@@ -164,7 +164,8 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
         cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
-        cpu.passes.ttcpuir.add_convert_dot_to_onednn(pm)
+        if cpu.onednn_available():
+            cpu.passes.ttcpuir.add_convert_dot_to_onednn(pm, True)
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
@@ -206,7 +207,8 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm)
+        if cpu.onednn_available():
+            cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm, True)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
         cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
         cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
@@ -272,7 +274,7 @@ class CPUBackend(BaseBackend):
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
-            libs = ["m", "dnnl", "TritonCPURuntime", "sleef"]
+            libs = ["m", "TritonCPURuntime", "sleef"]
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)
             with open(so, "rb") as f:
                 return f.read()

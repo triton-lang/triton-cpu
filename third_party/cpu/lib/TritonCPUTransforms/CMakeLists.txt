@@ -4,9 +4,9 @@ add_triton_library(TritonCPUTransforms
     ConvertDotOp/ConvertDotGeneric.cpp
     ConvertDotOp/ConvertDotToAMX.cpp
     ConvertDotOp/ConvertDotToFMA.cpp
+    ConvertDotOp/ConvertDotToOneDNN.cpp
     Canonicalize.cpp
     ConvertDotProduct.cpp
-    ConvertDotToOneDNN.cpp
     ConvertUnsupportedOps.cpp
     DecomposeFpConversions.cpp
     OptimizeMasks.cpp
@@ -15,4 +15,4 @@ add_triton_library(TritonCPUTransforms
     TritonCPUTransformsPassIncGen
 )
 
-set_source_files_properties(ConvertDotToOneDNN.cpp PROPERTIES COMPILE_FLAGS "-Wall")
+set_source_files_properties(ConvertDotOp/ConvertDotToOneDNN.cpp PROPERTIES COMPILE_FLAGS "-Wall")
