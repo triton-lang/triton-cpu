@@ -24,6 +24,9 @@ struct MemBuffer {
   SmallVector<Value> step;
   // True if buffer holds transposed value.
   bool transposed = false;
+  // Ttue if buffer holds value in VNNI (interleaved to groups of 32bit)
+  // encoding.
+  bool vnni = false;
 
   bool empty() const { return !memRef; }
 };
@@ -48,10 +51,17 @@ template <typename T> bool hasMaskOrBoundsCheck(T op) {
   return hasBoundsCheck || mask;
 }
 
-// Search for a buffer holding required value. If allowTransposed is true,
-// then buffer is allowed to hold both transposed and not transposed value.
+// Search for a buffer holding required value.
+//
+// If allowTransposed is true, then buffer is allowed to hold both transposed
+// and not transposed value.
+//
+// If allowVnni then buffer is allowed to hold value in both original and
+// VNNI-encoded form. This flag is ignored if allowTransposed is true.
+//
 // Return empty buffer if no memory holding value was found.
-MemBuffer findInputBuffer(Value val, bool allowTransposed = false);
+MemBuffer findInputBuffer(Value val, bool allowTransposed = false,
+                          bool allowVnni = false);
 
 // Cast vector to a specified element type using ext or trunc
 // operations. Return the original value if it already matches
@@ -66,6 +76,10 @@ MemBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
 // Move index by specified offset. Do constannt folding if possible.
 Value shiftIndex(Location loc, Value index, int64_t offs,
                  PatternRewriter &rewriter);
+
+// Check if val is a result of a sequence that performs VNNI decoding.
+// If it is, then return the original encoded value. Otherwise, return nullptr.
+Value getVnniSrc(Value val);
 
 } // namespace cpu
 } // namespace triton
