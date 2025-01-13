@@ -177,31 +177,20 @@ struct SplitOpConversion : public OpConversionPattern<triton::SplitOp> {
     auto src = rewriter.getRemappedValue(op.getSrc());
     auto srcTy = cast<VectorType>(src.getType());
     auto resTy = getTypeConverter()->convertType(op.getType(0));
+    assert(srcTy.getShape().back() == 2);
 
     SmallVector<Value> results;
     if (srcTy.getRank() == 1) {
       results.push_back(rewriter.create<vector::ExtractOp>(loc, src, 0));
       results.push_back(rewriter.create<vector::ExtractOp>(loc, src, 1));
+      rewriter.replaceOp(op, results);
     } else {
-      SmallVector<int64_t> tmpShape({srcTy.getNumElements()});
+      SmallVector<int64_t> tmpShape(srcTy.getShape().drop_back());
+      tmpShape.back() *= 2;
       auto tmp = rewriter.create<vector::ShapeCastOp>(
           loc, VectorType::get(tmpShape, srcTy.getElementType()), src);
-
-      SmallVector<int64_t> evenIndices;
-      SmallVector<int64_t> oddIndices;
-      for (int64_t i = 0; i < srcTy.getNumElements(); i += 2) {
-        evenIndices.push_back(i);
-        oddIndices.push_back(i + 1);
-      }
-
-      Value res1 =
-          rewriter.create<vector::ShuffleOp>(loc, tmp, tmp, evenIndices);
-      Value res2 =
-          rewriter.create<vector::ShuffleOp>(loc, tmp, tmp, oddIndices);
-      results.push_back(rewriter.create<vector::ShapeCastOp>(loc, resTy, res1));
-      results.push_back(rewriter.create<vector::ShapeCastOp>(loc, resTy, res2));
+      rewriter.replaceOpWithNewOp<vector::DeinterleaveOp>(op, tmp);
     }
-    rewriter.replaceOp(op, results);
     return success();
   }
 };

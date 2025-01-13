@@ -56,14 +56,79 @@ Value getInitAccValue(Value val) {
   return forOp.getInitArgs()[initValIdx];
 }
 
-MemBuffer findInputBuffer(Value val, bool allowTransposed) {
+namespace {
+
+// Check if val is a result of transpose operation. If it is, then return
+// a source of that transpose operation. Otherwise, return nullptr.
+Value getTransposedSrc(Value val) {
+  auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
+  if (transposeOp)
+    return transposeOp.getVector();
+  return nullptr;
+}
+
+// We are looking for the following sequence:
+//   %tmp1, %tmp2 = vector.deinterleave %src
+//   %tmp3 = vector.transpose %tmp1, [1, 0]
+//   %tmp4 = vector.transpose %tmp2, [1, 0]
+//   %tmp5 = vector.interleave %tmp3, %tmp4
+//   %val = vector.transpose %tmp5, [1, 0]
+// and return %src if pattern matching succeeds.
+Value getVnniSrcImpl(Value val) {
+  auto transposedVal = getTransposedSrc(val);
+  if (!transposedVal)
+    return nullptr;
+
+  auto interleave = transposedVal.getDefiningOp<vector::InterleaveOp>();
+  if (!interleave)
+    return nullptr;
+
+  auto tmp1 = getTransposedSrc(interleave.getLhs());
+  auto tmp2 = getTransposedSrc(interleave.getRhs());
+  if (!tmp1 || !tmp2)
+    return nullptr;
+
+  auto deinterleave1 = tmp1.getDefiningOp<vector::DeinterleaveOp>();
+  auto deinterleave2 = tmp2.getDefiningOp<vector::DeinterleaveOp>();
+  if (!deinterleave1 || deinterleave1 != deinterleave2 ||
+      deinterleave1.getResult(0) != tmp1 || deinterleave2.getResult(1) != tmp2)
+    return nullptr;
+
+  return deinterleave1.getSource();
+}
+
+} // namespace
+
+Value getVnniSrc(Value val) {
+  Type elemTy = getElementTypeOrSelf(val.getType());
+
+  // VNNI encoding is used for 8-bit and 16-bit values only.
+  if (elemTy.getIntOrFloatBitWidth() > 16)
+    return nullptr;
+
+  // For 16-bit values VNNI encoding is a single interleave of
+  // subsequenct rows. For 8-bit values, it's applied twice.
+  Value encoded = getVnniSrcImpl(val);
+  if (encoded && elemTy.getIntOrFloatBitWidth() == 8)
+    encoded = getVnniSrcImpl(encoded);
+
+  return encoded;
+}
+
+MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
   MemBuffer buf;
 
   if (allowTransposed) {
-    auto transposeOp = val.getDefiningOp<vector::TransposeOp>();
-    if (transposeOp) {
-      val = transposeOp.getVector();
+    auto transposed = getTransposedSrc(val);
+    if (transposed) {
+      val = transposed;
       buf.transposed = true;
+    }
+  } else if (allowVnni) {
+    auto vnniVal = getVnniSrc(val);
+    if (vnniVal) {
+      val = vnniVal;
+      buf.vnni = true;
     }
   }
 

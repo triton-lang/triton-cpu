@@ -236,3 +236,226 @@ module {
     tt.return loc(#loc)
   } loc(#loc)
 } loc(#loc)
+
+// -----
+
+// A case with VNNI pre-encoded RHS that can be directly accessed from the input memory.
+// We expect both LHS and RHS tiles to be directly loaded from the input mmemory.
+
+// CHECK-LABEL: @test_loop_pre_encoded_direct
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[LHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[RHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK:       amx.tile_load %[[LHS_MEMREF]][%[[LHS_INDICES]]#0, %[[LHS_INDICES]]#1, %[[LHS_INDICES]]#2, %[[LHS_INDICES]]#3]
+// CHECK:       amx.tile_load %[[RHS_MEMREF]][%[[RHS_INDICES]]#0, %[[RHS_INDICES]]#1, %[[RHS_INDICES]]#2, %[[RHS_INDICES]]#3]
+#loc = loc(unknown)
+module {
+  tt.func public @test_loop_pre_encoded_direct(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg3: i32 {tt.divisibility = 16 : i32}, %arg4: i32 {tt.divisibility = 16 : i32}, %arg5: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
+    %cst = arith.constant 0.000000e+00 : bf16 loc(#loc)
+    %c31_i32 = arith.constant 31 : i32 loc(#loc)
+    %c1024_i64 = arith.constant 1024 : i64 loc(#loc)
+    %cst_0 = arith.constant dense<0.000000e+00> : vector<32x32xf32> loc(#loc)
+    %c1_i64 = arith.constant 1 : i64 loc(#loc)
+    %c64_i64 = arith.constant 64 : i64 loc(#loc)
+    %c16_i64 = arith.constant 16 : i64 loc(#loc)
+    %c0_i32 = arith.constant 0 : i32 loc(#loc)
+    %c32_i64 = arith.constant 32 : i64 loc(#loc)
+    %c32_i32 = arith.constant 32 : i32 loc(#loc)
+    %c1_i32 = arith.constant 1 : i32 loc(#loc)
+    %0 = tt.get_program_id x : i32 loc(#loc)
+    %1 = arith.divsi %arg4, %c32_i32 : i32 loc(#loc)
+    %2 = arith.divsi %0, %1 : i32 loc(#loc)
+    %3 = arith.remsi %0, %1 : i32 loc(#loc)
+    %4 = arith.muli %arg5, %c32_i32 : i32 loc(#loc)
+    %5 = arith.divsi %arg3, %c32_i32 : i32 loc(#loc)
+    %6 = arith.divsi %arg5, %c32_i32 : i32 loc(#loc)
+    %7 = arith.extsi %5 : i32 to i64 loc(#loc)
+    %8 = arith.extsi %6 : i32 to i64 loc(#loc)
+    %9 = arith.extsi %4 : i32 to i64 loc(#loc)
+    %10 = arith.extsi %arg5 : i32 to i64 loc(#loc)
+    %11 = tt.make_tensor_ptr %arg0, [%7, %8, %c32_i64, %c32_i64], [%9, %c32_i64, %10, %c1_i64], [%2, %c0_i32, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x32x32xbf16>> loc(#loc)
+    %12 = arith.extsi %1 : i32 to i64 loc(#loc)
+    %13 = tt.make_tensor_ptr %arg1, [%8, %12, %c16_i64, %c64_i64], [%c1024_i64, %9, %c64_i64, %c1_i64], [%c0_i32, %3, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x16x64xbf16>> loc(#loc)
+    %14 = arith.muli %2, %c32_i32 : i32 loc(#loc)
+    %15 = arith.muli %3, %c32_i32 : i32 loc(#loc)
+    %16 = arith.extsi %arg3 : i32 to i64 loc(#loc)
+    %17 = arith.extsi %arg4 : i32 to i64 loc(#loc)
+    %18 = tt.make_tensor_ptr %arg2, [%16, %17], [%17, %c1_i64], [%14, %15] {order = array<i32: 1, 0>} : <tensor<32x32xf32>> loc(#loc)
+    %19 = arith.addi %arg5, %c31_i32 : i32 loc(#loc)
+    %20 = arith.divsi %19, %c32_i32 : i32 loc(#loc)
+    %21:3 = scf.for %arg6 = %c0_i32 to %20 step %c1_i32 iter_args(%arg7 = %cst_0, %arg8 = %11, %arg9 = %13) -> (vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>>)  : i32 {
+      %24 = triton_cpu.extract_memref %arg8 : <tensor<1x1x32x32xbf16>> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>> loc(#loc)
+      %25:4 = triton_cpu.extract_indices %arg8 : <tensor<1x1x32x32xbf16>> -> index, index, index, index loc(#loc)
+      %26 = vector.transfer_read %24[%25#0, %25#1, %25#2, %25#3], %cst {in_bounds = [true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<32x32xbf16> loc(#loc)
+      %27 = triton_cpu.extract_memref %arg9 : <tensor<1x1x16x64xbf16>> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>> loc(#loc)
+      %28:4 = triton_cpu.extract_indices %arg9 : <tensor<1x1x16x64xbf16>> -> index, index, index, index loc(#loc)
+      %29 = vector.transfer_read %27[%28#0, %28#1, %28#2, %28#3], %cst {in_bounds = [true, true]} : memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>>, vector<16x64xbf16> loc(#loc)
+      %res1, %res2 = vector.deinterleave %29 : vector<16x64xbf16> -> vector<16x32xbf16> loc(#loc)
+      %30 = vector.transpose %res1, [1, 0] : vector<16x32xbf16> to vector<32x16xbf16> loc(#loc)
+      %31 = vector.transpose %res2, [1, 0] : vector<16x32xbf16> to vector<32x16xbf16> loc(#loc)
+      %32 = vector.interleave %30, %31 : vector<32x16xbf16> -> vector<32x32xbf16> loc(#loc)
+      %33 = vector.transpose %32, [1, 0] : vector<32x32xbf16> to vector<32x32xbf16> loc(#loc)
+      %34 = triton_cpu.dot %26, %33, %arg7, inputPrecision = tf32 : vector<32x32xbf16> * vector<32x32xbf16> -> vector<32x32xf32> loc(#loc)
+      %35 = tt.advance %arg8, [%c0_i32, %c1_i32, %c0_i32, %c0_i32] : <tensor<1x1x32x32xbf16>> loc(#loc)
+      %36 = tt.advance %arg9, [%c1_i32, %c0_i32, %c0_i32, %c0_i32] : <tensor<1x1x16x64xbf16>> loc(#loc)
+      scf.yield %34, %35, %36 : vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>> loc(#loc)
+    } loc(#loc)
+    %22 = triton_cpu.extract_memref %18 : <tensor<32x32xf32>> -> memref<?x?xf32, strided<[?, 1]>> loc(#loc)
+    %23:2 = triton_cpu.extract_indices %18 : <tensor<32x32xf32>> -> index, index loc(#loc)
+    vector.transfer_write %21#0, %22[%23#0, %23#1] {in_bounds = [true, true]} : vector<32x32xf32>, memref<?x?xf32, strided<[?, 1]>> loc(#loc)
+    tt.return loc(#loc)
+  } loc(#loc)
+} loc(#loc)
+
+// -----
+
+// A case with VNNI pre-encoded RHS that cannot be directly accessed from the input memory.
+// We expect LHS to be directly loaded from the input mmemory and RHS to be loaded through
+// a temporary buffer without additional encoding.
+
+
+// CHECK-LABEL: @test_loop_pre_encoded_indirect
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x64xbf16>
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[LHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[RHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK-NEXT:  %[[RHS:.+]] = vector.transfer_read %[[RHS_MEMREF]][%[[RHS_INDICES]]#0, %[[RHS_INDICES]]#1, %[[RHS_INDICES]]#2, %[[RHS_INDICES]]#3]
+// CHECK:       vector.transfer_write %[[RHS]], %[[RHS_BUF]][%c0, %c0] {in_bounds = [true, true]}
+// CHECK:       amx.tile_load %[[LHS_MEMREF]][%[[LHS_INDICES]]#0, %[[LHS_INDICES]]#1, %[[LHS_INDICES]]#2, %[[LHS_INDICES]]#3]
+// CHECK:       amx.tile_load %[[RHS_BUF]][%c0, %c0]
+#loc = loc(unknown)
+module {
+  tt.func public @test_loop_pre_encoded_indirect(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg3: i32 {tt.divisibility = 16 : i32}, %arg4: i32 {tt.divisibility = 16 : i32}, %arg5: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
+    %cst = arith.constant 0.000000e+00 : bf16 loc(#loc)
+    %c31_i32 = arith.constant 31 : i32 loc(#loc)
+    %c1024_i64 = arith.constant 1024 : i64 loc(#loc)
+    %cst_0 = arith.constant dense<0.000000e+00> : vector<32x32xf32> loc(#loc)
+    %c1_i64 = arith.constant 1 : i64 loc(#loc)
+    %c64_i64 = arith.constant 64 : i64 loc(#loc)
+    %c16_i64 = arith.constant 16 : i64 loc(#loc)
+    %c0_i32 = arith.constant 0 : i32 loc(#loc)
+    %c32_i64 = arith.constant 32 : i64 loc(#loc)
+    %c32_i32 = arith.constant 32 : i32 loc(#loc)
+    %c1_i32 = arith.constant 1 : i32 loc(#loc)
+    %0 = tt.get_program_id x : i32 loc(#loc)
+    %1 = arith.divsi %arg4, %c32_i32 : i32 loc(#loc)
+    %2 = arith.divsi %0, %1 : i32 loc(#loc)
+    %3 = arith.remsi %0, %1 : i32 loc(#loc)
+    %4 = arith.muli %arg5, %c32_i32 : i32 loc(#loc)
+    %5 = arith.divsi %arg3, %c32_i32 : i32 loc(#loc)
+    %6 = arith.divsi %arg5, %c32_i32 : i32 loc(#loc)
+    %7 = arith.extsi %5 : i32 to i64 loc(#loc)
+    %8 = arith.extsi %6 : i32 to i64 loc(#loc)
+    %9 = arith.extsi %4 : i32 to i64 loc(#loc)
+    %10 = arith.extsi %arg5 : i32 to i64 loc(#loc)
+    %11 = tt.make_tensor_ptr %arg0, [%7, %8, %c32_i64, %c32_i64], [%9, %c32_i64, %10, %c1_i64], [%2, %c0_i32, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x32x32xbf16>> loc(#loc)
+    %12 = arith.extsi %1 : i32 to i64 loc(#loc)
+    %13 = tt.make_tensor_ptr %arg1, [%8, %12, %c16_i64, %c64_i64], [%c1024_i64, %9, %c64_i64, %c1_i64], [%c0_i32, %3, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x16x64xbf16>> loc(#loc)
+    %14 = arith.muli %2, %c32_i32 : i32 loc(#loc)
+    %15 = arith.muli %3, %c32_i32 : i32 loc(#loc)
+    %16 = arith.extsi %arg3 : i32 to i64 loc(#loc)
+    %17 = arith.extsi %arg4 : i32 to i64 loc(#loc)
+    %18 = tt.make_tensor_ptr %arg2, [%16, %17], [%17, %c1_i64], [%14, %15] {order = array<i32: 1, 0>} : <tensor<32x32xf32>> loc(#loc)
+    %19 = arith.addi %arg5, %c31_i32 : i32 loc(#loc)
+    %20 = arith.divsi %19, %c32_i32 : i32 loc(#loc)
+    %21:3 = scf.for %arg6 = %c0_i32 to %20 step %c1_i32 iter_args(%arg7 = %cst_0, %arg8 = %11, %arg9 = %13) -> (vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>>)  : i32 {
+      %24 = triton_cpu.extract_memref %arg8 : <tensor<1x1x32x32xbf16>> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>> loc(#loc)
+      %25:4 = triton_cpu.extract_indices %arg8 : <tensor<1x1x32x32xbf16>> -> index, index, index, index loc(#loc)
+      %26 = vector.transfer_read %24[%25#0, %25#1, %25#2, %25#3], %cst {in_bounds = [true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<32x32xbf16> loc(#loc)
+      %27 = triton_cpu.extract_memref %arg9 : <tensor<1x1x16x64xbf16>> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>> loc(#loc)
+      %28:4 = triton_cpu.extract_indices %arg9 : <tensor<1x1x16x64xbf16>> -> index, index, index, index loc(#loc)
+      %29 = vector.transfer_read %27[%28#0, %28#1, %28#2, %28#3], %cst {in_bounds = [false, false]} : memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>>, vector<16x64xbf16> loc(#loc)
+      %res1, %res2 = vector.deinterleave %29 : vector<16x64xbf16> -> vector<16x32xbf16> loc(#loc)
+      %30 = vector.transpose %res1, [1, 0] : vector<16x32xbf16> to vector<32x16xbf16> loc(#loc)
+      %31 = vector.transpose %res2, [1, 0] : vector<16x32xbf16> to vector<32x16xbf16> loc(#loc)
+      %32 = vector.interleave %30, %31 : vector<32x16xbf16> -> vector<32x32xbf16> loc(#loc)
+      %33 = vector.transpose %32, [1, 0] : vector<32x32xbf16> to vector<32x32xbf16> loc(#loc)
+      %34 = triton_cpu.dot %26, %33, %arg7, inputPrecision = tf32 : vector<32x32xbf16> * vector<32x32xbf16> -> vector<32x32xf32> loc(#loc)
+      %35 = tt.advance %arg8, [%c0_i32, %c1_i32, %c0_i32, %c0_i32] : <tensor<1x1x32x32xbf16>> loc(#loc)
+      %36 = tt.advance %arg9, [%c1_i32, %c0_i32, %c0_i32, %c0_i32] : <tensor<1x1x16x64xbf16>> loc(#loc)
+      scf.yield %34, %35, %36 : vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>> loc(#loc)
+    } loc(#loc)
+    %22 = triton_cpu.extract_memref %18 : <tensor<32x32xf32>> -> memref<?x?xf32, strided<[?, 1]>> loc(#loc)
+    %23:2 = triton_cpu.extract_indices %18 : <tensor<32x32xf32>> -> index, index loc(#loc)
+    vector.transfer_write %21#0, %22[%23#0, %23#1] {in_bounds = [true, true]} : vector<32x32xf32>, memref<?x?xf32, strided<[?, 1]>> loc(#loc)
+    tt.return loc(#loc)
+  } loc(#loc)
+} loc(#loc)
+
+// -----
+
+// A case with int8 VNNI pre-encoded RHS that can be directly accessed from the input memory.
+// We expect both LHS and RHS tiles to be directly loaded from the input mmemory.
+
+// CHECK-LABEL: @test_loop_int8_pre_encoded
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[LHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref
+// CHECK-NEXT:  %[[RHS_INDICES:.+]]:4 = triton_cpu.extract_indices
+// CHECK:       amx.tile_load %[[LHS_MEMREF]][%[[LHS_INDICES]]#0, %[[LHS_INDICES]]#1, %[[LHS_INDICES]]#2, %[[LHS_INDICES]]#3]
+// CHECK:       amx.tile_load %[[RHS_MEMREF]][%[[RHS_INDICES]]#0, %[[RHS_INDICES]]#1, %[[RHS_INDICES]]#2, %[[RHS_INDICES]]#3]
+#loc = loc(unknown)
+module {
+  tt.func public @test_loop_int8_pre_encoded(%arg0: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<i32> {tt.divisibility = 16 : i32}, %arg3: i32 {tt.divisibility = 16 : i32}, %arg4: i32 {tt.divisibility = 16 : i32}, %arg5: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
+    %c0_i8 = arith.constant 0 : i8 loc(#loc)
+    %c31_i32 = arith.constant 31 : i32 loc(#loc)
+    %c1024_i64 = arith.constant 1024 : i64 loc(#loc)
+    %cst = arith.constant dense<0> : vector<32x32xi32> loc(#loc)
+    %c1_i64 = arith.constant 1 : i64 loc(#loc)
+    %c128_i64 = arith.constant 128 : i64 loc(#loc)
+    %c8_i64 = arith.constant 8 : i64 loc(#loc)
+    %c0_i32 = arith.constant 0 : i32 loc(#loc)
+    %c32_i64 = arith.constant 32 : i64 loc(#loc)
+    %c32_i32 = arith.constant 32 : i32 loc(#loc)
+    %c1_i32 = arith.constant 1 : i32 loc(#loc)
+    %0 = tt.get_program_id x : i32 loc(#loc)
+    %1 = arith.divsi %arg4, %c32_i32 : i32 loc(#loc)
+    %2 = arith.divsi %0, %1 : i32 loc(#loc)
+    %3 = arith.remsi %0, %1 : i32 loc(#loc)
+    %4 = arith.muli %arg5, %c32_i32 : i32 loc(#loc)
+    %5 = arith.divsi %arg3, %c32_i32 : i32 loc(#loc)
+    %6 = arith.divsi %arg5, %c32_i32 : i32 loc(#loc)
+    %7 = arith.extsi %5 : i32 to i64 loc(#loc)
+    %8 = arith.extsi %6 : i32 to i64 loc(#loc)
+    %9 = arith.extsi %4 : i32 to i64 loc(#loc)
+    %10 = arith.extsi %arg5 : i32 to i64 loc(#loc)
+    %11 = tt.make_tensor_ptr %arg0, [%7, %8, %c32_i64, %c32_i64], [%9, %c32_i64, %10, %c1_i64], [%2, %c0_i32, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x32x32xi8>> loc(#loc)
+    %12 = arith.extsi %1 : i32 to i64 loc(#loc)
+    %13 = tt.make_tensor_ptr %arg1, [%8, %12, %c8_i64, %c128_i64], [%c1024_i64, %9, %c128_i64, %c1_i64], [%c0_i32, %3, %c0_i32, %c0_i32] {order = array<i32: 3, 2, 1, 0>} : <tensor<1x1x8x128xi8>> loc(#loc)
+    %14 = arith.muli %2, %c32_i32 : i32 loc(#loc)
+    %15 = arith.muli %3, %c32_i32 : i32 loc(#loc)
+    %16 = arith.extsi %arg3 : i32 to i64 loc(#loc)
+    %17 = arith.extsi %arg4 : i32 to i64 loc(#loc)
+    %18 = tt.make_tensor_ptr %arg2, [%16, %17], [%17, %c1_i64], [%14, %15] {order = array<i32: 1, 0>} : <tensor<32x32xi32>> loc(#loc)
+    %19 = arith.addi %arg5, %c31_i32 : i32 loc(#loc)
+    %20 = arith.divsi %19, %c32_i32 : i32 loc(#loc)
+    %21:3 = scf.for %arg6 = %c0_i32 to %20 step %c1_i32 iter_args(%arg7 = %cst, %arg8 = %11, %arg9 = %13) -> (vector<32x32xi32>, !tt.ptr<tensor<1x1x32x32xi8>>, !tt.ptr<tensor<1x1x8x128xi8>>)  : i32 {
+      %24 = triton_cpu.extract_memref %arg8 : <tensor<1x1x32x32xi8>> -> memref<?x?x32x32xi8, strided<[?, 32, ?, 1]>> loc(#loc)
+      %25:4 = triton_cpu.extract_indices %arg8 : <tensor<1x1x32x32xi8>> -> index, index, index, index loc(#loc)
+      %26 = vector.transfer_read %24[%25#0, %25#1, %25#2, %25#3], %c0_i8 {in_bounds = [true, true]} : memref<?x?x32x32xi8, strided<[?, 32, ?, 1]>>, vector<32x32xi8> loc(#loc)
+      %27 = triton_cpu.extract_memref %arg9 : <tensor<1x1x8x128xi8>> -> memref<?x?x8x128xi8, strided<[1024, ?, 128, 1]>> loc(#loc)
+      %28:4 = triton_cpu.extract_indices %arg9 : <tensor<1x1x8x128xi8>> -> index, index, index, index loc(#loc)
+      %30 = vector.transfer_read %27[%28#0, %28#1, %28#2, %28#3], %c0_i8 {in_bounds = [true, true]} : memref<?x?x8x128xi8, strided<[1024, ?, 128, 1]>>, vector<8x128xi8> loc(#loc)
+      %res1, %res2 = vector.deinterleave %30 : vector<8x128xi8> -> vector<8x64xi8> loc(#loc)
+      %31 = vector.transpose %res1, [1, 0] : vector<8x64xi8> to vector<64x8xi8> loc(#loc)
+      %32 = vector.transpose %res2, [1, 0] : vector<8x64xi8> to vector<64x8xi8> loc(#loc)
+      %33 = vector.interleave %31, %32 : vector<64x8xi8> -> vector<64x16xi8> loc(#loc)
+      %34 = vector.transpose %33, [1, 0] : vector<64x16xi8> to vector<16x64xi8> loc(#loc)
+      %res1_0, %res2_1 = vector.deinterleave %34 : vector<16x64xi8> -> vector<16x32xi8> loc(#loc)
+      %35 = vector.transpose %res1_0, [1, 0] : vector<16x32xi8> to vector<32x16xi8> loc(#loc)
+      %36 = vector.transpose %res2_1, [1, 0] : vector<16x32xi8> to vector<32x16xi8> loc(#loc)
+      %37 = vector.interleave %35, %36 : vector<32x16xi8> -> vector<32x32xi8> loc(#loc)
+      %38 = vector.transpose %37, [1, 0] : vector<32x32xi8> to vector<32x32xi8> loc(#loc)
+      %39 = triton_cpu.dot %26, %38, %arg7, inputPrecision = tf32 : vector<32x32xi8> * vector<32x32xi8> -> vector<32x32xi32> loc(#loc)
+      %40 = tt.advance %arg8, [%c0_i32, %c1_i32, %c0_i32, %c0_i32] : <tensor<1x1x32x32xi8>> loc(#loc)
+      %41 = tt.advance %arg9, [%c1_i32, %c0_i32, %c0_i32, %c0_i32] : <tensor<1x1x8x128xi8>> loc(#loc)
+      scf.yield %39, %40, %41 : vector<32x32xi32>, !tt.ptr<tensor<1x1x32x32xi8>>, !tt.ptr<tensor<1x1x8x128xi8>> loc(#loc)
+    } loc(#loc)
+    %22 = triton_cpu.extract_memref %18 : <tensor<32x32xi32>> -> memref<?x?xi32, strided<[?, 1]>> loc(#loc)
+    %23:2 = triton_cpu.extract_indices %18 : <tensor<32x32xi32>> -> index, index loc(#loc)
+    vector.transfer_write %21#0, %22[%23#0, %23#1] {in_bounds = [true, true]} : vector<32x32xi32>, memref<?x?xi32, strided<[?, 1]>> loc(#loc)
+    tt.return loc(#loc)
+  } loc(#loc)
+} loc(#loc)
