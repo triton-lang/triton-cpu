@@ -402,9 +402,9 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
   LDBG("Preparing buffer (interleave=" << interleave
                                        << ") for a vector: " << val);
   auto vecTy = cast<VectorType>(val.getType());
-  MemBuffer inputBuf = findInputBuffer(val);
+  MemBuffer inputBuf = findInputBuffer(val, false, interleave);
   if (!inputBuf.empty()) {
-    if (interleave) {
+    if (interleave && !inputBuf.vnni) {
       LDBG("  Copying from the original memref with interleave: "
            << inputBuf.memRef);
       auto tmpBuf = allocateTmpBuffer(loc, getSwizzledRhsTileType(vecTy),
@@ -426,7 +426,12 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
   MemBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
 
   if (interleave) {
-    interleaveAndStore(loc, val, buf.memRef, rewriter);
+    auto interleavedVal = getVnniSrc(val);
+    if (interleavedVal) {
+      LDBG("  Using pre-encoding value: " << interleavedVal);
+      op_write(interleavedVal, buf.memRef, buf.indices);
+    } else
+      interleaveAndStore(loc, val, buf.memRef, rewriter);
   } else {
     op_write(val, buf.memRef, buf.indices);
   }
