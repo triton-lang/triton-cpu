@@ -18,11 +18,13 @@ import triton.language as tl
 import os
 
 DTYPE = os.getenv("DTYPE", "float32")
+in_dtype = getattr(torch, DTYPE)
+out_dtype = torch.float32 if in_dtype.is_floating_point else torch.int32
 # Choose block size depending on dtype. We have more register
 # capacity for bfloat16/float16 compared to float32.
 BLOCK_SIZE_M = 8 if DTYPE == "float32" else 32
 BLOCK_SIZE_N = 32
-BLOCK_SIZE_K = 8 if DTYPE == "float32" else 32
+BLOCK_SIZE_K = 8 if DTYPE == "float32" else 64 // in_dtype.itemsize
 GROUP_SIZE_M = 8
 
 
@@ -38,6 +40,9 @@ GROUP_SIZE_M = 8
 # tensor are transposed. It provides contiguos placement for a column
 # of blocks.
 #
+# If PACKED_B is set to True then B is VNNI encoded. Only works when
+# BLOCKED_B is True.
+#
 # If TRANSPOSED_BLOCK_A is set to True then tail dimensions of the LHS
 # tensor are transposed. Transposed LHS block better matches FMA lowering
 # used by Triton CPU backend which processes RHS block row-by-row and LHS
@@ -46,7 +51,7 @@ GROUP_SIZE_M = 8
 def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZE_M: tl.constexpr,
                                     BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
                                     BLOCKED_A: tl.constexpr, TRANSPOSED_BLOCK_A: tl.constexpr, BLOCKED_B: tl.constexpr,
-                                    TRANSPOSED_B: tl.constexpr):
+                                    TRANSPOSED_B: tl.constexpr, PACKED_B: tl.constexpr):
     tl.static_assert(BLOCKED_A or not TRANSPOSED_BLOCK_A)
     tl.static_assert(BLOCKED_B or not TRANSPOSED_B)
     pid = tl.program_id(axis=0)
@@ -85,9 +90,11 @@ def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZ
             tl.store(a_out_ptr, val)
 
     if BLOCKED_B:
+        B_PACKED_NUM: tl.constexpr = 32 // in_b.type.element_ty.primitive_bitwidth if PACKED_B else 1
+        PACKED_BLOCK_SIZE_K: tl.constexpr = BLOCK_SIZE_K // B_PACKED_NUM if PACKED_B else BLOCK_SIZE_K
+        PACKED_BLOCK_SIZE_N: tl.constexpr = BLOCK_SIZE_N * B_PACKED_NUM if PACKED_B else BLOCK_SIZE_N
         B_OUT_BLOCKS_K = N // BLOCK_SIZE_N if TRANSPOSED_B else K // BLOCK_SIZE_K
         B_OUT_BLOCKS_N = K // BLOCK_SIZE_K if TRANSPOSED_B else N // BLOCK_SIZE_N
-        B_OUT_STRIDE_K: tl.constexpr = BLOCK_SIZE_N
         B_OUT_STRIDE_BLOCK_K = (K * BLOCK_SIZE_N if TRANSPOSED_B else BLOCK_SIZE_K * N)
         B_OUT_STRIDE_BLOCK_N: tl.constexpr = BLOCK_SIZE_K * BLOCK_SIZE_N
         for in_block_k in tl.range(in_block_m, K // BLOCK_SIZE_K, M // BLOCK_SIZE_M):
@@ -95,15 +102,28 @@ def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZ
             b_out_block_n = in_block_k if TRANSPOSED_B else in_block_n
             b_in_ptr = tl.make_block_ptr(base=in_b, shape=(K, N), strides=(N, 1),
                                          offsets=(in_block_k * BLOCK_SIZE_K, in_block_n * BLOCK_SIZE_N),
-                                         block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0))
-            b_out_ptr = tl.make_block_ptr(base=out_b,
-                                          shape=(B_OUT_BLOCKS_K, B_OUT_BLOCKS_N, BLOCK_SIZE_K, BLOCK_SIZE_N),
-                                          strides=(B_OUT_STRIDE_BLOCK_K, B_OUT_STRIDE_BLOCK_N, B_OUT_STRIDE_K, 1),
-                                          offsets=(b_out_block_k, b_out_block_n, 0, 0),
-                                          block_shape=(1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N), order=(3, 2, 1, 0))
-            val = tl.load(b_in_ptr)
-            val = tl.reshape(val, (1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N))
-            tl.store(b_out_ptr, val)
+                                         block_shape=(1, BLOCK_SIZE_N), order=(1, 0))
+            b_out_ptr = tl.make_block_ptr(
+                base=out_b, shape=(B_OUT_BLOCKS_K, B_OUT_BLOCKS_N, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N),
+                strides=(B_OUT_STRIDE_BLOCK_K, B_OUT_STRIDE_BLOCK_N, PACKED_BLOCK_SIZE_N, 1),
+                offsets=(b_out_block_k, b_out_block_n, 0, 0), block_shape=(1, 1, 1, PACKED_BLOCK_SIZE_N),
+                order=(3, 2, 1, 0))
+            for i in tl.range(0, BLOCK_SIZE_K // B_PACKED_NUM):
+                row1 = tl.load(b_in_ptr).reshape((BLOCK_SIZE_N, ))
+                if B_PACKED_NUM > 1:
+                    b_in_ptr = tl.advance(b_in_ptr, (1, 0))
+                    row2 = tl.load(b_in_ptr).reshape((BLOCK_SIZE_N, ))
+                    if B_PACKED_NUM > 2:
+                        b_in_ptr = tl.advance(b_in_ptr, (1, 0))
+                        row3 = tl.load(b_in_ptr).reshape((BLOCK_SIZE_N, ))
+                        b_in_ptr = tl.advance(b_in_ptr, (1, 0))
+                        row4 = tl.load(b_in_ptr).reshape((BLOCK_SIZE_N, ))
+                        row1 = tl.ravel(tl.join(row1, row3))
+                        row2 = tl.ravel(tl.join(row2, row4))
+                    row1 = tl.ravel(tl.join(row1, row2))
+                tl.store(b_out_ptr, row1.reshape((1, 1, 1, PACKED_BLOCK_SIZE_N)))
+                b_in_ptr = tl.advance(b_in_ptr, (1, 0))
+                b_out_ptr = tl.advance(b_out_ptr, (0, 0, 1, 0))
 
 
 # Matmul kernel that computes a single output block [BLOCK_SIZE_M, BLOCK_SIZE_N]. LHS can be in the
@@ -125,7 +145,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOC
                   BLOCK_SIZE_K: tl.constexpr,
                   # number of blocks in a group
                   GROUP_SIZE_M: tl.constexpr, BLOCKED_A: tl.constexpr, TRANSPOSED_BLOCK_A: tl.constexpr,
-                  BLOCKED_B: tl.constexpr, TRANSPOSED_B: tl.constexpr):
+                  BLOCKED_B: tl.constexpr, TRANSPOSED_B: tl.constexpr, PACKED_B: tl.constexpr, OUT_DTYPE: tl.constexpr):
     # TRANSPOSED_BLOCK_A means that each block in A is transposed.
     # It is allowed only for blocked input.
     assert (BLOCKED_A or not TRANSPOSED_BLOCK_A)
@@ -151,37 +171,43 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOC
     a_stride_block_k = A_BLOCK_SIZE_M * A_BLOCK_SIZE_K if BLOCKED_A else A_BLOCK_SIZE_K
     a_stride_block_m = BLOCK_SIZE_M * K
 
+    B_PACKED_NUM: tl.constexpr = 32 // b_ptr.type.element_ty.primitive_bitwidth if PACKED_B else 1
+    PACKED_BLOCK_SIZE_K: tl.constexpr = BLOCK_SIZE_K // B_PACKED_NUM if PACKED_B else BLOCK_SIZE_K
+    PACKED_BLOCK_SIZE_N: tl.constexpr = BLOCK_SIZE_N * B_PACKED_NUM if PACKED_B else BLOCK_SIZE_N
+    assert BLOCKED_B or not TRANSPOSED_B
     b_stride_n = 1
-    b_stride_k = BLOCK_SIZE_N if BLOCKED_B else N
+    b_stride_k = PACKED_BLOCK_SIZE_N if BLOCKED_B else N * B_PACKED_NUM
     if TRANSPOSED_B:
         b_stride_block_n = BLOCK_SIZE_N * K
         b_stride_block_k = BLOCK_SIZE_K * BLOCK_SIZE_N
     else:
-        b_stride_block_n = BLOCK_SIZE_K * BLOCK_SIZE_N if BLOCKED_B else BLOCK_SIZE_N
+        b_stride_block_n = BLOCK_SIZE_K * BLOCK_SIZE_N if BLOCKED_B else PACKED_BLOCK_SIZE_N
         b_stride_block_k = BLOCK_SIZE_K * N
 
     a_block_ptr = tl.make_block_ptr(base=a_ptr, shape=(A_BLOCKS_M, A_BLOCKS_K, A_BLOCK_SIZE_M, A_BLOCK_SIZE_K),
                                     strides=(a_stride_block_m, a_stride_block_k, a_stride_m, a_stride_k),
                                     offsets=(block_m, 0, 0, 0), block_shape=(1, 1, A_BLOCK_SIZE_M, A_BLOCK_SIZE_K),
                                     order=(3, 2, 1, 0))
-    b_block_ptr = tl.make_block_ptr(base=b_ptr,
-                                    shape=(K // BLOCK_SIZE_K, N // BLOCK_SIZE_N, BLOCK_SIZE_K, BLOCK_SIZE_N),
-                                    strides=(b_stride_block_k, b_stride_block_n, b_stride_k, b_stride_n),
-                                    offsets=(0, block_n, 0, 0), block_shape=(1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N),
-                                    order=(3, 2, 1, 0))
+    b_block_ptr = tl.make_block_ptr(
+        base=b_ptr, shape=(K // BLOCK_SIZE_K, N // BLOCK_SIZE_N, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N),
+        strides=(b_stride_block_k, b_stride_block_n, b_stride_k, b_stride_n), offsets=(0, block_n, 0, 0),
+        block_shape=(1, 1, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N), order=(3, 2, 1, 0))
     c_block_ptr = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(N, 1),
                                     offsets=(block_m * BLOCK_SIZE_M, block_n * BLOCK_SIZE_N),
                                     block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
 
-    c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=OUT_DTYPE)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_block_ptr).reshape((A_BLOCK_SIZE_M, A_BLOCK_SIZE_K))
-        b = tl.load(b_block_ptr).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N))
+        b = tl.load(b_block_ptr).reshape((PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N))
 
         if TRANSPOSED_BLOCK_A:
             a = a.T
 
-        c += tl.dot(a, b, out_dtype=tl.float32)
+        if PACKED_B:
+            b = tl.extra.cpu.vnni_decode(b)
+
+        c += tl.dot(a, b, out_dtype=OUT_DTYPE)
 
         a_block_ptr = tl.advance(a_block_ptr, (0, 1, 0, 0))
         b_block_ptr = tl.advance(b_block_ptr, (1, 0, 0, 0))
@@ -190,7 +216,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOC
 
 
 def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, bb: torch.Tensor, M, N, K, PREPACKED,
-           BLOCKED_A, TRANSPOSED_BLOCK_A, BLOCKED_B, TRANSPOSED_B, num_threads=0):
+           BLOCKED_A, TRANSPOSED_BLOCK_A, BLOCKED_B, TRANSPOSED_B, PACKED_B, num_threads=0):
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
         K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
@@ -203,7 +229,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
             BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
             GROUP_SIZE_M=GROUP_SIZE_M,  #
             BLOCKED_A=BLOCKED_A, TRANSPOSED_BLOCK_A=TRANSPOSED_BLOCK_A,  #
-            BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B)
+            BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B)
         if BLOCKED_A:
             a = ab
         if BLOCKED_B:
@@ -214,7 +240,8 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
         BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         BLOCKED_A=BLOCKED_A, TRANSPOSED_BLOCK_A=TRANSPOSED_BLOCK_A,  #
-        BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, num_threads=num_threads)
+        BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B,  #
+        OUT_DTYPE=tl.float32 if a.dtype.is_floating_point else tl.int32, num_threads=num_threads)
     return c
 
 
@@ -227,13 +254,17 @@ torch.manual_seed(0)
 
 triton.runtime.driver.set_active_to_cpu()
 
-a = torch.randn((512, 512), device='cpu', dtype=torch.float32)
-b = torch.randn((512, 512), device='cpu', dtype=torch.float32)
-c = torch.empty((512, 512), device='cpu', dtype=torch.float32)
-torch_output = torch.matmul(a, b)
+if in_dtype.is_floating_point:
+    a = torch.randn((512, 512), device='cpu', dtype=in_dtype)
+    b = torch.randn((512, 512), device='cpu', dtype=in_dtype)
+else:
+    a = torch.randint(0, 5, (512, 512), device='cpu', dtype=in_dtype)
+    b = torch.randint(0, 5, (512, 512), device='cpu', dtype=in_dtype)
+c = torch.empty((512, 512), device='cpu', dtype=out_dtype)
+torch_output = torch.matmul(a.to(out_dtype), b.to(out_dtype))
 rtol = 0
-a_tmp = torch.zeros((512 * 512 + (512 // BLOCK_SIZE_M) * (512 // BLOCK_SIZE_K) * 64), device='cpu', dtype=torch.float32)
-b_tmp = torch.zeros((512 * 512 + (512 // BLOCK_SIZE_K) * (512 // BLOCK_SIZE_N) * 64), device='cpu', dtype=torch.float32)
+a_tmp = torch.zeros((512 * 512 + (512 // BLOCK_SIZE_M) * (512 // BLOCK_SIZE_K) * 64), device='cpu', dtype=in_dtype)
+b_tmp = torch.zeros((512 * 512 + (512 // BLOCK_SIZE_K) * (512 // BLOCK_SIZE_N) * 64), device='cpu', dtype=in_dtype)
 triton_output = matmul(a, b, c, a_tmp, b_tmp, 512, 512, 512, True, False, False, False, False, False)
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
@@ -241,7 +272,7 @@ else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
     assert False
-triton_output = matmul(a, b, c, a_tmp, b_tmp, 512, 512, 512, False, True, True, True, True, True)
+triton_output = matmul(a, b, c, a_tmp, b_tmp, 512, 512, 512, False, True, True, True, True, DTYPE != "float32")
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU pre-packed and TorchCPU match")
 else:
@@ -260,13 +291,13 @@ else:
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
 
-def encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, prepack, single_thread, dtype):
-    assert dtype == 'float32' or dtype == 'bfloat16' or dtype == 'float16'
-    return f"triton-cpu{'-ba' if blocked_a else ''}{'-ta' if transposed_a else ''}{'-bb' if blocked_b else ''}{'-tb' if transposed_b else ''}{'-prepack' if prepack else ''}{'-st' if single_thread else ''}-{dtype}"
+def encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype):
+    assert dtype == 'float32' or dtype == 'bfloat16' or dtype == 'float16' or dtype == 'int8'
+    return f"triton-cpu{'-ba' if blocked_a else ''}{'-ta' if transposed_a else ''}{'-bb' if blocked_b else ''}{'-tb' if transposed_b else ''}{'-pb' if packed_b else ''}{'-prepack' if prepack else ''}{'-st' if single_thread else ''}-{dtype}"
 
 
 def encode_torch_provider(single_thread, dtype):
-    assert dtype == 'float32' or dtype == 'bfloat16' or dtype == 'float16'
+    assert dtype == 'float32' or dtype == 'bfloat16' or dtype == 'float16' or dtype == 'int8'
     return f"torch-cpu-native{'-st' if single_thread else ''}-{dtype}"
 
 
@@ -277,28 +308,30 @@ def decode_provider(provider):
         dtype = torch.float16
     elif '-float32' in provider:
         dtype = torch.float32
+    elif '-int8' in provider:
+        dtype = torch.int8
     if 'triton-cpu' in provider:
         backend = 'triton-cpu'
     elif 'torch-cpu-native' in provider:
         backend = 'torch-cpu-native'
     elif 'torch-cpu-compile' in provider:
         backend = 'torch-cpu-compile'
-    return backend, '-ba' in provider, '-ta' in provider, '-bb' in provider, '-tb' in provider, '-prepack' in provider, '-st' in provider, dtype
+    return backend, '-ba' in provider, '-ta' in provider, '-bb' in provider, '-tb' in provider, '-pb' in provider, '-prepack' in provider, '-st' in provider, dtype
 
 
 BLOCK_TRANSPOSE_A_OPTS = [(False, False)]
-BLOCK_TRANSPOSE_B_OPTS = [(True, True), (False, False)]
+BLOCK_TRANSPOSE_PACK_B_OPTS = [(True, True, True), (True, True, False), (False, False, False)]
 PREPACK_OPTS = [False, True]
 SINGLE_THREAD_OPTS = [False]
 DTYPE_OPTS = [DTYPE]
 LINE_VALS = [
-    encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, prepack, single_thread, dtype)
+    encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype)
     for single_thread in SINGLE_THREAD_OPTS
     for blocked_a, transposed_a in BLOCK_TRANSPOSE_A_OPTS
-    for blocked_b, transposed_b in BLOCK_TRANSPOSE_B_OPTS
+    for blocked_b, transposed_b, packed_b in BLOCK_TRANSPOSE_PACK_B_OPTS
     for prepack in PREPACK_OPTS
     for dtype in DTYPE_OPTS
-    if blocked_a or blocked_b or not prepack
+    if (blocked_a or blocked_b or not prepack) and (not packed_b or dtype != "float32")
 ] + [encode_torch_provider(single_thread, dtype) for dtype in DTYPE_OPTS for single_thread in SINGLE_THREAD_OPTS]
 LINE_NAMES = LINE_VALS
 LINE_STYLES = None
@@ -323,9 +356,14 @@ default_num_threads = torch.get_num_threads()
 def benchmark(M, N, K, provider):
 
     device = 'cpu' if 'cpu' in provider else 'cuda'
-    backend, blocked_a, transposed_a, blocked_b, transposed_b, prepack, single_thread, dtype = decode_provider(provider)
-    a = torch.randn((M, K), device=device, dtype=dtype)
-    b = torch.randn((K, N), device=device, dtype=dtype)
+    backend, blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype = decode_provider(
+        provider)
+    if dtype.is_floating_point:
+        a = torch.randn((M, K), device=device, dtype=dtype)
+        b = torch.randn((K, N), device=device, dtype=dtype)
+    else:
+        a = torch.randint(0, 5, (M, K), device=device, dtype=dtype)
+        b = torch.randint(0, 5, (K, N), device=device, dtype=dtype)
 
     if single_thread:
         torch.set_num_threads(1)
@@ -333,10 +371,10 @@ def benchmark(M, N, K, provider):
         torch.set_num_threads(default_num_threads)
 
     if backend == 'triton-cpu':
-        c = torch.zeros((M, N), device=a.device, dtype=torch.float32)
+        c = torch.zeros((M, N), device=a.device, dtype=out_dtype)
         a_tmp = torch.zeros((M * K + (M // BLOCK_SIZE_M) * (K // BLOCK_SIZE_K) * 64), device=device, dtype=dtype)
         b_tmp = torch.zeros((K * N + (K // BLOCK_SIZE_K) * (N // BLOCK_SIZE_N) * 64), device=device, dtype=dtype)
-        c = torch.zeros((M, N), device=a.device, dtype=torch.float32)
+        c = torch.zeros((M, N), device=a.device, dtype=out_dtype)
         if prepack and (blocked_a or blocked_b):
             grid = ((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )
             block_transpose_combined_kernel[grid](
@@ -345,7 +383,7 @@ def benchmark(M, N, K, provider):
                 BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
                 GROUP_SIZE_M=GROUP_SIZE_M,  #
                 BLOCKED_A=blocked_a, TRANSPOSED_BLOCK_A=transposed_a,  #
-                BLOCKED_B=blocked_b, TRANSPOSED_B=transposed_b)
+                BLOCKED_B=blocked_b, TRANSPOSED_B=transposed_b, PACKED_B=packed_b)
             if blocked_a:
                 a = a_tmp
             if blocked_b:
@@ -362,7 +400,8 @@ def benchmark(M, N, K, provider):
     elif backend == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: matmul(a, b, c, a_tmp, b_tmp, M, N, K, prepack, blocked_a, transposed_a, blocked_b, transposed_b,
-                           num_threads=int(single_thread)), quantiles=quantiles, measure_time_with_hooks=True, rep=1000)
+                           packed_b, num_threads=int(single_thread)), quantiles=quantiles, measure_time_with_hooks=True,
+            rep=1000)
     perf = lambda ms: 2 * M * N * K * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
