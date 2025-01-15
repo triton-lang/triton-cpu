@@ -306,10 +306,7 @@ convertCandidate(DotOpCandidate &candidate,
     }
     // Currently, acc always needs to be FP32.
     accToStore = maybeCast(loc, accToStore, rewriter.getF32Type(), rewriter);
-    auto vecTy = cast<VectorType>(accToStore.getType());
-    // Using heap as resBuffer can be pretty big.
-    accBuf = allocateTmpBufferHeap(loc, vecTy, allocaPoint, rewriter);
-    op_write(accToStore, accBuf.memRef, accBuf.indices);
+    accBuf = storeToTmpBuffer(loc, accToStore, allocaPoint, rewriter);
   }
 
   auto metadataA = rewriter.create<memref::ExtractStridedMetadataOp>(

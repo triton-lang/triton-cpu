@@ -53,10 +53,6 @@ EXPORT void *create_brgemm_ukernel(int64_t M, int64_t N, int64_t K_k,
                                    int64_t ldc, int64_t dtypeA, int64_t dtypeB,
                                    int64_t dtypeC) {
   using KeyT = std::array<int64_t, 10>;
-  // std::cout << "Args: M - " << M << ", N - " << N << ", K - " << K_k
-  //           << ", batch - " << batch_size << ", lda - " << lda << ", ldb - "
-  //           << ldb << ", ldc - " << ldc << ", dtype a - " << dtypeA
-  //           << ", dtype b - " << dtypeB << ", dtype c - " << dtypeC << "\n";
   KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
   static std::map<KeyT, dnnl::ukernel::brgemm> savedUkernels;
@@ -135,6 +131,14 @@ EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
   return &it.first->second;
 }
 
+void print_arr(uint8_t *ptr) {
+  std::cout << "[";
+  for (int i_b = 0; i_b < 100; i_b++) {
+    std::cout << " " << unsigned(ptr[i_b]);
+  }
+  std::cout << "]\n";
+}
+
 EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
                      void *original_B_ptr, void *C_ptr, // void *scratchpad,
                      int64_t A_step_in_bytes, int64_t B_step_in_bytes,
@@ -142,7 +146,7 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
                      bool skip_packing = false) {
 
   uint8_t *blocked_data = (uint8_t *)original_B_ptr;
-  uint8_t *B_ptr_calc = (uint8_t *)original_B_ptr;
+  const uint8_t *B_ptr_calc = reinterpret_cast<const uint8_t *>(original_B_ptr);
 
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
   auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
@@ -151,7 +155,6 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
       brg->get_B_pack_type() == pack_type::pack32 && !skip_packing;
   if (need_packing) {
     blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
-    pack_B->execute(original_B_ptr, blocked_data);
   }
 
   brg->set_hw_context();
@@ -180,7 +183,7 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   dnnl::ukernel::brgemm::release_hw_context();
 
   if (need_packing) {
-    delete blocked_data;
+    delete[] blocked_data;
   };
 }
 

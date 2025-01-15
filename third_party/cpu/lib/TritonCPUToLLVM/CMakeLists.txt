@@ -16,5 +16,3 @@ add_triton_library(TritonCPUToLLVM
     LINK_LIBS PUBLIC
     MLIRVectorToLLVMPass
 )
-
-set_source_files_properties(OneDNNOpsToLLVM.cpp PROPERTIES COMPILE_FLAGS "-Wall")

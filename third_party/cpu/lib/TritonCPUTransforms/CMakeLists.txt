@@ -14,5 +14,3 @@ add_triton_library(TritonCPUTransforms
     DEPENDS
     TritonCPUTransformsPassIncGen
 )
-
-set_source_files_properties(ConvertDotOp/ConvertDotToOneDNN.cpp PROPERTIES COMPILE_FLAGS "-Wall")

@@ -150,12 +150,12 @@ else()
 endif()
 
 include_directories(".")
-include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
-include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
-include_directories(SYSTEM ${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
+include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
 # link_directories(${LLVM_LIBRARY_DIR})
 add_subdirectory(include)
