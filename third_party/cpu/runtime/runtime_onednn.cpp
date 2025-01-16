@@ -27,20 +27,16 @@ using namespace dnnl;
 using namespace dnnl::ukernel;
 #endif
 
-namespace dnnl {
-namespace impl {
-namespace graph {
-namespace utils {
-// dummy definition for DNNL lite linkage
-__attribute__((weak)) void print_verbose_header() {}
-} // namespace utils
-} // namespace graph
-} // namespace impl
-} // namespace dnnl
-
-static constexpr int PALETTE_SIZE = 64;
-static constexpr int DEFAULT_KERNEL_SIZE = 1024;
-static constexpr int MAX_KERNEL_SIZE = 2048;
+// namespace dnnl {
+// namespace impl {
+// namespace graph {
+// namespace utils {
+// // dummy definition for DNNL lite linkage
+// __attribute__((weak)) void print_verbose_header() {}
+// } // namespace utils
+// } // namespace graph
+// } // namespace impl
+// } // namespace dnnl
 
 using read_lock_guard_t = std::shared_lock<std::shared_mutex>;
 using write_lock_guard_t = std::unique_lock<std::shared_mutex>;
@@ -140,12 +136,11 @@ void print_arr(uint8_t *ptr) {
 }
 
 EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
-                     void *original_B_ptr, void *C_ptr, // void *scratchpad,
-                     int64_t A_step_in_bytes, int64_t B_step_in_bytes,
-                     int64_t B_block_size_in_bytes, int64_t num_batches,
-                     bool skip_packing = false) {
+                     void *original_B_ptr, void *C_ptr, int64_t A_step_in_bytes,
+                     int64_t B_step_in_bytes, int64_t B_block_size_in_bytes,
+                     int64_t num_batches, bool skip_packing = false) {
 
-  uint8_t *blocked_data = (uint8_t *)original_B_ptr;
+  uint8_t *blocked_data = reinterpret_cast<uint8_t *>(original_B_ptr);
   const uint8_t *B_ptr_calc = reinterpret_cast<const uint8_t *>(original_B_ptr);
 
   auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
@@ -185,45 +180,6 @@ EXPORT void call_all(const void *transform_k, const void *brg_k, void *A_ptr,
   if (need_packing) {
     delete[] blocked_data;
   };
-}
-
-EXPORT void call_transform(const void *transform_k, const void *original_data,
-                           void *blocked_data) {
-  assert(false && "Not tested");
-  auto pack_B = reinterpret_cast<const dnnl::ukernel::transform *>(transform_k);
-  pack_B->execute(original_data, blocked_data);
-}
-
-EXPORT void prepare_hw_context(const void *brg_k) {
-  assert(false && "Not tested");
-  auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
-  brg->set_hw_context();
-}
-
-EXPORT void call_brgemm(const void *brg_k, void *A_ptr, void *B_ptr,
-                        void *C_ptr, void *scratchpad, int64_t A_step_in_bytes,
-                        int64_t B_step_in_bytes, int64_t num_batches) {
-  assert(false && "Not tested");
-  std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
-  for (memory::dim i = 0; i < num_batches; i++) {
-    const memory::dim A_offset_i =
-        i * A_step_in_bytes; // * a_dt_size; // K_k * a_dt_size;
-    const memory::dim B_offset_i =
-        i * B_step_in_bytes; // * b_dt_size; // N * K_k * b_dt_size;
-    A_B_offsets[i] = std::make_pair(A_offset_i, B_offset_i);
-  }
-
-  auto brg = reinterpret_cast<const dnnl::ukernel::brgemm *>(brg_k);
-
-  size_t scratchpad_size = brg->get_scratchpad_size();
-  std::vector<float> scratchpad_sm(scratchpad_size);
-  brg->execute(A_ptr, B_ptr, A_B_offsets, C_ptr, scratchpad_sm.data());
-}
-
-// at the end of execution
-EXPORT void release_hw_context() {
-  assert(false && "Not tested");
-  dnnl::ukernel::brgemm::release_hw_context();
 }
 
 } // extern C

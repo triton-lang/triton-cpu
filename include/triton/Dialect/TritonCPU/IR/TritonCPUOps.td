@@ -214,38 +214,6 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
   let results = (outs Index:$result);
 }
 
-def TTC_BrgemmCall : TTC_Op<"brgemm_call",
-    [MemoryEffects<[MemRead<GlobalMemory>,
-                    MemWrite<GlobalMemory>]>]> {
-  let summary = "";
-
-  let description = [{}];
-
-  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins
-    Index:$kernel_hash,
-    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
-    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
-    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
-    Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
-
-    Index:$stepA,
-    Index:$stepB,
-    Index:$numBatches
-  );
-}
-
-def TTC_BrgemmNeedsPacking : TTC_Op<"brgemm_needs_packing",
-    [MemoryEffects<[MemRead<GlobalMemory>]>]> {
-  let summary = "";
-
-  let arguments = (ins
-    Index:$kernel_hash
-  );
-
-  let results = (outs BoolLike:$result);
-}
-
 def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
     [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
@@ -257,8 +225,6 @@ def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
     Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
     Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
     Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
-    // Arg<AnyMemRef, "", [MemWrite]>:$scratchpad,
-
     AnyTypeOf<[AnyInteger, Index]>:$stepA,
     AnyTypeOf<[AnyInteger, Index]>:$stepB,
     AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
@@ -283,39 +249,6 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   );
 
   let results = (outs Index:$result);
-}
-
-def TTC_TransformCall : TTC_Op<"transform_call",
-    [MemoryEffects<[MemRead<GlobalMemory>,
-                    MemWrite<GlobalMemory>]>]> {
-  let summary = "";
-
-  let description = [{}];
-
-  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins
-    Index:$kernel_hash,
-    Arg<AnyMemRef, "", [MemRead]>:$in_ptr,
-    Arg<AnyMemRef, "", [MemWrite]>:$out_blocked_ptr
-  );
-}
-
-def TTC_ConfigureHW : TTC_Op<"configure_hw", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
-  let summary = "";
-
-  let description = [{}];
-
-  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins Index:$brgemm_kernel_hash);
-}
-
-def TTC_ReleaseHW : TTC_Op<"release_hw", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
-  let summary = "";
-
-  let description = [{}];
-
-  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
-  let arguments = (ins);
 }
 
 #endif

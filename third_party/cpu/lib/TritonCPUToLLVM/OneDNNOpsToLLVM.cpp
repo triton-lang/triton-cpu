@@ -125,35 +125,6 @@ struct TransformCreateConversion
   };
 };
 
-struct TransformCallConversion : public ConvertOpToLLVMPattern<TransformCall> {
-  using ConvertOpToLLVMPattern<TransformCall>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(TransformCall transformOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    auto loc = transformOp.getLoc();
-    auto ctx = rewriter.getContext();
-
-    std::string invokeName = "call_transform";
-
-    auto transformArgs =
-        SmallVector<Value>{adaptor.getKernelHash(), adaptor.getInPtr(),
-                           adaptor.getOutBlockedPtr()};
-    auto transformArgTypes = SmallVector<Type>{
-        adaptor.getKernelHash().getType(), adaptor.getInPtr().getType(),
-        adaptor.getOutBlockedPtr().getType()};
-
-    auto dispatched = LLVM::createLLVMCallOp(
-        rewriter, loc,
-        getFuncDecl(rewriter, invokeName, transformArgTypes, void_ty(ctx)),
-        transformArgs);
-
-    rewriter.replaceOp(transformOp, dispatched);
-    return success();
-  };
-};
-
 struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
   using ConvertOpToLLVMPattern<BrgemmCreate>::ConvertOpToLLVMPattern;
 
@@ -189,45 +160,6 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
         brgemmArgs);
 
     rewriter.replaceOp(brgemmOp, dispatched.getResult());
-    return success();
-  };
-};
-
-struct BrgemmCallConversion : public ConvertOpToLLVMPattern<BrgemmCall> {
-  using ConvertOpToLLVMPattern<BrgemmCall>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(BrgemmCall brgemmOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    auto loc = brgemmOp.getLoc();
-    auto ctx = rewriter.getContext();
-
-    std::string invokeName = "call_brgemm";
-
-    auto kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
-        loc, ptr_ty(ctx), adaptor.getKernelHash());
-
-    auto brgemmArgs = SmallVector<Value>{
-        kernel_hash_ptr,
-        MemRefDescriptor(adaptor.getAPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getBPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getCPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getScratchpad()).alignedPtr(rewriter, loc),
-        adaptor.getStepA(),
-        adaptor.getStepB(),
-        adaptor.getNumBatches()};
-
-    auto brgemmArgTypes =
-        SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
-                          ptr_ty(ctx), i64_ty,      i64_ty,      i64_ty};
-
-    auto dispatched = LLVM::createLLVMCallOp(
-        rewriter, loc,
-        getFuncDecl(rewriter, invokeName, brgemmArgTypes, void_ty(ctx)),
-        brgemmArgs);
-
-    rewriter.replaceOp(brgemmOp, dispatched);
     return success();
   };
 };
@@ -275,55 +207,6 @@ struct CallBrgemmWithTransformConversion
   };
 };
 
-struct ConfigureHWConversion : public ConvertOpToLLVMPattern<ConfigureHW> {
-  using ConvertOpToLLVMPattern<ConfigureHW>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(ConfigureHW configureHwOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = configureHwOp.getLoc();
-    auto ctx = rewriter.getContext();
-
-    std::string invokeName = "prepare_hw_context";
-
-    auto configureArgs = SmallVector<Value>{adaptor.getBrgemmKernelHash()};
-    auto configureArgTypes = SmallVector<Type>{
-        getTypeConverter()->convertType(configureHwOp.getOperand().getType())};
-
-    auto dispatched = LLVM::createLLVMCallOp(
-        rewriter, loc,
-        getFuncDecl(rewriter, invokeName, configureArgTypes, void_ty(ctx)),
-        configureArgs);
-
-    rewriter.replaceOp(configureHwOp, dispatched);
-    return success();
-  };
-};
-
-struct ReleaseHWConversion : public ConvertOpToLLVMPattern<ReleaseHW> {
-  using ConvertOpToLLVMPattern<ReleaseHW>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(ReleaseHW releaseHwOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = releaseHwOp.getLoc();
-    auto ctx = rewriter.getContext();
-
-    std::string invokeName = "release_hw_context";
-
-    SmallVector<Value> releaseArgs{};
-    SmallVector<Type> releaseArgTypes{};
-
-    auto dispatched = LLVM::createLLVMCallOp(
-        rewriter, loc,
-        getFuncDecl(rewriter, invokeName, releaseArgTypes, void_ty(ctx)),
-        releaseArgs);
-
-    rewriter.replaceOp(releaseHwOp, dispatched);
-    return success();
-  };
-};
-
 struct OneDNNOpsToLLVM
     : public triton::cpu::impl::OneDNNOpsToLLVMBase<OneDNNOpsToLLVM> {
   OneDNNOpsToLLVM() = default;
@@ -344,9 +227,7 @@ struct OneDNNOpsToLLVM
 
     RewritePatternSet patterns(context);
 
-    patterns.add<TransformCreateConversion, TransformCallConversion,
-                 BrgemmCreateConversion, BrgemmCallConversion,
-                 ConfigureHWConversion, ReleaseHWConversion,
+    patterns.add<TransformCreateConversion, BrgemmCreateConversion,
                  CallBrgemmWithTransformConversion>(typeConverter);
 
     if (failed(applyPartialConversion(mod, conversionTarget,
