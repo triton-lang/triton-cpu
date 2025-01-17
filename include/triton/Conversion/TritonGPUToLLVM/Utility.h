@@ -304,7 +304,7 @@ struct SharedMemoryObject {
   }
 
   Value getCSwizzleOffset(int order) const {
-    assert(order >= 0 && order < static_cast<int>(strides.size()));
+    assert(order >= 0 && order < strides.size());
     return offsets[order];
   }
 
@@ -512,6 +512,7 @@ inline SmallVector<Value>
 emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
                                        const BlockedEncodingAttr &blockedLayout,
                                        RankedTensorType type) {
+  MLIRContext *ctx = rewriter.getContext();
   auto shape = type.getShape();
   Value threadId = getThreadId(rewriter, loc);
   Value warpSize = i32_val(triton::gpu::getWarpSize(blockedLayout));
@@ -556,6 +557,7 @@ emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
 inline SmallVector<SmallVector<unsigned>>
 emitOffsetForBlockedLayout(const BlockedEncodingAttr &blockedLayout,
                            RankedTensorType type) {
+  auto ctx = type.getContext();
   auto shape = type.getShape();
   auto sizePerThread = blockedLayout.getSizePerThread();
   auto threadsPerWarp = blockedLayout.getThreadsPerWarp();
@@ -1203,8 +1205,9 @@ inline DenseMap<unsigned, Value> getSwizzledSharedPtrs(
   // Order
   auto inOrder = triton::gpu::getOrder(srcEncoding);
   auto outOrder = triton::gpu::getOrder(resSharedLayout);
-  assert((maxPhase == 1 || outVec * maxPhase <= srcShape[outOrder[0]]) &&
-         "Swizzling would generate out of bounds memory accesses");
+  assert(maxPhase == 1 ||
+         outVec * maxPhase <= srcShape[outOrder[0]] &&
+             "Swizzling would generate out of bounds memory accesses");
   // Tensor indices held by the current thread, as LLVM values
   auto srcIndices = emitIndices(loc, rewriter, target, srcEncoding, srcTy,
                                 /*withCTAOffset=*/false);
@@ -1421,7 +1424,7 @@ inline Value packLLVector(Location loc, ValueRange vals,
   assert(vals.size() > 0);
   auto vecType = vec_ty(vals[0].getType(), vals.size());
   Value vec = undef(vecType);
-  for (int i = 0; i < static_cast<int>(vals.size()); i++) {
+  for (int i = 0; i < vals.size(); i++) {
     vec = insert_element(vec, vals[i], i32_val(i));
   }
   return vec;

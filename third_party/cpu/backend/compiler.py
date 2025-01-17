@@ -165,6 +165,7 @@ class CPUBackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
         if cpu.onednn_available():
+            print("Uses OneDNN")
             cpu.passes.ttcpuir.add_convert_dot_to_onednn(pm, True)
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)

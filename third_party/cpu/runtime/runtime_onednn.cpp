@@ -27,17 +27,6 @@ using namespace dnnl;
 using namespace dnnl::ukernel;
 #endif
 
-// namespace dnnl {
-// namespace impl {
-// namespace graph {
-// namespace utils {
-// // dummy definition for DNNL lite linkage
-// __attribute__((weak)) void print_verbose_header() {}
-// } // namespace utils
-// } // namespace graph
-// } // namespace impl
-// } // namespace dnnl
-
 using read_lock_guard_t = std::shared_lock<std::shared_mutex>;
 using write_lock_guard_t = std::unique_lock<std::shared_mutex>;
 static std::shared_mutex g_brgemm_lock;

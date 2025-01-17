@@ -182,12 +182,13 @@ struct CallBrgemmWithTransformConversion
     auto brgemm_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
         loc, ptr_ty(ctx), adaptor.getBrgemmKernelHash());
 
+    llvm::errs() << "ptr types: " << adaptor.getAPtr() << " " << adaptor.getBPtr() << " " << adaptor.getCPtr() << "\n";
     auto brgemmArgs = SmallVector<Value>{
         tf_kernel_hash_ptr,
         brgemm_kernel_hash_ptr,
-        MemRefDescriptor(adaptor.getAPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getBPtr()).alignedPtr(rewriter, loc),
-        MemRefDescriptor(adaptor.getCPtr()).alignedPtr(rewriter, loc),
+        MemRefDescriptor(adaptor.getAPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getAPtr().getType())),
+        MemRefDescriptor(adaptor.getBPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getBPtr().getType())),
+        MemRefDescriptor(adaptor.getCPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getCPtr().getType())),
         adaptor.getStepA(),
         adaptor.getStepB(),
         adaptor.getBlockedBsize(),
