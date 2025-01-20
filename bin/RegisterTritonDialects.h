@@ -21,13 +21,16 @@
 #include "cpu/include/TritonCPUToLLVM/Passes.h"
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 #include "cpu/include/TritonToTritonCPU/Passes.h"
+#include "cpu/include/Xsmm/Passes.h"
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
 #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 
+#include "cpu/include/TritonRaiseBlockPointer/Passes.h"
 #include "mlir/Dialect/AMX/AMXDialect.h"
+
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/InitAllPasses.h"
@@ -79,6 +82,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::cpu::registerTritonCPUTransformsPasses();
   mlir::triton::cpu::registerTritonCPUToLLVMPasses();
   mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
+  mlir::triton::cpu::registerTritonCPUXsmmPasses();
+
+  mlir::triton::cpu::registerTritonRaiseBlockPointerPass();
 
   // TODO: register Triton & TritonGPU passes
   registry
