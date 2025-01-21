@@ -204,7 +204,6 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     AnyTypeOf<[AnyInteger, Index]>:$batch_size,
     AnyTypeOf<[AnyInteger, Index]>:$lda,
     AnyTypeOf<[AnyInteger, Index]>:$ldb,
-    AnyTypeOf<[AnyInteger, Index]>:$packed_ldb,
     AnyTypeOf<[AnyInteger, Index]>:$ldc,
     // TODO: Maybe Use properties
     TypeAttr:$dtypeA,
@@ -215,13 +214,12 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
   let results = (outs Index:$result);
 }
 
-def TTC_CallBrgemmWithTransform : TTC_Op<"pack_and_brgemm",
+def TTC_CallBrgemmWithTransform : TTC_Op<"brgemm_execute",
     [MemoryEffects<[MemRead<GlobalMemory>,
                     MemWrite<GlobalMemory>]>]> {
   let summary = "";
 
   let arguments = (ins
-    Index:$transform_kernel_hash,
     Index:$brgemm_kernel_hash,
     Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
     Arg<AnyMemRef, "", [MemRead]>:$B_ptr,

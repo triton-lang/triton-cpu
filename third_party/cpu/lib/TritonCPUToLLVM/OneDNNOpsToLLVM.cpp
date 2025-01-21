@@ -134,7 +134,7 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto loc = brgemmOp.getLoc();
     IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 
-    std::string dispatchName = "create_brgemm_ukernel";
+    std::string dispatchName = "create_brgemm";
 
     auto lhsDnnType = intLLVMConst(
         loc, integer64, getDnnlDataTypeVal(adaptor.getDtypeA()), rewriter);
@@ -146,11 +146,12 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto brgemmArgs =
         SmallVector<Value>{adaptor.getM(),   adaptor.getN(),
                            adaptor.getKK(),  adaptor.getBatchSize(),
-                           adaptor.getLda(), adaptor.getLdb(), adaptor.getPackedLdb(),
+                           adaptor.getLda(), adaptor.getLdb(),
                            adaptor.getLdc(), lhsDnnType,
                            rhsDnnType,       accDnnType};
-    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
-                                     i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
+    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty,
+                                     i64_ty, i64_ty, i64_ty, i64_ty,
+                                     i64_ty, i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
@@ -175,17 +176,13 @@ struct CallBrgemmWithTransformConversion
     auto loc = brgemmOp.getLoc();
     auto ctx = rewriter.getContext();
 
-    std::string invokeName = "call_all";
+    std::string invokeName = "brgemm_execute";
 
-    auto tf_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
-        loc, ptr_ty(ctx), adaptor.getTransformKernelHash());
     auto brgemm_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
         loc, ptr_ty(ctx), adaptor.getBrgemmKernelHash());
 
-    llvm::errs() << "ptr types: " << adaptor.getAPtr() << " "
-                 << adaptor.getBPtr() << " " << adaptor.getCPtr() << "\n";
     auto brgemmArgs = SmallVector<Value>{
-        tf_kernel_hash_ptr,
+        // tf_kernel_hash_ptr,
         brgemm_kernel_hash_ptr,
         MemRefDescriptor(adaptor.getAPtr())
             .bufferPtr(rewriter, loc, *getTypeConverter(),
@@ -201,9 +198,9 @@ struct CallBrgemmWithTransformConversion
         adaptor.getBlockedBsize(),
         adaptor.getNumBatches()};
 
-    auto brgemmArgTypes = SmallVector<Type>{
-        ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
-        i64_ty,      i64_ty,      i64_ty,      i64_ty};
+    auto brgemmArgTypes =
+        SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
+                          i64_ty,      i64_ty,      i64_ty,      i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,

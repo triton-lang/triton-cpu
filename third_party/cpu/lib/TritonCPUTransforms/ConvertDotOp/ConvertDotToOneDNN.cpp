@@ -343,16 +343,12 @@ convertCandidate(DotOpCandidate &candidate,
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
-      ldb, blockN, ldc, op.getA().getType(), op.getB().getType(),
+      ldb, ldc, op.getA().getType(), op.getB().getType(),
       rewriter.getF32Type());
 
   auto rhsTypeSize =
       int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
   Value rhsBlockSizeInBytes = op_muli(op_muli(blockN, blockK), rhsTypeSize);
-
-  Value transform = rewriter.create<triton::cpu::TransformCreate>(
-      loc, rewriter.getIndexType(), blockK, blockN, ldb, blockN,
-      op.getB().getType(), op.getB().getType());
 
   LDBG("[prepareResultBuffer] prepared acc buf: " << accBuf.memRef);
   LDBG("lhsBuf: {   memref "
@@ -373,12 +369,9 @@ convertCandidate(DotOpCandidate &candidate,
   Value rhsStepInBytes =
       computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
 
-  // auto accSubView = addSubViewToCalcTPtrInfo(rewriter, loc,
-  // candidate.op.getC(), accBuf.indices, accBuf.memRef);
-
   rewriter.create<triton::cpu::CallBrgemmWithTransform>(
-      loc, transform, brgemm, lhsSubView, rhsSubView, accBuf.memRef,
-      lhsStepInBytes, rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
+      loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
+      rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
 
   LDBG("Mod: " << *op.getOperation()->getParentOp()->getParentOp());
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
