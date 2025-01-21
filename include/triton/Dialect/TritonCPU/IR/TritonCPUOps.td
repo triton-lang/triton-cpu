@@ -204,6 +204,7 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     AnyTypeOf<[AnyInteger, Index]>:$batch_size,
     AnyTypeOf<[AnyInteger, Index]>:$lda,
     AnyTypeOf<[AnyInteger, Index]>:$ldb,
+    AnyTypeOf<[AnyInteger, Index]>:$packed_ldb,
     AnyTypeOf<[AnyInteger, Index]>:$ldc,
     // TODO: Maybe Use properties
     TypeAttr:$dtypeA,

@@ -146,10 +146,10 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto brgemmArgs =
         SmallVector<Value>{adaptor.getM(),   adaptor.getN(),
                            adaptor.getKK(),  adaptor.getBatchSize(),
-                           adaptor.getLda(), adaptor.getLdb(),
+                           adaptor.getLda(), adaptor.getLdb(), adaptor.getPackedLdb(),
                            adaptor.getLdc(), lhsDnnType,
                            rhsDnnType,       accDnnType};
-    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
+    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
                                      i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
@@ -182,13 +182,20 @@ struct CallBrgemmWithTransformConversion
     auto brgemm_kernel_hash_ptr = rewriter.create<LLVM::IntToPtrOp>(
         loc, ptr_ty(ctx), adaptor.getBrgemmKernelHash());
 
-    llvm::errs() << "ptr types: " << adaptor.getAPtr() << " " << adaptor.getBPtr() << " " << adaptor.getCPtr() << "\n";
+    llvm::errs() << "ptr types: " << adaptor.getAPtr() << " "
+                 << adaptor.getBPtr() << " " << adaptor.getCPtr() << "\n";
     auto brgemmArgs = SmallVector<Value>{
         tf_kernel_hash_ptr,
         brgemm_kernel_hash_ptr,
-        MemRefDescriptor(adaptor.getAPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getAPtr().getType())),
-        MemRefDescriptor(adaptor.getBPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getBPtr().getType())),
-        MemRefDescriptor(adaptor.getCPtr()).bufferPtr(rewriter, loc, *getTypeConverter(), cast<MemRefType>(brgemmOp.getCPtr().getType())),
+        MemRefDescriptor(adaptor.getAPtr())
+            .bufferPtr(rewriter, loc, *getTypeConverter(),
+                       cast<MemRefType>(brgemmOp.getAPtr().getType())),
+        MemRefDescriptor(adaptor.getBPtr())
+            .bufferPtr(rewriter, loc, *getTypeConverter(),
+                       cast<MemRefType>(brgemmOp.getBPtr().getType())),
+        MemRefDescriptor(adaptor.getCPtr())
+            .bufferPtr(rewriter, loc, *getTypeConverter(),
+                       cast<MemRefType>(brgemmOp.getCPtr().getType())),
         adaptor.getStepA(),
         adaptor.getStepB(),
         adaptor.getBlockedBsize(),

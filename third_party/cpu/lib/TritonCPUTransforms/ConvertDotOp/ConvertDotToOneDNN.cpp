@@ -140,7 +140,8 @@ bool isOneDNNCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate) {
   return true;
 }
 
-Value addSubViewToCalcTPtrInfo(PatternRewriter &rewriter, Location loc, Value vecVal, ValueRange indices, Value memRef) {
+Value addSubViewToCalcTPtrInfo(PatternRewriter &rewriter, Location loc,
+                               Value vecVal, ValueRange indices, Value memRef) {
   LDBG("  Reusing the original memref for a buffer: " << memRef);
   auto vecTy = cast<VectorType>(vecVal.getType());
   auto ctx = rewriter.getContext();
@@ -156,8 +157,7 @@ Value addSubViewToCalcTPtrInfo(PatternRewriter &rewriter, Location loc, Value ve
 
   Value memRef_view = rewriter.create<memref::SubViewOp>(
       loc, memRef, getAsOpFoldResult(indices),
-      getAsIndexOpFoldResult(ctx, shape),
-      getAsIndexOpFoldResult(ctx, strides));
+      getAsIndexOpFoldResult(ctx, shape), getAsIndexOpFoldResult(ctx, strides));
   return memRef_view;
 }
 
@@ -189,15 +189,17 @@ void replaceWholeLoop(DotOpCandidate &candidate,
   auto lhsMemRef = extractMemref(lhsTritonPtr);
   auto lhsIndices =
       rewriter.create<ExtractIndicesOp>(loc, lhsTritonPtr).getResults();
-  // auto lhsSubView = addSubViewToCalcTPtrInfo(candidate.op.getA(), lhsIndices, lhsMemRef);
-   candidate.lhsBuf.memRef = lhsMemRef;
+  // auto lhsSubView = addSubViewToCalcTPtrInfo(candidate.op.getA(), lhsIndices,
+  // lhsMemRef);
+  candidate.lhsBuf.memRef = lhsMemRef;
   candidate.lhsBuf.indices = lhsIndices;
 
   auto rhsTritonPtr = candidate.rhsBuf.origBlockPtr;
   auto rhsMemRef = extractMemref(rhsTritonPtr);
   auto rhsIndices =
       rewriter.create<ExtractIndicesOp>(loc, rhsTritonPtr).getResults();
-  // auto rhsSubView = addSubViewToCalcTPtrInfo(candidate.op.getB(), rhsIndices, rhsMemRef);
+  // auto rhsSubView = addSubViewToCalcTPtrInfo(candidate.op.getB(), rhsIndices,
+  // rhsMemRef);
   candidate.rhsBuf.memRef = rhsMemRef;
   candidate.rhsBuf.indices = rhsIndices;
 }
@@ -210,7 +212,8 @@ Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
 
   SmallVector<Value> strides = meta.getStrides();
   for (uint i = 0; i < strides.size(); i++) {
-    LDBG("[compute step]: " << i << "\n\tstride: " << strides[i] << "\n\tstep: " << steps[i]);
+    LDBG("[compute step]: " << i << "\n\tstride: " << strides[i]
+                            << "\n\tstep: " << steps[i]);
     Value stride = strides[i];
     Value step = steps[i];
     if (!step.getType().isIndex())
@@ -320,13 +323,17 @@ convertCandidate(DotOpCandidate &candidate,
     accBuf = storeToTmpBuffer(loc, accToStore, allocaPoint, rewriter);
   }
 
-  auto lhsSubView = addSubViewToCalcTPtrInfo(rewriter, loc, candidate.op.getA(), candidate.lhsBuf.indices, candidate.lhsBuf.memRef);
-  auto rhsSubView = addSubViewToCalcTPtrInfo(rewriter, loc, candidate.op.getB(), candidate.rhsBuf.indices, candidate.rhsBuf.memRef);
+  auto lhsSubView = addSubViewToCalcTPtrInfo(rewriter, loc, candidate.op.getA(),
+                                             candidate.lhsBuf.indices,
+                                             candidate.lhsBuf.memRef);
+  auto rhsSubView = addSubViewToCalcTPtrInfo(rewriter, loc, candidate.op.getB(),
+                                             candidate.rhsBuf.indices,
+                                             candidate.rhsBuf.memRef);
 
-  auto metadataA = rewriter.create<memref::ExtractStridedMetadataOp>(
-      loc, lhsSubView);
-  auto metadataB = rewriter.create<memref::ExtractStridedMetadataOp>(
-      loc, rhsSubView);
+  auto metadataA =
+      rewriter.create<memref::ExtractStridedMetadataOp>(loc, lhsSubView);
+  auto metadataB =
+      rewriter.create<memref::ExtractStridedMetadataOp>(loc, rhsSubView);
   auto metadataAcc =
       rewriter.create<memref::ExtractStridedMetadataOp>(loc, accBuf.memRef);
 
@@ -336,7 +343,7 @@ convertCandidate(DotOpCandidate &candidate,
 
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
-      ldb, ldc, op.getA().getType(), op.getB().getType(),
+      ldb, blockN, ldc, op.getA().getType(), op.getB().getType(),
       rewriter.getF32Type());
 
   auto rhsTypeSize =
@@ -366,25 +373,27 @@ convertCandidate(DotOpCandidate &candidate,
   Value rhsStepInBytes =
       computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
 
-  // auto accSubView = addSubViewToCalcTPtrInfo(rewriter, loc, candidate.op.getC(), accBuf.indices, accBuf.memRef);
-  
+  // auto accSubView = addSubViewToCalcTPtrInfo(rewriter, loc,
+  // candidate.op.getC(), accBuf.indices, accBuf.memRef);
+
   rewriter.create<triton::cpu::CallBrgemmWithTransform>(
-      loc, transform, brgemm, lhsSubView, rhsSubView,
-      accBuf.memRef, lhsStepInBytes, rhsStepInBytes, rhsBlockSizeInBytes,
-      numBatches);
+      loc, transform, brgemm, lhsSubView, rhsSubView, accBuf.memRef,
+      lhsStepInBytes, rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
 
   LDBG("Mod: " << *op.getOperation()->getParentOp()->getParentOp());
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
-    Value newVal = op_read(cast<VectorType>(toFp32(resTy)), accBuf.memRef, accBuf.indices);
+    Value newVal =
+        op_read(cast<VectorType>(toFp32(resTy)), accBuf.memRef, accBuf.indices);
 
-    // Hope that dead code elemination do the rest. 
+    // Hope that dead code elemination do the rest.
     rewriter.replaceOp(candidate.op, candidate.op.getC());
 
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, resElemTy, rewriter);
-    rewriter.replaceAllOpUsesWith(forOp, ValueRange{newVal, candidate.lhsBuf.memRef,
-                                         candidate.rhsBuf.memRef});
+    rewriter.replaceAllOpUsesWith(
+        forOp,
+        ValueRange{newVal, candidate.lhsBuf.memRef, candidate.rhsBuf.memRef});
     return success();
   }
 
@@ -392,7 +401,8 @@ convertCandidate(DotOpCandidate &candidate,
     rewriter.setInsertionPointAfter(forOp);
     auto rank = dyn_cast<MemRefType>(accBuf.memRef.getType()).getRank();
     SmallVector<bool, 4> inBounds(rank, false);
-    Value newVal = op_read(cast<VectorType>(toFp32(resTy)), accBuf.memRef, accBuf.indices);
+    Value newVal =
+        op_read(cast<VectorType>(toFp32(resTy)), accBuf.memRef, accBuf.indices);
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, resElemTy, rewriter);
     int resIdx = op.getResult().getUses().begin()->getOperandNumber();
