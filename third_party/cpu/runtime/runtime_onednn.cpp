@@ -63,7 +63,6 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
   auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
   auto dnnl_dtypeC = static_cast<dnnl::memory::data_type>(dtypeC);
 
-  std::stringstream ss;
   dnnl::ukernel::brgemm brg;
   brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
                               dnnl_dtypeB, dnnl_dtypeC);
@@ -168,8 +167,7 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
   auto pack_B = kernel->transform;
   auto brg = kernel->brg;
 
-  bool need_packing =
-      brg.get_B_pack_type() == pack_type::pack32 && !skip_packing;
+  bool need_packing = brg.get_B_pack_type() == pack_type::pack32;
   if (need_packing) {
     blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
   }
@@ -177,7 +175,6 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
   brg.set_hw_context();
 
   std::vector<std::pair<memory::dim, memory::dim>> A_B_offsets(num_batches);
-  std::stringstream ss;
   for (memory::dim i = 0; i < num_batches; i++) {
     const memory::dim A_offset_i = i * A_step_in_bytes;
 
