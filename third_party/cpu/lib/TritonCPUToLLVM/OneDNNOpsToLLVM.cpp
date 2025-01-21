@@ -149,9 +149,8 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
                            adaptor.getLda(), adaptor.getLdb(),
                            adaptor.getLdc(), lhsDnnType,
                            rhsDnnType,       accDnnType};
-    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty,
-                                     i64_ty, i64_ty, i64_ty, i64_ty,
-                                     i64_ty, i64_ty};
+    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
+                                     i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
