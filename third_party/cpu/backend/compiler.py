@@ -7,6 +7,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
+import enum
 
 from triton._C.libtriton import cpu, ir, llvm, passes
 from triton.backends.compiler import BaseBackend, GPUTarget
@@ -20,6 +21,10 @@ def min_dot_size(target: GPUTarget):
 
 
 VecLib = cpu.passes.ttcpuir.VecLib
+
+class BackendType(enum.Enum):
+    default = "default"
+    oneDNN = "oneDNN"
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ class CPUOptions:
     sanitize_overflow: bool = False
 
     # TODO: We may introduce CPU-specific options like # of cores.
+    backend_config: str = BackendType.default.name
 
     def __post_init__(self):
         pass
@@ -101,6 +107,8 @@ class CPUBackend(BaseBackend):
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CPUOptions.supported_fp8_dtypes)
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
+        if "backend_config" not in args:
+            args["backend_config"] = BackendType[os.getenv("TRITON_CPU_CONFIG", "default")].name
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -164,12 +172,12 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
         cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
-        if cpu.onednn_available():
+        if cpu.onednn_available() and metadata["backend_config"] == BackendType.oneDNN.name:
             print("Uses OneDNN")
             cpu.passes.ttcpuir.add_convert_dot_to_onednn(pm, True)
             passes.common.add_cse(pm)
-            # passes.common.add_symbol_dce(pm)
-            # passes.common.add_canonicalizer(pm)
+        if cpu.onednn_available() and metadata["backend_config"] != BackendType.oneDNN.name:
+            print("Skipping usage of OneDNN")
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
