@@ -22,6 +22,7 @@ def min_dot_size(target: GPUTarget):
 
 VecLib = cpu.passes.ttcpuir.VecLib
 
+
 class BackendType(enum.Enum):
     default = "default"
     oneDNN = "oneDNN"
