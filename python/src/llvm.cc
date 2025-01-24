@@ -57,13 +57,17 @@ std::unique_ptr<TargetMachine>
 createTargetMachine(llvm::Module *module, std::string proc,
                     bool enable_fp_fusion, const std::string &features,
                     bool enable_fast_math = false) {
-  auto triple = getDefaultTargerOrProcessTriple();
-  module->setTargetTriple(triple);
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module->getTargetTriple(), error);
   if (!target) {
-    throw std::runtime_error("target lookup error: " + error);
+    // Try to get the default target triple.
+    auto triple = getDefaultTargerOrProcessTriple();
+    target = llvm::TargetRegistry::lookupTarget(triple, error);
+    if (!target) {
+      throw std::runtime_error("target lookup error: " + error);
+    }
+    module->setTargetTriple(triple);
   }
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
