@@ -15,6 +15,11 @@ template <typename T> class OperationPass;
 namespace triton {
 namespace cpu {
 
+enum class Ukernels {
+  None,
+  OneDNN,
+};
+
 #define GEN_PASS_DECL
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 
@@ -39,6 +44,10 @@ createConvertDotToAMX(bool convertInt8, bool convertFp16, bool convertBf16);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
+
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertDotToUkernels(Ukernels ukernels = Ukernels::None,
+                           std::set<std::string> cpu_features = {});
 
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"

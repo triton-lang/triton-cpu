@@ -213,18 +213,6 @@ void setupBlockAndTileSizes(ArrayRef<int64_t> lhsShape,
   candidate.tilesInBlockN = accBlocksN;
 }
 
-// Check if vector transfer read/write operation uses a mask
-// or involves a bounds check.
-template <typename T> bool hasMaskOrBoundsCheck(T op) {
-  auto inBounds = op.getInBounds();
-  Value mask = op.getMask();
-  bool hasBoundsCheck =
-      std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
-        return !cast<mlir::BoolAttr>(attr).getValue();
-      });
-  return hasBoundsCheck || mask;
-}
-
 // Check if a value is used only for a store and that this store can be
 // replaced with tile stores. In this case fill appropriate fields in the
 // candidate structure.
@@ -407,8 +395,8 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
     if (interleave && !inputBuf.vnni) {
       LDBG("  Copying from the original memref with interleave: "
            << inputBuf.memRef);
-      auto tmpBuf = allocateTmpBuffer(loc, getSwizzledRhsTileType(vecTy),
-                                      allocaPoint, rewriter);
+      auto tmpBuf = allocateTmpBufferStack(loc, getSwizzledRhsTileType(vecTy),
+                                           allocaPoint, rewriter);
       copyWithInterleave(loc, vecTy, inputBuf, tmpBuf, rewriter);
       return tmpBuf;
     }
@@ -423,7 +411,7 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
 
   if (interleave)
     vecTy = getSwizzledRhsTileType(vecTy);
-  MemBuffer buf = allocateTmpBuffer(loc, vecTy, allocaPoint, rewriter);
+  MemBuffer buf = allocateTmpBufferStack(loc, vecTy, allocaPoint, rewriter);
 
   if (interleave) {
     auto interleavedVal = getVnniSrc(val);
@@ -456,8 +444,8 @@ MemBuffer prepareResultBuffer(Location loc, Value val, const MemBuffer &accBuf,
   }
 
   LDBG("Allocating buffer for the result.");
-  return allocateTmpBuffer(loc, cast<VectorType>(val.getType()), allocaPoint,
-                           rewriter);
+  return allocateTmpBufferStack(loc, cast<VectorType>(val.getType()),
+                                allocaPoint, rewriter);
 }
 
 SmallVector<Value> shiftIndices(Location loc, ArrayRef<Value> indices,

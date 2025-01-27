@@ -191,4 +191,85 @@ def TTC_DotOp : TTC_Op<"dot", [Pure,
     }];
 }
 
+def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, Index]>:$M,
+    AnyTypeOf<[AnyInteger, Index]>:$N,
+    AnyTypeOf<[AnyInteger, Index]>:$K_k,
+    AnyTypeOf<[AnyInteger, Index]>:$batch_size,
+    AnyTypeOf<[AnyInteger, Index]>:$lda,
+    AnyTypeOf<[AnyInteger, Index]>:$ldb,
+    AnyTypeOf<[AnyInteger, Index]>:$ldc,
+    // TODO: Maybe Use properties
+    TypeAttr:$dtypeA,
+    TypeAttr:$dtypeB,
+    TypeAttr:$dtypeC
+  );
+
+  let results = (outs Index:$result);
+}
+
+def TTC_CallBrgemmWithTransform : TTC_Op<"brgemm_execute",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let arguments = (ins
+    Index:$brgemm_kernel_hash,
+    Arg<AnyMemRef, "", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "", [MemRead]>:$B_ptr,
+    Arg<AnyMemRef, "", [MemWrite]>:$C_ptr,
+    AnyTypeOf<[AnyInteger, Index]>:$stepA,
+    AnyTypeOf<[AnyInteger, Index]>:$stepB,
+    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
+    AnyTypeOf<[AnyInteger, Index]>:$numBatches
+  );
+}
+
+def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, Index]>:$K,
+    AnyTypeOf<[AnyInteger, Index]>:$N,
+    AnyTypeOf<[AnyInteger, Index]>:$in_ld,
+    AnyTypeOf<[AnyInteger, Index]>:$out_ld,
+    // TODO: Maybe Use properties
+    TypeAttr:$in_dt,
+    TypeAttr:$out_dt
+  );
+
+  let results = (outs Index:$result);
+}
+
+// def TTC_NeedPacking : TTC_Op<"need_packing",
+//     [NoMemoryEffect]> {
+//   let summary = "";
+
+//   let arguments = (ins
+//   );
+
+//   let results = (outs BoolAttr:$result);
+// }
+
+
+def TTC_OneDnnTearDown : TTC_Op<"onednn_teardown", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins );
+
+  let results = (outs);
+}
+
 #endif

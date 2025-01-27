@@ -7,6 +7,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
+import enum
 
 from triton._C.libtriton import cpu, ir, llvm, passes
 from triton.backends.compiler import BaseBackend, GPUTarget
@@ -20,6 +21,7 @@ def min_dot_size(target: GPUTarget):
 
 
 VecLib = cpu.passes.ttcpuir.VecLib
+Ukernels = cpu.passes.ttcpuir.Ukernels
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class CPUOptions:
     sanitize_overflow: bool = False
 
     # TODO: We may introduce CPU-specific options like # of cores.
+    ukernels: str = None
 
     def __post_init__(self):
         pass
@@ -71,6 +74,16 @@ class CPUOptions:
                 f"Unexpected value for vec_lib: {self.vec_lib}, should be one of {{{', '.join(VecLib.__members__.keys())}}}"
             )
         return vec_lib
+
+    def parse_ukernels_str_to_enum(self) -> Ukernels:
+        if self.ukernels is None:
+            return Ukernels.__members__.get("None", None)
+        ukernels = Ukernels.__members__.get(self.ukernels, None)
+        if ukernels is None:
+            raise ValueError(
+                f"Unexpected value for ukernels: {self.ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
+            )
+        return ukernels
 
 
 class CPUBackend(BaseBackend):
@@ -101,6 +114,9 @@ class CPUBackend(BaseBackend):
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CPUOptions.supported_fp8_dtypes)
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
+        if "ukernels" in args:
+            self.ukernels = args["ukernels"]
+            # parse_ukernels_str_to_enum()
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -163,6 +179,20 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
+        cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
+        # Короче convert_to_ukernels и warn если его нету
+        # по примеру VecLib
+        if (ukernels := opt.parse_ukernels_str_to_enum()):
+            if ukernels == Ukernels.OneDNN and not cpu.onednn_available():
+                import warnings
+                warnings.warn(
+                    "Warning! Enabling OneDNN Passes without OneDNN library. Check if \"CMAKE_PREFIX_PATH\" contains path to OneDnn."
+                )
+            print("Uses OneDNN")
+            cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
+            passes.common.add_cse(pm)
+        if (ukernels := opt.parse_ukernels_str_to_enum()) and ukernels != Ukernels.OneDNN:
+            print("Skipping usage of OneDNN")
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
@@ -204,7 +234,10 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        if cpu.onednn_available():
+            cpu.passes.ttcpuir.add_onednn_ops_to_llvmir(pm, True)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
+        cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
         cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
         cpu.passes.ttcpuir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)

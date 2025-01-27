@@ -130,6 +130,25 @@ def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
     let description = [{ }];
 
     let constructor = "mlir::triton::cpu::createConvertDotToFMA()";
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
+def ConvertDotToUkernels : Pass<"triton-cpu-convert-dot-to-ukernels", "mlir::ModuleOp"> {
+    let summary = "Convert dot product op to OneDNN.";
+    let description = [{
+        This pass is used to lower matmul operations to OneDNN.
+    }];
+
+    let options = [
+        Option<"ukernels", "ukernels",
+               "mlir::triton::cpu::Ukernels", /*default*/"mlir::triton::cpu::Ukernels::None",
+               "Ukernels to use for replacement of dot op (OneDNN/Amx/etc).">,
+    ];
+
+    let constructor = "mlir::triton::cpu::createConvertDotToUkernels()";
 
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::vector::VectorDialect",
