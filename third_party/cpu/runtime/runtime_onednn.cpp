@@ -159,8 +159,8 @@ EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
 }
 
 EXPORT void brgemm_execute(const void *handle, void *A_ptr,
-                           void *original_B_ptr, void *C_ptr, int64_t A_step_in_bytes,
-                           int64_t B_step_in_bytes,
+                           void *original_B_ptr, void *C_ptr,
+                           int64_t A_step_in_bytes, int64_t B_step_in_bytes,
                            int64_t B_block_size_in_bytes, int64_t num_batches) {
 
   uint8_t *blocked_data = reinterpret_cast<uint8_t *>(original_B_ptr);

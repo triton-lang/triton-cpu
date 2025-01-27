@@ -47,7 +47,7 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   py::enum_<cpu::VecLib>(m, "VecLib")
       .value("libsleef", cpu::VecLib::Sleef)
       .value("libmvec", cpu::VecLib::Mvec);
-  
+
   py::enum_<cpu::Ukernels>(m, "Ukernels")
       .value("None", cpu::Ukernels::None)
       .value("OneDNN", cpu::Ukernels::OneDNN);

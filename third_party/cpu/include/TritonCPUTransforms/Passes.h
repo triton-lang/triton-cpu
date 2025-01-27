@@ -20,7 +20,6 @@ enum class Ukernels {
   OneDNN,
 };
 
-
 #define GEN_PASS_DECL
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 
@@ -47,7 +46,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotToUkernels(Ukernels ukernels = Ukernels::None, std::set<std::string> cpu_features = {});
+createConvertDotToUkernels(Ukernels ukernels = Ukernels::None,
+                           std::set<std::string> cpu_features = {});
 
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"

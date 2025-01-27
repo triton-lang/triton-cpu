@@ -416,7 +416,9 @@ convertCandidate(DotOpCandidate &candidate,
 struct ConvertDotToUkernels
     : public triton::cpu::impl::ConvertDotToUkernelsBase<ConvertDotToUkernels> {
   ConvertDotToUkernels() = default;
-  ConvertDotToUkernels(Ukernels ukernels, std::set<std::string> cpu_features) { this->ukernels = ukernels; }
+  ConvertDotToUkernels(Ukernels ukernels, std::set<std::string> cpu_features) {
+    this->ukernels = ukernels;
+  }
 
   void runOnOperation() override {
     if (ukernels != Ukernels::OneDNN) {
@@ -469,7 +471,8 @@ namespace mlir::triton::cpu {
 // }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotToUkernels(Ukernels ukernels, std::set<std::string> cpu_features) {
+createConvertDotToUkernels(Ukernels ukernels,
+                           std::set<std::string> cpu_features) {
   return std::make_unique<ConvertDotToUkernels>(ukernels, cpu_features);
 }
 

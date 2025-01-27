@@ -74,7 +74,7 @@ class CPUOptions:
                 f"Unexpected value for vec_lib: {self.vec_lib}, should be one of {{{', '.join(VecLib.__members__.keys())}}}"
             )
         return vec_lib
-    
+
     def parse_ukernels_str_to_enum(self) -> Ukernels:
         if self.ukernels is None:
             return Ukernels.__members__.get("None", None)
@@ -185,7 +185,9 @@ class CPUBackend(BaseBackend):
         if (ukernels := opt.parse_ukernels_str_to_enum()):
             if ukernels == Ukernels.OneDNN and not cpu.onednn_available():
                 import warnings
-                warnings.warn("Warning! Enabling OneDNN Passes without OneDNN library. Check if \"CMAKE_PREFIX_PATH\" contains path to OneDnn.")
+                warnings.warn(
+                    "Warning! Enabling OneDNN Passes without OneDNN library. Check if \"CMAKE_PREFIX_PATH\" contains path to OneDnn."
+                )
             print("Uses OneDNN")
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_cse(pm)
