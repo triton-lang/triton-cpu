@@ -14,7 +14,7 @@
 namespace mlir {
 namespace triton {
 namespace cpu {
-#define GEN_PASS_DEF_CONVERTDOTTOONEDNN
+#define GEN_PASS_DEF_CONVERTDOTTOUKERNELS
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 } // namespace cpu
 } // namespace triton
@@ -373,7 +373,6 @@ convertCandidate(DotOpCandidate &candidate,
       loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
       rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
 
-  LDBG("Mod: " << *op.getOperation()->getParentOp()->getParentOp());
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
     Value newVal =
@@ -411,17 +410,16 @@ convertCandidate(DotOpCandidate &candidate,
   newVal = maybeCast(loc, newVal, resElemTy, rewriter);
   op.getResult().replaceAllUsesWith(newVal);
   rewriter.eraseOp(op);
-
   return success();
 }
 
-struct ConvertDotToOneDNN
-    : public triton::cpu::impl::ConvertDotToOneDNNBase<ConvertDotToOneDNN> {
-  ConvertDotToOneDNN() = default;
-  ConvertDotToOneDNN(bool canReplace) { this->canReplace = canReplace; }
+struct ConvertDotToUkernels
+    : public triton::cpu::impl::ConvertDotToUkernelsBase<ConvertDotToUkernels> {
+  ConvertDotToUkernels() = default;
+  ConvertDotToUkernels(Ukernels ukernels, std::set<std::string> cpu_features) { this->ukernels = ukernels; }
 
   void runOnOperation() override {
-    if (!canReplace) {
+    if (ukernels != Ukernels::OneDNN) {
       LDBG("Pass disabled.");
       return;
     }
@@ -466,13 +464,13 @@ struct ConvertDotToOneDNN
 
 namespace mlir::triton::cpu {
 
-std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToOneDNN() {
-  return std::make_unique<ConvertDotToOneDNN>();
-}
+// std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToUkernels() {
+//   return std::make_unique<ConvertDotToUkernels>();
+// }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotToOneDNN(bool isReplacementToOneDnnPossible) {
-  return std::make_unique<ConvertDotToOneDNN>(isReplacementToOneDnnPossible);
+createConvertDotToUkernels(Ukernels ukernels, std::set<std::string> cpu_features) {
+  return std::make_unique<ConvertDotToUkernels>(ukernels, cpu_features);
 }
 
 } // namespace mlir::triton::cpu

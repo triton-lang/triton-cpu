@@ -47,6 +47,10 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   py::enum_<cpu::VecLib>(m, "VecLib")
       .value("libsleef", cpu::VecLib::Sleef)
       .value("libmvec", cpu::VecLib::Mvec);
+  
+  py::enum_<cpu::Ukernels>(m, "Ukernels")
+      .value("None", cpu::Ukernels::None)
+      .value("OneDNN", cpu::Ukernels::OneDNN);
 
   m.def("add_scalarize", [](mlir::PassManager &pm, bool skip_gather_scatter) {
     pm.addPass(
@@ -102,10 +106,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_loop_invariant_code_motion", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createLoopInvariantCodeMotionPass());
   });
-  m.def("add_convert_dot_to_onednn",
-        [](mlir::PassManager &pm, bool isReplacementToOneDnnPossible) {
-          pm.addPass(mlir::triton::cpu::createConvertDotToOneDNN(
-              isReplacementToOneDnnPossible));
+  m.def("add_convert_dot_to_ukernels",
+        [](mlir::PassManager &pm, cpu::Ukernels ukernels) {
+          pm.addPass(mlir::triton::cpu::createConvertDotToUkernels(ukernels));
         });
   m.def("add_convert_dot_to_amx", [](mlir::PassManager &pm, bool convertInt8,
                                      bool convertFp16, bool convertBf16) {

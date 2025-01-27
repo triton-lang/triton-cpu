@@ -86,6 +86,11 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
 
   auto tf = dnnl::ukernel::transform();
   if (need_packing) {
+    auto packing = pack_type::no_trans;
+    // if (transposedB) {
+    //   packing = pack_type::trans;
+    // }
+
     // Packing B tensor routine. The BRGeMM ukernel expects B passed in a
     // special VNNI format for low precision data types, e.g., bfloat16_t.
     // Note: the routine doesn't provide a `batch_size` argument in the
@@ -93,7 +98,7 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
     // manually iterated over in a for-loop on the user side.
     dnnl::ukernel::transform pack_B(
         /* K = */ K_k, /* N = */ N,
-        /* in_pack_type = */ pack_type::no_trans,
+        /* in_pack_type = */ packing,
         /* in_ld = */ ldb,
         /* out_ld = */ N,
         /* in_dt = */ dnnl_dtypeB,
@@ -154,10 +159,9 @@ EXPORT void *create_transform_ukernel(int64_t K, int64_t N, int64_t in_ld,
 }
 
 EXPORT void brgemm_execute(const void *handle, void *A_ptr,
-                           void *original_B_ptr, void *C_ptr,
-                           int64_t A_step_in_bytes, int64_t B_step_in_bytes,
-                           int64_t B_block_size_in_bytes, int64_t num_batches,
-                           bool skip_packing = false) {
+                           void *original_B_ptr, void *C_ptr, int64_t A_step_in_bytes,
+                           int64_t B_step_in_bytes,
+                           int64_t B_block_size_in_bytes, int64_t num_batches) {
 
   uint8_t *blocked_data = reinterpret_cast<uint8_t *>(original_B_ptr);
   const uint8_t *B_ptr_calc = reinterpret_cast<const uint8_t *>(original_B_ptr);

@@ -250,4 +250,26 @@ def TTC_TransformCreate : TTC_Op<"transform_create", [NoMemoryEffect]> {
   let results = (outs Index:$result);
 }
 
+// def TTC_NeedPacking : TTC_Op<"need_packing",
+//     [NoMemoryEffect]> {
+//   let summary = "";
+
+//   let arguments = (ins
+//   );
+
+//   let results = (outs BoolAttr:$result);
+// }
+
+
+def TTC_OneDnnTearDown : TTC_Op<"onednn_teardown", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "";
+
+  let description = [{}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins );
+
+  let results = (outs);
+}
+
 #endif
