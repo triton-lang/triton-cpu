@@ -124,7 +124,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     end_event = di.Event(enable_timing=True)
     start_event.record()
     for _ in range(5):
-        cache.zero_()
+        runtime.driver.active.clear_cache(cache)
         fn()
     end_event.record()
     di.synchronize()
@@ -152,7 +152,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
             for x in grad_to_none:
                 x.grad = None
         # we clear the L2 cache before each run
-        cache.zero_()
+        runtime.driver.active.clear_cache(cache)
         # record time of `fn`
         start_event[i].record()
         fn()

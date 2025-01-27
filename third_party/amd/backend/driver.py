@@ -512,3 +512,6 @@ class HIPDriver(GPUDriver):
         # It's the same as the Nvidia backend.
         cache_size = 256 * 1024 * 1024
         return torch.empty(int(cache_size // 4), dtype=torch.int, device='cuda')
+
+    def clear_cache(self, cache):
+        cache.zero_()
