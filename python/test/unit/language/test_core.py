@@ -3528,7 +3528,8 @@ def get_test_dot_small_mn_fma_cases():
 def get_test_dot_double_rate_cases():
     if not is_hip_cdna():
         return []
-    return [(32, 32, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
+    return [(64, 64, 64, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None),
+            (32, 32, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
             (32, 32, 16, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None),
             (16, 16, 32, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
             (16, 16, 32, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None)]

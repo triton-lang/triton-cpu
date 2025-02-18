@@ -191,4 +191,44 @@ def TTC_DotOp : TTC_Op<"dot", [Pure,
     }];
 }
 
+def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
+  let summary = "Crete ukernels handles";
+
+  let description = [{For creation of ukernels, that can be used to replace op with dot-like sematnics}];
+
+  // M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC
+  let arguments = (ins
+    AnyTypeOf<[AnyInteger, Index]>:$M,
+    AnyTypeOf<[AnyInteger, Index]>:$N,
+    AnyTypeOf<[AnyInteger, Index]>:$K_k,
+    AnyTypeOf<[AnyInteger, Index]>:$batch_size,
+    AnyTypeOf<[AnyInteger, Index]>:$lda,
+    AnyTypeOf<[AnyInteger, Index]>:$ldb,
+    AnyTypeOf<[AnyInteger, Index]>:$ldc,
+    // TODO: Maybe Use properties
+    TypeAttr:$dtypeA,
+    TypeAttr:$dtypeB,
+    TypeAttr:$dtypeC
+  );
+
+  let results = (outs Index:$result);
+}
+
+def TTC_BrgemmExecute : TTC_Op<"brgemm_execute",
+    [MemoryEffects<[MemRead<GlobalMemory>,
+                    MemWrite<GlobalMemory>]>]> {
+  let summary = "Call ukernel with existing handle for passed ops";
+
+  let arguments = (ins
+    Index:$brgemm_kernel_hash,
+    Arg<AnyMemRef, "Lhs/In buffer data ptr", [MemRead]>:$A_ptr,
+    Arg<AnyMemRef, "Rhs/Weight buffer data ptr", [MemRead]>:$B_ptr,
+    Arg<AnyMemRef, "Result/Acc buffer data ptr", [MemWrite]>:$C_ptr,
+    AnyTypeOf<[AnyInteger, Index]>:$stepA,
+    AnyTypeOf<[AnyInteger, Index]>:$stepB,
+    AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
+    AnyTypeOf<[AnyInteger, Index]>:$numBatches
+  );
+}
+
 #endif
