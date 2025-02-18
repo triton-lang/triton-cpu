@@ -20,6 +20,7 @@ def min_dot_size(target: GPUTarget):
 
 
 VecLib = cpu.passes.ttcpuir.VecLib
+Ukernels = cpu.passes.ttcpuir.Ukernels
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class CPUOptions:
     sanitize_overflow: bool = False
 
     # TODO: We may introduce CPU-specific options like # of cores.
+    ukernels: str = None
 
     def __post_init__(self):
         pass
@@ -71,6 +73,25 @@ class CPUOptions:
                 f"Unexpected value for vec_lib: {self.vec_lib}, should be one of {{{', '.join(VecLib.__members__.keys())}}}"
             )
         return vec_lib
+
+    def get_ukernels(self) -> Ukernels:
+        if self.ukernels is None:
+            return None
+        ukernels = Ukernels.__members__.get(self.ukernels, None)
+        if ukernels is None:
+            raise ValueError(
+                f"Unexpected value for ukernels: {self.ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
+            )
+
+        if ukernels == Ukernels.OneDNN and not cpu.onednn_available():
+            import warnings
+            # Warns on each compileation
+            warnings.simplefilter('once', category=UserWarning)
+            warnings.warn(
+                "Warning! Triton build was made without OneDNN support. Check if \"CMAKE_PREFIX_PATH\" contains path to OneDNN during build. \n\t -------OneDNN will NOT be used-------",
+                stacklevel=1)
+            return None
+        return ukernels
 
 
 class CPUBackend(BaseBackend):
@@ -163,6 +184,11 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
+        if (ukernels := opt.get_ukernels()):
+            # For further analysis simplification
+            cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
+            cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
+            passes.common.add_cse(pm)
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
@@ -204,7 +230,10 @@ class CPUBackend(BaseBackend):
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        if options.get_ukernels() == Ukernels.OneDNN:
+            cpu.passes.ttcpuir.add_ukernels_to_onednn_llvmir(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
+        cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
         cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
         cpu.passes.ttcpuir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)

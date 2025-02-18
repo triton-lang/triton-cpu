@@ -134,6 +134,8 @@ inline Value shapeCast(Location loc, Value in,
 #define op_subf(lhs, rhs) rewriter.create<arith::SubFOp>(loc, lhs, rhs)
 #define op_muli(lhs, rhs) rewriter.create<arith::MulIOp>(loc, lhs, rhs)
 #define op_mulf(lhs, rhs) rewriter.create<arith::MulFOp>(loc, lhs, rhs)
+#define op_divsi(lhs, rhs) rewriter.create<arith::DivSIOp>(loc, lhs, rhs)
+#define op_divui(lhs, rhs) rewriter.create<arith::DivUIOp>(loc, lhs, rhs)
 #define op_bitcast(ty, val) rewriter.create<arith::BitcastOp>(loc, ty, val)
 #define op_lshr(lhs, rhs) rewriter.create<arith::ShRUIOp>(loc, lhs, rhs)
 #define op_shl(lhs, rhs) rewriter.create<arith::ShLIOp>(loc, lhs, rhs)
@@ -160,7 +162,7 @@ inline Value shapeCast(Location loc, Value in,
 #define op_extract(vec, idx) rewriter.create<vector::ExtractOp>(loc, vec, idx)
 #define op_store(val, mem, idx)                                                \
   rewriter.create<vector::StoreOp>(loc, val, mem, idx)
-
+#define op_index_cast(ty, val) rewriter.create<arith::IndexCastOp>(loc, ty, val)
 #define op_icmp_eq(lhs, rhs)                                                   \
   rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs)
 #define op_icmp_ne(lhs, rhs)                                                   \

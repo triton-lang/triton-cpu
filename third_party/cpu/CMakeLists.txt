@@ -1,14 +1,30 @@
+find_package(dnnl CONFIG)
+if (dnnl_FOUND)
+  message(STATUS "Found OneDNN/DNNL")
+  add_compile_definitions(ONEDNN_AVAILABLE)
+  get_target_property(dnnl_include DNNL::dnnl INTERFACE_INCLUDE_DIRECTORIES)
+  # currently used only in triton_cpu.cc and in ConvertDotToOneDNN
+  include_directories(${dnnl_include})
+else ()
+  message(STATUS "Could NOT find OneDNN/DNNL")
+endif()
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
-  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation PRIVATE Python3::Module pybind11::headers)
+  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation MLIRMemRefTransforms PRIVATE Python3::Module pybind11::headers)
 endif()
 
-add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp)
-target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport)
+if (dnnl_FOUND)
+  add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp ${CMAKE_CURRENT_SOURCE_DIR}/runtime/runtime_onednn.cpp)
+  target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport DNNL::dnnl)
+else ()
+  add_library(TritonCPURuntime SHARED ${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpu_runtime.cpp)
+  target_link_libraries(TritonCPURuntime PRIVATE LLVMSupport)
+endif()
 
 # Build and link sleef
 set(SLEEF_BUILD_SHARED_LIBS ON CACHE BOOL "Build sleef shared lib" FORCE)
