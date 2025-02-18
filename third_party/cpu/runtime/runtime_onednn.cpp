@@ -7,12 +7,14 @@
 #endif
 #endif
 
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
+#include <vector>
 
 #if defined(_MSC_VER)
 #define EXPORT __declspec(dllexport)
