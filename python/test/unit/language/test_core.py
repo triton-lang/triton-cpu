@@ -3257,6 +3257,7 @@ def convert_fp8_to_fp32(x, device, dtype_str):
                                                 for col_a in [True, False]
                                                 for col_b in [True, False]] +
     [(64, 64, 64, 4, False, False, 'chain-dot', 'ieee', 'bfloat16', 'float32', 1)] +
+    [(64, 64, 64, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1)] +
     ([(16, 16, 8, 4, False, False, 'None', 'ieee', 'float32', 'float32', 1),
       (32, 16, 8, 4, False, False, 'None', 'ieee', 'float16', 'float16', 1)] if "gfx9" in get_arch() else []) +
     [(128, 128, 64, 4, False, False, 'chain-dot', 'ieee', float8_type, 'float32', 1)

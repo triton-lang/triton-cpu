@@ -22,6 +22,9 @@ struct MemBuffer {
   // on each iteration, then step can hold those index offsets.
   // Empty step doesn't mean indices are loop invariant.
   SmallVector<Value> step;
+  // When step is known, this field holds the initial block
+  // pointer value used in the first iteration.
+  Value origBlockPtr = nullptr;
   // True if buffer holds transposed value.
   bool transposed = false;
   // Ttue if buffer holds value in VNNI (interleaved to groups of 32bit)
@@ -70,8 +73,9 @@ Value maybeCast(Location loc, Value val, Type dstElemTy,
                 PatternRewriter &rewriter);
 
 // Allocate temporary buffer on stack for specified vector type.
-MemBuffer allocateTmpBuffer(Location loc, VectorType vecTy,
-                            Operation *allocaPoint, PatternRewriter &rewriter);
+MemBuffer allocateTmpBufferStack(Location loc, VectorType vecTy,
+                                 Operation *allocaPoint,
+                                 PatternRewriter &rewriter);
 
 // Move index by specified offset. Do constannt folding if possible.
 Value shiftIndex(Location loc, Value index, int64_t offs,
@@ -80,6 +84,9 @@ Value shiftIndex(Location loc, Value index, int64_t offs,
 // Check if val is a result of a sequence that performs VNNI decoding.
 // If it is, then return the original encoded value. Otherwise, return nullptr.
 Value getVnniSrc(Value val);
+
+MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
+                           PatternRewriter &rewriter);
 
 } // namespace cpu
 } // namespace triton
