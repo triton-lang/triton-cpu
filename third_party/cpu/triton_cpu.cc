@@ -8,11 +8,13 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/AMX/AMXToLLVMIRTranslation.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/TargetSelect.h"
 
@@ -26,6 +28,17 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifdef ONEDNN_AVAILABLE
+#include "oneapi/dnnl/dnnl_config.h"
+#endif
+bool is_onednn_available() {
+#ifdef DNNL_EXPERIMENTAL_UKERNEL
+  return true;
+#else
+  return false;
+#endif
+}
+
 namespace py = pybind11;
 
 void init_triton_cpu_passes_ttcpuir(py::module &&m) {
@@ -34,6 +47,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   py::enum_<cpu::VecLib>(m, "VecLib")
       .value("libsleef", cpu::VecLib::Sleef)
       .value("libmvec", cpu::VecLib::Mvec);
+
+  py::enum_<cpu::Ukernels>(m, "Ukernels")
+      .value("OneDNN", cpu::Ukernels::OneDNN);
 
   m.def("add_scalarize", [](mlir::PassManager &pm, bool skip_gather_scatter) {
     pm.addPass(
@@ -86,6 +102,13 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
                                       bool useHorizontalSum) {
     pm.addPass(mlir::triton::cpu::createConvertDotProduct(useHorizontalSum));
   });
+  m.def("add_loop_invariant_code_motion", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+  });
+  m.def("add_convert_dot_to_ukernels", [](mlir::PassManager &pm,
+                                          cpu::Ukernels ukernels) {
+    pm.addPass(mlir::triton::cpu::createConvertDotOpToUkernelOps(ukernels));
+  });
   m.def("add_convert_dot_to_amx", [](mlir::PassManager &pm, bool convertInt8,
                                      bool convertFp16, bool convertBf16) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
@@ -137,6 +160,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_debug_ops_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createDebugOpsToLLVMPass());
   });
+  m.def("add_ukernels_to_onednn_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createUkernelOpsToOneDNNLLVMPass());
+  });
+  m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+  });
   m.def("add_vector_to_llvmir",
         [](mlir::PassManager &pm, bool reassoc_fp_reduction) {
           mlir::ConvertVectorToLLVMPassOptions opts;
@@ -185,6 +214,8 @@ void init_triton_cpu(py::module &&m) {
     return false;
 #endif // __linux__ && ARCH_REQ_XCOMP_PERM
   });
+
+  m.def("onednn_available", is_onednn_available);
 
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;

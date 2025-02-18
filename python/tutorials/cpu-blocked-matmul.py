@@ -216,7 +216,7 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOC
 
 
 def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, bb: torch.Tensor, M, N, K, PREPACKED,
-           BLOCKED_A, TRANSPOSED_BLOCK_A, BLOCKED_B, TRANSPOSED_B, PACKED_B, num_threads=0):
+           BLOCKED_A, TRANSPOSED_BLOCK_A, BLOCKED_B, TRANSPOSED_B, PACKED_B, num_threads=0, ukernels=None):
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
         K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
@@ -241,7 +241,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         BLOCKED_A=BLOCKED_A, TRANSPOSED_BLOCK_A=TRANSPOSED_BLOCK_A,  #
         BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B,  #
-        OUT_DTYPE=tl.float32 if a.dtype.is_floating_point else tl.int32, num_threads=num_threads)
+        OUT_DTYPE=tl.float32 if a.dtype.is_floating_point else tl.int32, num_threads=num_threads, ukernels=ukernels)
     return c
 
 
@@ -291,9 +291,10 @@ else:
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
 
-def encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype):
+def encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype,
+                           ukernel):
     assert dtype == 'float32' or dtype == 'bfloat16' or dtype == 'float16' or dtype == 'int8'
-    return f"triton-cpu{'-ba' if blocked_a else ''}{'-ta' if transposed_a else ''}{'-bb' if blocked_b else ''}{'-tb' if transposed_b else ''}{'-pb' if packed_b else ''}{'-prepack' if prepack else ''}{'-st' if single_thread else ''}-{dtype}"
+    return f"triton-cpu{'-ba' if blocked_a else ''}{'-ta' if transposed_a else ''}{'-bb' if blocked_b else ''}{'-tb' if transposed_b else ''}{'-pb' if packed_b else ''}{'-prepack' if prepack else ''}{'-st' if single_thread else ''}-uk{ukernel}-{dtype}"
 
 
 def encode_torch_provider(single_thread, dtype):
@@ -310,13 +311,20 @@ def decode_provider(provider):
         dtype = torch.float32
     elif '-int8' in provider:
         dtype = torch.int8
+
+    ukernel = None
+    if '-ukNone' in provider:
+        ukernel = None
+    if '-ukOneDNN' in provider:
+        ukernel = "OneDNN"
+
     if 'triton-cpu' in provider:
         backend = 'triton-cpu'
     elif 'torch-cpu-native' in provider:
         backend = 'torch-cpu-native'
     elif 'torch-cpu-compile' in provider:
         backend = 'torch-cpu-compile'
-    return backend, '-ba' in provider, '-ta' in provider, '-bb' in provider, '-tb' in provider, '-pb' in provider, '-prepack' in provider, '-st' in provider, dtype
+    return backend, '-ba' in provider, '-ta' in provider, '-bb' in provider, '-tb' in provider, '-pb' in provider, '-prepack' in provider, '-st' in provider, ukernel, dtype
 
 
 BLOCK_TRANSPOSE_A_OPTS = [(False, False)]
@@ -324,13 +332,16 @@ BLOCK_TRANSPOSE_PACK_B_OPTS = [(True, True, True), (True, True, False), (False, 
 PREPACK_OPTS = [False, True]
 SINGLE_THREAD_OPTS = [False]
 DTYPE_OPTS = [DTYPE]
+UKERNEL_OPTS = [None, "OneDNN"]
 LINE_VALS = [
-    encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype)
+    encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype,
+                           ukernel)
     for single_thread in SINGLE_THREAD_OPTS
     for blocked_a, transposed_a in BLOCK_TRANSPOSE_A_OPTS
     for blocked_b, transposed_b, packed_b in BLOCK_TRANSPOSE_PACK_B_OPTS
     for prepack in PREPACK_OPTS
     for dtype in DTYPE_OPTS
+    for ukernel in UKERNEL_OPTS
     if (blocked_a or blocked_b or not prepack) and (not packed_b or dtype != "float32")
 ] + [encode_torch_provider(single_thread, dtype) for dtype in DTYPE_OPTS for single_thread in SINGLE_THREAD_OPTS]
 LINE_NAMES = LINE_VALS
@@ -356,7 +367,7 @@ default_num_threads = torch.get_num_threads()
 def benchmark(M, N, K, provider):
 
     device = 'cpu' if 'cpu' in provider else 'cuda'
-    backend, blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype = decode_provider(
+    backend, blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, ukernel, dtype = decode_provider(
         provider)
     if dtype.is_floating_point:
         a = torch.randn((M, K), device=device, dtype=dtype)
@@ -400,8 +411,8 @@ def benchmark(M, N, K, provider):
     elif backend == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: matmul(a, b, c, a_tmp, b_tmp, M, N, K, prepack, blocked_a, transposed_a, blocked_b, transposed_b,
-                           packed_b, num_threads=int(single_thread)), quantiles=quantiles, measure_time_with_hooks=True,
-            rep=1000)
+                           packed_b, num_threads=int(single_thread), ukernels=ukernel), quantiles=quantiles,
+            measure_time_with_hooks=True, rep=1000)
     perf = lambda ms: 2 * M * N * K * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
