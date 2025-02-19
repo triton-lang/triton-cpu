@@ -462,8 +462,9 @@ class CPUDriver(DriverBase):
         return do_bench_cpu
 
     def get_empty_cache_for_benchmark(self):
-        import torch
-
         # A typical LLC size for high-end server CPUs are ~400MB.
         cache_size = 512 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
+        return bytearray(cache_size)
+
+    def clear_cache(self, cache):
+        cache.__init__(len(cache))
