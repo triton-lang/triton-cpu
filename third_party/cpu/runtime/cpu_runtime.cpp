@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #define __STDC_WANT_IEC_60559_TYPES_EXT__
