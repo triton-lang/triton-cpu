@@ -50,6 +50,7 @@ struct ExtractMemRefOpConversion : public OpConversionPattern<ExtractMemRefOp> {
   matchAndRewrite(ExtractMemRefOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value tensorPtrStruct = rewriter.getRemappedValue(op.getSrc());
     auto memRefTy = cast<MemRefType>(op.getType());
     auto rank = memRefTy.getRank();
@@ -66,12 +67,12 @@ struct ExtractMemRefOpConversion : public OpConversionPattern<ExtractMemRefOp> {
                                                   idxTo);
     };
 
-    Value res = undef(memRefStructTy);
+    Value res = b.undef(memRefStructTy);
     // Copy base.
     res = copyValue(res, 0, 1);
     // Use 0 offset.
     res = rewriter.create<LLVM::InsertValueOp>(loc, memRefStructTy, res,
-                                               i64_val(0), 2);
+                                               b.i64_val(0), 2);
     // Copy shape.
     res = copyValue(res, 2, 3);
     // Copy strides.
@@ -115,10 +116,11 @@ struct PtrToMemRefOpConversion : public OpConversionPattern<PtrToMemRefOp> {
   matchAndRewrite(PtrToMemRefOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value ptr = rewriter.getRemappedValue(op.getSrc());
     auto memRefStructTy = getTypeConverter()->convertType(op.getType());
 
-    Value res = undef(memRefStructTy);
+    Value res = b.undef(memRefStructTy);
     res =
         rewriter.create<LLVM::InsertValueOp>(loc, memRefStructTy, res, ptr, 1);
     rewriter.replaceOp(op, res);
@@ -134,6 +136,7 @@ struct MakeTensorPtrOpConversion : public OpConversionPattern<MakeTensorPtrOp> {
   matchAndRewrite(MakeTensorPtrOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto structTy = getTypeConverter()->convertType(op.getType());
     auto i64Ty = IntegerType::get(getContext(), 64);
 
@@ -149,7 +152,7 @@ struct MakeTensorPtrOpConversion : public OpConversionPattern<MakeTensorPtrOp> {
       return structVal;
     };
 
-    Value res = undef(structTy);
+    Value res = b.undef(structTy);
     // 0 - base pointer.
     auto base = rewriter.getRemappedValue(op.getBase());
     res = rewriter.create<LLVM::InsertValueOp>(loc, structTy, res, base, 0);

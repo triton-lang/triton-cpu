@@ -99,13 +99,14 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
   matchAndRewrite(BrgemmCreate brgemmOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = brgemmOp.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 
     std::string dispatchName = "create_brgemm";
 
-    auto lhsDnnType = i64_val(getDnnlDataTypeVal(adaptor.getDtypeA()));
-    auto rhsDnnType = i64_val(getDnnlDataTypeVal(adaptor.getDtypeB()));
-    auto accDnnType = i64_val(getDnnlDataTypeVal(adaptor.getDtypeC()));
+    auto lhsDnnType = b.i64_val(getDnnlDataTypeVal(adaptor.getDtypeA()));
+    auto rhsDnnType = b.i64_val(getDnnlDataTypeVal(adaptor.getDtypeB()));
+    auto accDnnType = b.i64_val(getDnnlDataTypeVal(adaptor.getDtypeC()));
 
     auto brgemmArgs =
         SmallVector<Value>{adaptor.getM(),   adaptor.getN(),
