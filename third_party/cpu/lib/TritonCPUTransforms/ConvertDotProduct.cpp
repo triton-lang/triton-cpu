@@ -467,7 +467,7 @@ struct ConvertDotProduct
       patterns.add<ConvertMulSumToDotPack>(context);
     }
 
-    if (failed(mlir::applyPatternsAndFoldGreedily(mod, std::move(patterns))))
+    if (failed(mlir::applyPatternsGreedily(mod, std::move(patterns))))
       return signalPassFailure();
   }
 };

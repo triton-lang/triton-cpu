@@ -30,6 +30,7 @@ CPU_BLOCK_SIZE = 4096
 CPU_ST_THRESHOLD = 65536
 USE_GPU = False
 
+
 @triton.jit
 def add_kernel(x_ptr,  # *Pointer* to first input vector.
                y_ptr,  # *Pointer* to second input vector.
@@ -203,7 +204,7 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
     print(output_torch_gpu)
     print(output_triton_gpu)
     print(f'The maximum difference between torch and triton is '
-        f'{torch.max(torch.abs(output_torch_gpu - output_triton_gpu))}')
+          f'{torch.max(torch.abs(output_torch_gpu - output_triton_gpu))}')
 
     LINE_VALS += ['triton-gpu', 'torch-gpu']
     LINE_NAMES += ['TritonGPU', 'TorchGPU']

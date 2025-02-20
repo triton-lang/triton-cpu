@@ -168,13 +168,14 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   });
   m.def("add_vector_to_llvmir",
         [](mlir::PassManager &pm, bool reassoc_fp_reduction) {
-          mlir::ConvertVectorToLLVMPassOptions opts;
+          mlir::ConvertVectorToLLVMPassOptions opts{};
           opts.reassociateFPReductions = reassoc_fp_reduction;
           // opts.force32BitVectorIndices = true;
           opts.amx = true;
           // opts.armNeon = false;
           // opts.armSVE = false;
           opts.x86Vector = true;
+          opts.vectorTransformsOptions = {};
           pm.addPass(mlir::createConvertVectorToLLVMPass(opts));
         });
   m.def("add_lower_affine", [](mlir::PassManager &pm) {
@@ -192,6 +193,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   });
   m.def("add_func_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertFuncToLLVMPass());
+  });
+  m.def("add_ub_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createUBToLLVMConversionPass());
   });
 }
 

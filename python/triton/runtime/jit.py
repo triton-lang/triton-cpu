@@ -526,6 +526,7 @@ class JITFunction(KernelInterface[T]):
         kwargs["debug"] = kwargs.get("debug", self.debug) or os.environ.get("TRITON_DEBUG", "0") == "1"
 
         # parse options
+        device_key = get_device_key()
         device = driver.active.get_current_device()
         stream = driver.active.get_current_stream(device)
 
@@ -533,7 +534,7 @@ class JITFunction(KernelInterface[T]):
         for hook in self.pre_run_hooks:
             hook(*args, **kwargs)
 
-        kernel_cache, target, backend, binder = self.device_caches[device]
+        kernel_cache, target, backend, binder = self.device_caches[device_key]
         bound_args, specialization, options = binder(*args, **kwargs)
 
         # compute cache key
@@ -675,6 +676,7 @@ class JITFunction(KernelInterface[T]):
         import json
         import triton.language as tl
         device_key = get_device_key()
+        # device = driver.active.get_current_device()
         deserialized_obj = json.loads(specialization_data)
         if deserialized_obj['name'] != self.fn.__name__:
             raise RuntimeError(
@@ -696,7 +698,7 @@ class JITFunction(KernelInterface[T]):
         }
         key = deserialized_obj['key']
         kernel = compile(src, None, options)
-        self.device_caches[device][0][key] = kernel
+        self.device_caches[device_key][0][key] = kernel
         return kernel
 
     # we do not parse `src` in the constructor because

@@ -351,7 +351,7 @@ struct OptimizeMasks
     patterns.add<CdivToDiv>(context);
     patterns.add<ScaleInductionVariable>(context);
     patterns.add<OptimizeMask>(context);
-    if (failed(mlir::applyPatternsAndFoldGreedily(mod, std::move(patterns))))
+    if (failed(mlir::applyPatternsGreedily(mod, std::move(patterns))))
       return signalPassFailure();
 
     // TODO: if masks removal failed for loads/stores in a for-loop, we might

@@ -41,7 +41,7 @@ struct LowerMultiReduction
     vector::populateVectorMultiReductionLoweringPatterns(loweringPatterns,
                                                          options);
 
-    if (failed(applyPatternsAndFoldGreedily(op, std::move(loweringPatterns))))
+    if (failed(applyPatternsGreedily(op, std::move(loweringPatterns))))
       signalPassFailure();
   }
 };

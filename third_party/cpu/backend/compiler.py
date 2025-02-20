@@ -127,7 +127,7 @@ class CPUBackend(BaseBackend):
     def pack_metadata(self, metadata):
         return metadata
 
-    def get_codegen_implementation(self):
+    def get_codegen_implementation(self, options):
         codegen_fns = {"min_dot_size": min_dot_size(self.target)}
         return codegen_fns
 
@@ -257,6 +257,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
         passes.convert.add_arith_to_llvmir(pm)
         cpu.passes.ttcpuir.add_func_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_ub_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

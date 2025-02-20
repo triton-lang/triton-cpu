@@ -6,7 +6,6 @@ import sysconfig
 import os
 import shutil
 import subprocess
-import setuptools
 
 
 @contextlib.contextmanager
@@ -96,31 +95,4 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     ret = subprocess.check_call(cc_cmd)
     if ret == 0:
         return so
-    # fallback on setuptools
-    extra_compile_args = []
-    # extra arguments
-    extra_link_args = []
-    # create extension module
-    ext = setuptools.Extension(
-        name=name,
-        language='c',
-        sources=[src],
-        include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args + ['-O3'],
-        extra_link_args=extra_link_args,
-        library_dirs=library_dirs,
-        libraries=libraries,
-    )
-    # build extension module
-    args = ['build_ext']
-    args.append('--build-temp=' + srcdir)
-    args.append('--build-lib=' + srcdir)
-    args.append('-q')
-    args = dict(
-        name=name,
-        ext_modules=[ext],
-        script_args=args,
-    )
-    with quiet():
-        setuptools.setup(**args)
     return so

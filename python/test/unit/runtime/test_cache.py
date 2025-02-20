@@ -8,7 +8,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.runtime.jit import JITFunction, get_device_key
+from triton.runtime.jit import JITFunction
 from triton._internal_testing import is_hip
 
 
@@ -191,7 +191,6 @@ def test_annotation(device):
 
     x = torch.empty(1, dtype=torch.int32, device=device)
 
-    device_key = get_device_key()
     kernel[(1, )](x, 1)
     kernel[(1, )](x, 8)
     kernel[(1, )](x, 16)
@@ -476,8 +475,6 @@ def test_preload(device, fresh_triton_cache) -> None:
         idx = tl.arange(0, N)
         tl.device_assert(idx < 32, "idx < 32")
         tl.store(o + idx, tl.load(a + idx) - tl.load(b + idx))
-
-    device = get_device_key()
 
     # get the serialized specialization data
     specialization_data = None

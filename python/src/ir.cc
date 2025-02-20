@@ -1891,9 +1891,10 @@ void init_triton_ir(py::module &&m) {
           context->disableMultithreading();
           self.enableCrashReproducerGeneration(reproducerPath,
                                                /*genLocalReproducer=*/true);
-        } else {
-          self.enableCrashReproducerGeneration(makeConsoleReproducer());
         }
+        // } else {
+        //   self.enableCrashReproducerGeneration(makeConsoleReproducer());
+        // }
 
         if (triton::tools::getBoolEnv("TRITON_ENABLE_LLVM_DEBUG")) {
           ::llvm::DebugFlag = true;

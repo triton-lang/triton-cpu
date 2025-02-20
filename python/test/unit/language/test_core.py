@@ -333,6 +333,7 @@ def test_empty_kernel_scalar_arg(device):
 
     kernel[(1, )](2)
 
+
 def test_scalar_overflow(device):
 
     @triton.jit
@@ -2836,7 +2837,7 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
     BLOCK_M = 32
     x = torch.randn((BLOCK_M, N), dtype=torch.float32, device=device)
     y = torch.randn((BLOCK_M, num_pid_n), dtype=torch.float32, device=device)
-    h = kernel[(1, num_pid_n, 1)](x, y, N, BLOCK_M, BLOCK_N, NUM_PID_N=num_pid_n)
+    h = kernel[(1, num_pid_n, 1)](x, y, N, BLOCK_M, BLOCK_N)
     if not is_interpreter() and not is_cpu():
         assert h.asm['ttgir'].count(
             '"tt.reduce"') == 2, "tt.reduce should be called twice, otherwise the optimization didn't work"
@@ -3560,6 +3561,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             M = min(M, 32 if epilogue == "chain-dot" else 64)
             N = min(N, 32 if epilogue == "chain-dot" else 64)
             K = min(K, 16 if epilogue == "chain-dot" else 32)
+        if not is_hip() and (M < 4 or N < 4 or K < 4):
+            pytest.skip("small dots are supported only on HIP at the moment")
     else:
         if not is_hip() and (M < 16 or N < 16 or K < 16):
             pytest.skip("small dots are supported only on HIP at the moment")
@@ -4064,6 +4067,8 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
         if out_dtype_str == "float16":
             pytest.skip("Test is skipped due to float16 accuracy issue")
         input_precision = "tf32" if in_dtype_str == 'float32' else "ieee"
+        if not is_interpreter() and (BLOCK_M < 4 or BLOCK_N < 4):
+            pytest.skip("small dots are supported only on HIP at the moment")
     else:
         input_precision = "tf32" if is_cuda() and in_dtype_str == 'float32' else "ieee"
         if not is_interpreter() and (BLOCK_M < 16 or BLOCK_N < 16):
@@ -4127,6 +4132,7 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
     if in_dtype_str == 'int8':
         out = numpy_random((B, M, N), dtype_str='int32', rs=rs)
     else:
+        # TODO 16 is device depndent consstant, should be passed as kernel argument
         if is_hip() and (BLOCK_M < 16 or BLOCK_N < 16) and out_dtype_str == 'float16':
             # float16 accumulator in FMA dot loose precision too fast
             x *= 0.1

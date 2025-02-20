@@ -101,7 +101,7 @@ def kernel_print_2d_tensor(X, Y, BLOCK_SIZE_X: tl.constexpr, BLOCK_SIZE_Y: tl.co
 
 
 def test_print(func: str, data_type: str, device: str):
-    N = 128 # This value should match with test_print in test_subprocess.py.
+    N = 128  # This value should match with test_print in test_subprocess.py.
     SCALAR = 42
 
     # TODO(antiagainst): Currently the warp count is chosen to make sure we don't have multiple
