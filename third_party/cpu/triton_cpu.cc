@@ -175,6 +175,17 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
           // opts.armNeon = false;
           // opts.armSVE = false;
           opts.x86Vector = true;
+          // opts.vectorTransformsOptions();
+          // TODO: Check whether we need these parameters.
+          // Somehow it helps arm.
+          opts.vectorTransformsOptions.setVectorTransformsOptions(
+              mlir::vector::VectorContractLowering::OuterProduct);
+          opts.vectorTransformsOptions.setVectorMultiReductionLowering(
+              mlir::vector::VectorMultiReductionLowering::InnerParallel);
+          opts.vectorTransformsOptions.setVectorTransposeLowering(
+              mlir::vector::VectorTransposeLowering::EltWise);
+          opts.vectorTransformsOptions.setVectorTransferSplit(
+              mlir::vector::VectorTransferSplit::VectorTransfer);
           pm.addPass(mlir::createConvertVectorToLLVMPass(opts));
         });
   m.def("add_lower_affine", [](mlir::PassManager &pm) {
@@ -192,6 +203,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   });
   m.def("add_func_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertFuncToLLVMPass());
+  });
+  m.def("add_ub_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createUBToLLVMConversionPass());
   });
 }
 

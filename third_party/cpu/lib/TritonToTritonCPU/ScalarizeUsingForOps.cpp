@@ -381,7 +381,7 @@ struct ScalarizeUsingForOpPass
                  ScalarizeOpConversion<triton::StoreOp>>(
         axisInfoAnalysis, context, skipGatherScatter);
 
-    if (applyPatternsAndFoldGreedily(mod, std::move(patterns)).failed()) {
+    if (applyPatternsGreedily(mod, std::move(patterns)).failed()) {
       return signalPassFailure();
     }
   }

@@ -3639,6 +3639,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             M = min(M, 32 if epilogue == "chain-dot" else 64)
             N = min(N, 32 if epilogue == "chain-dot" else 64)
             K = min(K, 16 if epilogue == "chain-dot" else 32)
+        if not is_hip() and (M < 4 or N < 4 or K < 4):
+            pytest.skip("small dots are supported only on HIP at the moment")
     else:
         if not is_hip() and (M < 16 or N < 16 or K < 16):
             pytest.skip("small dots are supported only on HIP at the moment")
@@ -4158,6 +4160,8 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
         if out_dtype_str == "float16":
             pytest.skip("Test is skipped due to float16 accuracy issue")
         input_precision = "tf32" if in_dtype_str == 'float32' else "ieee"
+        if not is_interpreter() and (BLOCK_M < 4 or BLOCK_N < 4):
+            pytest.skip("small dots are supported only on HIP at the moment")
     else:
         input_precision = "tf32" if is_cuda() and in_dtype_str == 'float32' else "ieee"
         if not is_interpreter() and (BLOCK_M < 16 or BLOCK_N < 16):
@@ -4221,6 +4225,7 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
     if in_dtype_str == 'int8':
         out = numpy_random((B, M, N), dtype_str='int32', rs=rs)
     else:
+        # TODO 16 is device depndent consstant, should be passed as kernel argument
         if is_hip() and (BLOCK_M < 16 or BLOCK_N < 16) and out_dtype_str == 'float16':
             # float16 accumulator in FMA dot loose precision too fast
             x *= 0.1

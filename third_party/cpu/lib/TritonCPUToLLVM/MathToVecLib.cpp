@@ -157,6 +157,7 @@ public:
   LogicalResult matchAndRewrite(ExternElementwiseOp op,
                                 PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     VectorType vecTy = dyn_cast<VectorType>(op.getType());
     if (!vecTy)
       return failure();
@@ -171,7 +172,7 @@ public:
 
     // Create a single-element vector for shuffle to use
     auto paddingVec = rewriter.create<vector::SplatOp>(
-        loc, undef(elemTy), VectorType::get({1}, elemTy));
+        loc, b.undef(elemTy), VectorType::get({1}, elemTy));
     // Assign indices such that shuffle will pad the original vector with
     // elements from the paddingVec
     SmallVector<int64_t> indices(4);
@@ -397,7 +398,7 @@ struct MathToVecLibPass
     patterns.add<PadSmallVecsForSleef>(patterns.getContext());
     patterns.add<ExternElementwiseOpConversion>(patterns.getContext());
 
-    if (failed(applyPatternsAndFoldGreedily(op, std::move(patterns))))
+    if (failed(applyPatternsGreedily(op, std::move(patterns))))
       signalPassFailure();
   }
 

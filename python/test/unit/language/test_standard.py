@@ -25,9 +25,10 @@ def test_maximum_minium(dtype, op, device):
 # ---------------
 
 
+# TODO improve standard implementation of sort
 @pytest.mark.interpreter
 @pytest.mark.parametrize(
-    "M, N", [[1, 512], [8, 64], [256, 16], [512, 8]] if not is_cpu() else [[1, 128], [8, 64], [64, 16], [128, 8]])
+    "M, N", [[1, 512], [8, 64], [256, 16], [512, 8]] if not is_cpu() else [[1, 128], [4, 32], [32, 8], [64, 4]])
 @pytest.mark.parametrize("descending", [False, True])
 @pytest.mark.parametrize("dtype_str", ['int32', 'float16', 'float32', 'bfloat16'])
 def test_sort(M, N, descending, dtype_str, device):

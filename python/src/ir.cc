@@ -1894,9 +1894,14 @@ void init_triton_ir(py::module &&m) {
           context->disableMultithreading();
           self.enableCrashReproducerGeneration(reproducerPath,
                                                /*genLocalReproducer=*/true);
-        } else {
-          self.enableCrashReproducerGeneration(makeConsoleReproducer());
         }
+        // TODO: (vectorTransformsOptions in ConvertVectorToLLVMPass not covered
+        // with CLCrashReprodcer) Waiting for LLVM with
+        // https://github.com/llvm/llvm-project/pull/128219 Merged
+        //
+        // } else {
+        //   self.enableCrashReproducerGeneration(makeConsoleReproducer());
+        // }
 
         if (triton::tools::getBoolEnv("TRITON_ENABLE_LLVM_DEBUG")) {
           ::llvm::DebugFlag = true;

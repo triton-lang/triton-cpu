@@ -73,16 +73,17 @@ Value printfPromoteValue(RewriterBase &rewriter, Value value) {
   auto *context = rewriter.getContext();
   auto type = value.getType();
   auto loc = UnknownLoc::get(context);
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
 
   bool isUnsigned = type.isUnsignedInteger();
   if (type.isIntOrIndex() && type.getIntOrFloatBitWidth() < 32) {
     if (isUnsigned) {
-      return zext(ui32_ty, value);
+      return b.zext(ui32_ty, value);
     } else {
-      return sext(i32_ty, value);
+      return b.sext(i32_ty, value);
     }
   } else if (type.isBF16() || type.isF16() || type.isF32()) {
-    return fpext(f64_ty, value);
+    return b.fpext(f64_ty, value);
   }
 
   return value;
@@ -161,6 +162,7 @@ void createRuntimePrintScalarCall(ConversionPatternRewriter &rewriter,
                                   bool isSigned = false) {
   assert(!prefix.empty() && "printf with empty string not supported");
   auto loc = UnknownLoc::get(rewriter.getContext());
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
 
   std::string formatStr;
   llvm::raw_string_ostream os(formatStr);
@@ -180,7 +182,7 @@ void createRuntimePrintScalarCall(ConversionPatternRewriter &rewriter,
     allArgs.push_back(elem);
   if (arg.has_value())
     allArgs.push_back(printfPromoteValue(rewriter, arg.value()));
-  call(getOrAddPrintFuncDecl(rewriter, true), allArgs);
+  b.call(getOrAddPrintFuncDecl(rewriter, true), allArgs);
 }
 
 void createRuntimePrintCall(ConversionPatternRewriter &rewriter,
@@ -188,6 +190,7 @@ void createRuntimePrintCall(ConversionPatternRewriter &rewriter,
                             Value ptr, Type dtype, bool isSigned, bool hex) {
   assert(!prefix.empty());
   auto loc = UnknownLoc::get(rewriter.getContext());
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
   Value prefixValue = LLVM::addStringToModule(
       loc, rewriter, "vectorPrintPrefix_", makeNullTerminatedString(prefix));
 
@@ -198,12 +201,12 @@ void createRuntimePrintCall(ConversionPatternRewriter &rewriter,
   allArgs.push_back(prefixValue);
   allArgs.push_back(ptr);
 
-  allArgs.push_back(i32_val(dtype.getIntOrFloatBitWidth()));
-  allArgs.push_back(i32_val(dtype.isInteger()));
-  allArgs.push_back(i32_val(isSigned));
-  allArgs.push_back(i32_val(hex));
+  allArgs.push_back(b.i32_val(dtype.getIntOrFloatBitWidth()));
+  allArgs.push_back(b.i32_val(dtype.isInteger()));
+  allArgs.push_back(b.i32_val(isSigned));
+  allArgs.push_back(b.i32_val(hex));
 
-  call(getOrAddPrintMemrefFuncDecl(rewriter), allArgs);
+  b.call(getOrAddPrintMemrefFuncDecl(rewriter), allArgs);
 }
 
 bool usePrintf(triton::cpu::PrintOp op) {
@@ -266,6 +269,7 @@ struct AssertOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto ctx = rewriter.getContext();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto typeConverter = getTypeConverter();
     Value message =
         LLVM::addStringToModule(loc, rewriter, "assertMessage_",
@@ -292,8 +296,8 @@ struct AssertOpConversion
                                          makeNullTerminatedString(funcStr));
     SmallVector<Value> args{getPid(op, 0),     getPid(op, 1), getPid(op, 2),
                             op.getCondition(), message,       file,
-                            i32_val(line),     func};
-    call(getAssertFuncDecl(rewriter), args);
+                            b.i32_val(line),   func};
+    b.call(getAssertFuncDecl(rewriter), args);
     rewriter.eraseOp(op);
     return success();
   }

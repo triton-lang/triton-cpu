@@ -115,33 +115,55 @@ def ty_to_cpp(ty):
 def make_launcher(constants, signature, ids):
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
-    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    def _serialize_signature(sig):
+        if isinstance(sig, tuple):
+            return ','.join(map(_serialize_signature, sig))
+        return sig
 
     def _extracted_type(ty):
+        if isinstance(ty, tuple):
+            val = ','.join(map(_extracted_type, ty))
+            return f"[{val}]"
         if ty[0] == '*':
+            return "PyObject*"
+        if ty in ("constexpr"):
             return "PyObject*"
         return ty_to_cpp(ty)
 
     def format_of(ty):
+        if isinstance(ty, tuple):
+            val = ''.join(map(format_of, ty))
+            return f"({val})"
+        if ty[0] == '*':
+            return "O"
+        if ty in ("constexpr"):
+            return "O"
         return {
-            "PyObject*": "O",
             "float": "f",
             "double": "d",
             "long": "l",
             "int8_t": "b",
             "int16_t": "h",
             "int32_t": "i",
-            "int64_t": "l",
+            "int64_t": "L",
             "uint8_t": "B",
             "uint16_t": "H",
             "uint32_t": "I",
             "uint64_t": "K",
-        }[ty]
+        }[ty_to_cpp(ty)]
 
-    args_format = ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
+    args_format = ''.join([format_of(ty) for ty in signature.values()])
     format = "iiiOKOOOO" + args_format
-    arg_ptrs_list = ', '.join(f"&arg{i}" for i, ty in signature.items())
-    kernel_fn_args = [i for i in signature.keys() if i not in constants]
+
+    signature = ','.join(map(_serialize_signature, signature.values()))
+    signature = list(filter(bool, signature.split(',')))
+    signature = {i: s for i, s in enumerate(signature)}
+
+    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
+
+    arg_ptrs_list = ', '.join(f"&arg{i}" for i in signature.keys())
+    kernel_fn_args = [i for i, ty in signature.items() if i not in constants and ty != "constexpr"]
+    signature_without_constexprs = {i: ty for i, ty in signature.items() if ty != "constexpr"}
     kernel_fn_args_list = ', '.join(f"arg{i}" for i in kernel_fn_args)
     kernel_fn_arg_types = ', '.join([f"{ty_to_cpp(signature[i])}" for i in kernel_fn_args] + ["uint32_t"] * 6)
 
@@ -241,7 +263,7 @@ static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gri
   return grids;
 }}
 
-static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_threads, kernel_ptr_t kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_threads, kernel_ptr_t kernel_ptr {(', ' + arg_decls) if len(arg_decls) > 0 else ''}) {{
   // TODO: Consider using omp collapse(3) clause for simplicity?
   size_t N = gridX * gridY * gridZ;
   if (N == 1) {{
@@ -309,8 +331,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
       return NULL;
   }}
 
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {',' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''});
+  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature_without_constexprs.items()])};
+  run_omp_kernels(gridX, gridY, gridZ, num_threads, kernel_ptr {(', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"arg{i}" for i, ty in signature_without_constexprs.items())) if len(signature_without_constexprs) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
@@ -435,6 +457,10 @@ class CPUDriver(DriverBase):
     def get_current_device(self):
         return 0
 
+    def get_active_torch_device(self):
+        import torch
+        return torch.device("cpu", self.get_current_device())
+
     def get_current_stream(self, device):
         return 0
 
@@ -467,3 +493,7 @@ class CPUDriver(DriverBase):
         # A typical LLC size for high-end server CPUs are ~400MB.
         cache_size = 512 * 1024 * 1024
         return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
+
+    # TODO maybe CPU should do anything here
+    def clear_cache(self, cache):
+        cache.zero_()

@@ -86,7 +86,13 @@ def MathToVecLib : Pass<"triton-cpu-math-to-vec-lib", "mlir::ModuleOp"> {
     let options = [
         Option<"lib", "lib",
                "mlir::triton::cpu::VecLib", /*default*/"mlir::triton::cpu::VecLib::Sleef",
-               "Library to use for vector math (libsleef or libmvec).">,
+               "Library to use for vector math (libsleef or libmvec).",
+               [{::llvm::cl::values(
+               clEnumValN(mlir::triton::cpu::VecLib::Sleef, "sleef",
+                "Use Sleef as mm lib"),
+               clEnumValN(mlir::triton::cpu::VecLib::Mvec, "mvec",
+                "Use Mvec as mm lib")
+              )}]>,
     ];
 
     let dependentDialects = ["mlir::vector::VectorDialect",

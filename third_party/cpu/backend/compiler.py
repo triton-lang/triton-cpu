@@ -45,6 +45,7 @@ class CPUOptions:
     allow_fp8e4nv: bool = True
     allow_fp8e4b15: bool = True
     enable_fp_fusion: bool = True
+    launch_cooperative_grid: bool = False
     max_num_imprecise_acc_default: int = 0
     enable_fast_math: bool = True
     vec_lib: Optional[str] = 'libsleef'
@@ -127,7 +128,7 @@ class CPUBackend(BaseBackend):
     def pack_metadata(self, metadata):
         return metadata
 
-    def get_codegen_implementation(self):
+    def get_codegen_implementation(self, options):
         codegen_fns = {"min_dot_size": min_dot_size(self.target)}
         return codegen_fns
 
@@ -256,7 +257,9 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
         passes.convert.add_arith_to_llvmir(pm)
+        # passes.convert.add_cf_to_llvmir(pm)
         cpu.passes.ttcpuir.add_func_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_ub_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

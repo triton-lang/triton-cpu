@@ -187,8 +187,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
         end_event[i].record()
     # Record clocks
     di.synchronize()
-
-    times = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)], dtype=torch.float)
+    times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
     return _summarize_statistics(times, quantiles, return_mode)
 
 
