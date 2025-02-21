@@ -435,6 +435,10 @@ class CPUDriver(DriverBase):
     def get_current_device(self):
         return 0
 
+    def get_active_torch_device(self):
+        import torch
+        return torch.device("cpu", self.get_current_device())
+
     def get_current_stream(self, device):
         return 0
 
