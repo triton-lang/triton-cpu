@@ -120,7 +120,8 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         return _summarize_statistics(ret, quantiles, return_mode)
 
 
-def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean"):
+def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean",
+             measure_time_with_hooks=False):
     """
     Benchmark the runtime of the provided function. By default, return the median runtime of :code:`fn` along with
     the 20-th and 80-th performance percentile.
@@ -147,7 +148,6 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
 
     cache = runtime.driver.active.get_empty_cache_for_benchmark()
 
-    # Estimate the runtime of the function
     start_event = di.Event(enable_timing=True)
     end_event = di.Event(enable_timing=True)
     start_event.record()
@@ -157,6 +157,11 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     end_event.record()
     di.synchronize()
     estimate_ms = start_event.elapsed_time(end_event) / 5
+
+    # For CPU we can use entry and exit hooks to measure execution time
+    # more precisely.
+    if measure_time_with_hooks:
+        di.enable_hook_timing()
 
     # compute number of warmup and repeat
     n_warmup = max(1, int(warmup / estimate_ms))
@@ -182,6 +187,7 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
         end_event[i].record()
     # Record clocks
     di.synchronize()
+
     times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
     return _summarize_statistics(times, quantiles, return_mode)
 
@@ -351,12 +357,17 @@ class Mark:
                 y_min, y_max = df[y + '-min'], df[y + '-max']
                 col = bench.styles[i][0] if bench.styles else None
                 sty = bench.styles[i][1] if bench.styles else None
-                ax.plot(df[first_x], df[y], label=y, color=col, ls=sty)
+                ax.plot(df[first_x], df[y], color=col, ls=sty)
+                ax.annotate(y, xy=(df[first_x], df[y]), xytext=(1.02 * df[first_x], df[y]), color=col)
                 if not y_min.isnull().all() and not y_max.isnull().all():
                     y_min = y_min.astype(float)
                     y_max = y_max.astype(float)
                     ax.fill_between(df[first_x], y_min, y_max, alpha=0.15, color=col)
-            ax.legend()
+            # ax.legend()
+            ax.minorticks_on()
+            ax.grid(which='minor', alpha=0.2)
+            ax.grid(which='major', alpha=0.5)
+
             ax.set_xlabel(bench.xlabel or first_x)
             ax.set_ylabel(bench.ylabel)
             # ax.set_title(bench.plot_name)

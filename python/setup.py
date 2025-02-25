@@ -584,7 +584,8 @@ download_and_copy(
     url_func=lambda system, arch, version:
     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
 )
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+
+backends = [*BackendInstaller.copy(["nvidia", "amd", "cpu"]), *BackendInstaller.copy_externals()]
 
 
 def add_link_to_backends():
@@ -688,6 +689,7 @@ def get_packages():
         "triton/compiler",
         "triton/language",
         "triton/language/extra",
+        "triton/language/extra/cpu",
         "triton/runtime",
         "triton/backends",
         "triton/tools",
@@ -782,12 +784,12 @@ setup(
         "tests": [
             "autopep8",
             "isort",
-            "numpy",
+            "numpy<2.0.0",
             "pytest",
             "pytest-forked",
             "pytest-xdist",
             "scipy>=1.7.1",
-            "llnl-hatchet",
+            # "llnl-hatchet", # TODO: Re-enable this, not available on macos-arm64
         ],
         "tutorials": [
             "matplotlib",

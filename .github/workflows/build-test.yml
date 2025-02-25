@@ -1,0 +1,158 @@
+name: Build and test
+run-name: ${{ inputs.run_name }}
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      # You can name your branch dev-foo to get CI runs.
+      - 'dev-**'
+  push:
+    branches:
+      - main
+
+jobs:
+  pre-commit:
+    name: Pre-commit checks
+    runs-on:
+      - glados
+      - intel
+      - x86
+    steps:
+      - name: Print inputs
+        run: |
+          echo "${{ toJSON(github.event.inputs) }}"
+          echo INSTALL_IPEX=${{ env.INSTALL_IPEX }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run pre-commit checks
+        run: |
+          pip install --upgrade pre-commit
+
+          # TODO: ignore the first yapf failure until https://github.com/google/yapf/issues/1164 is fixed
+          python3 -m pre_commit run --all-files --verbose yapf &> /dev/null || true
+          # If first run of yapf worked and made changes reset the tree to the original state
+          git reset --hard
+
+          python3 -m pre_commit run --show-diff-on-failure --color=always --all-files --verbose
+
+  build-test:
+    name: Build and test on ${{ matrix.config.runner }}
+    runs-on: ${{ matrix.config.runs_on }}
+    strategy:
+      matrix:
+        python: ['3.11']
+        config:
+          - {runner: 'Ubuntu Intel x86', runs_on: ['glados', 'intel', 'x86'], target-os: 'ubuntu', arch: 'x86'}
+          - {runner: 'MacOS-latest ARM64', runs_on: ['macos-latest'], target-os: 'macos',  arch: 'arm64'}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install pip and apt dependencies
+        env:
+          RUNNER_TARGET_OS: ${{ matrix.config.target-os }}
+        run: |
+          echo "RUNNER_TARGET_OS: ${RUNNER_TARGET_OS}"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit pybind11
+          if [[ "${RUNNER_TARGET_OS}" == "ubuntu" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y zlib1g-dev g++
+          fi
+          pip install torch==2.1.2
+
+      - name: Install Triton
+        run: |
+          echo "PATH is '$PATH'"
+          cd python
+          python3 -m pip install --no-build-isolation -vvv '.[tests]'
+
+      - name: Run python unit tests for MacOS Arm64
+        if: matrix.config.target-os == 'macos'
+        run: |
+          export CC=$(which clang)
+          export TRITON_DISABLE_OPENMP=1 # temporary
+          export TRITON_CPU_BACKEND=1
+
+          # Document some versions/flags
+          echo "xcode-select:"; xcode-select -p
+          echo "CC: ${CC}"
+          clang --version
+          echo "TRITON_DISABLE_OPENMP=${TRITON_DISABLE_OPENMP}"
+          echo "TRITON_CPU_BACKEND=${TRITON_CPU_BACKEND}"
+
+          # Skip bfloat16 tests for now
+          # We are generating bfcvt for bfloat16 tests when converting to fp32.
+          # This is only for Clang15, works OK for Clang16
+          # TODO - fix this using driver flags.
+          python -m pytest -s -n 32 --device cpu \
+            python/test/unit/language/test_core.py -m cpu -k "not bfloat16"
+          python -m pytest -s -n 32 --device cpu \
+            python/test/unit/cpu/test_math.py \
+            python/test/unit/cpu/test_opt.py \
+            python/test/unit/language/test_annotations.py \
+            python/test/unit/language/test_block_pointer.py \
+            python/test/unit/language/test_compile_errors.py \
+            python/test/unit/language/test_conversions.py \
+            python/test/unit/language/test_decorator.py \
+            python/test/unit/language/test_pipeliner.py \
+            python/test/unit/language/test_random.py \
+            python/test/unit/language/test_standard.py \
+            python/test/unit/runtime/test_autotuner.py \
+            python/test/unit/runtime/test_bindings.py \
+            python/test/unit/runtime/test_cache.py \
+            python/test/unit/runtime/test_driver.py \
+            python/test/unit/runtime/test_jit.py \
+            python/test/unit/runtime/test_launch.py \
+            python/test/unit/runtime/test_subproc.py \
+            python/test/unit/test_debug_dump.py \
+            -k "not bfloat16"
+
+      - name: Run python unit tests for Intel
+        if: matrix.config.target-os == 'ubuntu'
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu \
+            python/test/unit/cpu/test_math.py \
+            python/test/unit/cpu/test_opt.py \
+            python/test/unit/language/test_annotations.py \
+            python/test/unit/language/test_block_pointer.py \
+            python/test/unit/language/test_compile_errors.py \
+            python/test/unit/language/test_conversions.py \
+            python/test/unit/language/test_decorator.py \
+            python/test/unit/language/test_pipeliner.py \
+            python/test/unit/language/test_random.py \
+            python/test/unit/language/test_standard.py \
+            python/test/unit/runtime/test_autotuner.py \
+            python/test/unit/runtime/test_bindings.py \
+            python/test/unit/runtime/test_cache.py \
+            python/test/unit/runtime/test_driver.py \
+            python/test/unit/runtime/test_jit.py \
+            python/test/unit/runtime/test_launch.py \
+            python/test/unit/runtime/test_subproc.py \
+            python/test/unit/test_debug_dump.py
+
+      - name: Run lit tests
+        run: |
+          cd python
+          LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
+          if [ ! -d "${LIT_TEST_DIR}" ]; then
+            echo "Could not find '${LIT_TEST_DIR}'" ; exit -1
+          fi
+          lit -v "${LIT_TEST_DIR}/TritonCPU"
