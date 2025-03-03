@@ -43,7 +43,7 @@ struct onednn_handle {
 EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
                            int64_t batch_size, int64_t lda, int64_t ldb,
                            int64_t ldc, int64_t dtypeA, int64_t dtypeB,
-                           int64_t dtypeC) {
+                           int64_t dtypeC, bool skip_packing) {
   using KeyT = std::array<int64_t, 10>;
   KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
@@ -65,29 +65,42 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
   auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
   auto dnnl_dtypeC = static_cast<dnnl::memory::data_type>(dtypeC);
 
+  bool isPackingNeeded =
+      dnnl::ukernel::brgemm::get_B_pack_type(dnnl_dtypeA, dnnl_dtypeB) ==
+      dnnl::ukernel::pack_type::pack32;
+
   dnnl::ukernel::brgemm brg;
-  brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
-                              dnnl_dtypeB, dnnl_dtypeC);
+  if (!isPackingNeeded) {
+    brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc,
+                                dnnl_dtypeA, dnnl_dtypeB, dnnl_dtypeC);
+  } else {
+    if (skip_packing) {
+      // data is vnni prepacked
+      // ldb is interleaved with vnni_factor
+      // So we will use ldb divided to number of interleaved rows.
+      // In general register size is 32 bits (4 bytes)
+      // So number of interleaved is
+      int vnni_pack_factor = 4 / dnnl::memory::data_type_size(dnnl_dtypeB);
+      brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda,
+                                  ldb / vnni_pack_factor, ldc, dnnl_dtypeA,
+                                  dnnl_dtypeB, dnnl_dtypeC);
+    } else {
+      // Transform will be generated on this branch
+      brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, N, ldc,
+                                  dnnl_dtypeA, dnnl_dtypeB, dnnl_dtypeC);
+    }
+  }
+
   // Instruct the kernel to append the result to C tensor.
   brg.set_add_C(true);
   // Finalize the initialization.
   brg.finalize();
 
-  bool need_packing = brg.get_B_pack_type() == pack_type::pack32;
-  if (need_packing) {
-    brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, N, ldc, dnnl_dtypeA,
-                                dnnl_dtypeB, dnnl_dtypeC);
-    // Instruct the kernel to append the result to C tensor.
-    brg.set_add_C(true);
-    // Finalize the initialization.
-    brg.finalize();
-  }
-
   // Generate the executable JIT code for the objects.
   brg.generate();
 
   dnnl::ukernel::transform tf;
-  if (need_packing) {
+  if (isPackingNeeded && !skip_packing) {
     // Packing B tensor routine. The BRGeMM ukernel expects B passed in a
     // special VNNI format for low precision data types, e.g., bfloat16_t.
     // Note: the routine doesn't provide a `batch_size` argument in the
@@ -109,7 +122,8 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
 EXPORT void brgemm_execute(const void *handle, void *A_ptr,
                            void *original_B_ptr, void *C_ptr,
                            int64_t A_step_in_bytes, int64_t B_step_in_bytes,
-                           int64_t B_block_size_in_bytes, int64_t num_batches) {
+                           int64_t B_block_size_in_bytes, int64_t num_batches,
+                           bool skip_packing) {
 
   uint8_t *blocked_data = reinterpret_cast<uint8_t *>(original_B_ptr);
   const uint8_t *B_ptr_calc = reinterpret_cast<const uint8_t *>(original_B_ptr);
@@ -119,8 +133,7 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
   const auto pack_B = kernel->transform;
   const auto brg = kernel->brg;
 
-  const bool need_packing = brg.get_B_pack_type() == pack_type::pack32;
-  if (need_packing) {
+  if (!skip_packing) {
     blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
   }
 
@@ -131,7 +144,7 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
     const memory::dim A_offset_i = i * A_step_in_bytes;
 
     memory::dim B_offset_i;
-    if (need_packing) {
+    if (!skip_packing) {
       pack_B.execute(B_ptr_calc + i * B_step_in_bytes,
                      blocked_data + i * B_block_size_in_bytes);
       B_offset_i = i * B_block_size_in_bytes;
@@ -149,7 +162,7 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
 
   dnnl::ukernel::brgemm::release_hw_context();
 
-  if (need_packing) {
+  if (!skip_packing) {
     delete[] blocked_data;
   };
 }

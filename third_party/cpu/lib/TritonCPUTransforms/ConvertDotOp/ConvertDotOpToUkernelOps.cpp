@@ -29,6 +29,44 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_config.h"
+#include "oneapi/dnnl/dnnl_ukernel.hpp"
+#endif
+
+#if defined(DNNL_EXPERIMENTAL_UKERNEL)
+static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
+  ty = getElementTypeOrSelf(ty);
+  if (ty.isF32())
+    return dnnl::memory::data_type::f32;
+  if (ty.isF64())
+    return dnnl::memory::data_type::f64;
+  if (ty.isBF16())
+    return dnnl::memory::data_type::bf16;
+  if (ty.isF16())
+    return dnnl::memory::data_type::f16;
+  llvm_unreachable("Unexpected type for conversion to DNNL type.");
+}
+#endif
+
+bool isOneDNNPackingExpected(Type dtypeA, Type dtypeB) {
+#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
+  // WA for passing lit tests without OneDNN.
+  return false;
+  llvm_unreachable("Using OneDNN without librabry.");
+#else
+  return dnnl::ukernel::brgemm::get_B_pack_type(getDnnlDataTypeVal(dtypeA),
+                                                getDnnlDataTypeVal(dtypeB)) ==
+         dnnl::ukernel::pack_type::pack32;
+#endif
+}
+
+bool isPackingExpected(Type dtypeA, Type dtypeB, Ukernels ukernel) {
+  if (ukernel == Ukernels::OneDNN)
+    return isOneDNNPackingExpected(dtypeA, dtypeB);
+  return false;
+}
+
 // This structure is used to hold candidates for conversion to ukernel calls.
 struct DotOpCandidate {
   // Operation to convert.
@@ -196,10 +234,15 @@ bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   if (!checkInputShapes(lhsTy, resTy, candidate, ukernel))
     return false;
 
+  bool allowVnni =
+      isPackingExpected(op.getA().getType(), op.getB().getType(), ukernel);
+
   candidate.op = op;
   candidate.isAccLoopCarried = isLoopCarriedAcc(op.getC());
-  candidate.lhsBuf = findInputBuffer(op.getA(), false);
-  candidate.rhsBuf = findInputBuffer(op.getB(), false);
+  candidate.lhsBuf = findInputBuffer(op.getA(), /*allowTransposed*/ false,
+                                     /*allowVnni*/ false);
+  candidate.rhsBuf = findInputBuffer(op.getB(), /*allowTransposed*/ false,
+                                     /*allowVnni*/ allowVnni);
 
   // Check if we can fuse dot op loop into a single brgemm call.
   if (candidate.isAccLoopCarried && !candidate.lhsBuf.step.empty() &&
@@ -214,12 +257,20 @@ bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   return true;
 }
 
-Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
-                       ValueRange indices, Value memRef) {
+Value addMemrefSubView(PatternRewriter &rewriter, Location loc,
+                       VectorType &vecTy, ValueRange indices, Value memRef) {
   LDBG("  Reusing the original memref for a buffer: " << memRef);
-  auto vecTy = cast<VectorType>(vecVal.getType());
   auto ctx = rewriter.getContext();
   auto memrefTy = cast<MemRefType>(memRef.getType());
+
+  bool allZero = llvm::all_of(indices, isZeroIndex);
+  if (allZero && memrefTy.getShape() == vecTy.getShape()) {
+    LDBG("  Skipping subveiw creation as original MemRef size is whole Vector: "
+         "\n    memref - "
+         << memRef << "\n       vec - " << vecTy
+         << "\n   is all Indices are zero - " << (allZero ? "true" : "false"));
+    return memRef;
+  }
   SmallVector<int64_t> strides(memrefTy.getRank(), 1);
   SmallVector<int64_t> shape(memrefTy.getRank(), 1);
   // we will add 1 to leading dimensions of shapes or just copy existing vector
@@ -232,6 +283,7 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
   Value memRef_view = rewriter.create<memref::SubViewOp>(
       loc, memRef, getAsOpFoldResult(indices),
       getAsIndexOpFoldResult(ctx, shape), getAsIndexOpFoldResult(ctx, strides));
+  LDBG("Adding subview with type: " << memRef_view);
   return memRef_view;
 }
 
@@ -318,7 +370,7 @@ Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
 //   - The original dot op is removed
 
 LogicalResult
-convertCandidate(DotOpCandidate &candidate,
+convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
                  ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
                  PatternRewriter &rewriter) {
   triton::cpu::DotOp op = candidate.op;
@@ -359,10 +411,9 @@ convertCandidate(DotOpCandidate &candidate,
   while (!isa<triton::FuncOp>(allocaPoint->getParentOp()))
     allocaPoint = allocaPoint->getParentOp();
 
-  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
-  auto blockM = int_cst(integer64, candidate.blockM);
-  auto blockN = int_cst(integer64, candidate.blockN);
-  auto blockK = int_cst(integer64, candidate.blockK);
+  auto blockM = int_cst(rewriter.getI64Type(), candidate.blockM);
+  auto blockN = int_cst(rewriter.getI64Type(), candidate.blockN);
+  auto blockK = int_cst(rewriter.getI64Type(), candidate.blockK);
 
   if (candidate.lhsBuf.empty()) {
     candidate.lhsBuf =
@@ -394,13 +445,21 @@ convertCandidate(DotOpCandidate &candidate,
     accToStore = maybeCast(loc, accToStore, rewriter.getF32Type(), rewriter);
     accBuf = storeToTmpBuffer(loc, accToStore, allocaPoint, rewriter);
   }
+  bool isPackingRequired =
+      isPackingExpected(op.getA().getType(), op.getB().getType(), ukernels);
 
+  auto lhsVecTy = cast<VectorType>(candidate.op.getA().getType());
   auto lhsSubView =
-      addMemrefSubView(rewriter, loc, candidate.op.getA(),
-                       candidate.lhsBuf.indices, candidate.lhsBuf.memRef);
+      addMemrefSubView(rewriter, loc, lhsVecTy, candidate.lhsBuf.indices,
+                       candidate.lhsBuf.memRef);
+
+  auto rhsVecTy = cast<VectorType>(candidate.op.getB().getType());
+  if (candidate.rhsBuf.vnni) {
+    rhsVecTy = getPackedLayoutType(rhsVecTy);
+  }
   auto rhsSubView =
-      addMemrefSubView(rewriter, loc, candidate.op.getB(),
-                       candidate.rhsBuf.indices, candidate.rhsBuf.memRef);
+      addMemrefSubView(rewriter, loc, rhsVecTy, candidate.rhsBuf.indices,
+                       candidate.rhsBuf.memRef);
 
   auto metadataA =
       rewriter.create<memref::ExtractStridedMetadataOp>(loc, lhsSubView);
@@ -418,13 +477,16 @@ convertCandidate(DotOpCandidate &candidate,
   Value rhsStepInBytes =
       computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
 
+  // packing already done, so just skip it.
+  bool skipPacking = !isPackingRequired || candidate.rhsBuf.vnni;
+  auto skipPack = int_cst(rewriter.getI1Type(), skipPacking);
+
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
       ldb, ldc, lhsStepInBytes, rhsStepInBytes, op.getA().getType(),
-      op.getB().getType(), rewriter.getF32Type());
-
-  auto rhsTypeSize =
-      int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
+      op.getB().getType(), rewriter.getF32Type(), skipPack);
+  auto rhsTypeSize = int_cst(rewriter.getI64Type(),
+                             op.getB().getType().getElementTypeBitWidth() / 8);
   Value rhsBlockSizeInBytes = op_muli(op_muli(blockN, blockK), rhsTypeSize);
 
   LDBG("[prepareResultBuffer] prepared acc buf: " << accBuf.memRef);
@@ -443,7 +505,7 @@ convertCandidate(DotOpCandidate &candidate,
 
   rewriter.create<triton::cpu::BrgemmExecute>(
       loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
-      rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
+      rhsStepInBytes, rhsBlockSizeInBytes, numBatches, skipPack);
 
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
@@ -519,7 +581,8 @@ struct ConvertDotOpToUkernelOps
       LDBG("Starting conversion of candidate: " << candidate.op);
       PatternRewriter rewriter(context);
       rewriter.setInsertionPoint(candidate.op);
-      if (succeeded(convertCandidate(candidate, shapeInfoAnalysis, rewriter))) {
+      if (succeeded(convertCandidate(candidate, ukernels, shapeInfoAnalysis,
+                                     rewriter))) {
         LDBG("Conversion succeeded!");
       } else {
         LDBG("Conversion failed!");

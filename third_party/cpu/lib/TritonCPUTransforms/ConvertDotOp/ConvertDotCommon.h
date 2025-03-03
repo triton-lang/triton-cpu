@@ -85,6 +85,14 @@ Value shiftIndex(Location loc, Value index, int64_t offs,
 // If it is, then return the original encoded value. Otherwise, return nullptr.
 Value getVnniSrc(Value val);
 
+// Converts original vector type into packed (vnni) shape type
+template <typename T> T getPackedLayoutType(T origTileType) {
+  int64_t rowsPerGroup = 32 / origTileType.getElementTypeBitWidth();
+  SmallVector<int64_t> shape({origTileType.getDimSize(0) / rowsPerGroup,
+                              origTileType.getDimSize(1) * rowsPerGroup});
+  return origTileType.cloneWith(shape, origTileType.getElementType());
+}
+
 MemBuffer storeToTmpBuffer(Location loc, Value val, Operation *allocaPoint,
                            PatternRewriter &rewriter);
 

@@ -210,7 +210,8 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     // TODO: Maybe Use properties
     TypeAttr:$dtypeA,
     TypeAttr:$dtypeB,
-    TypeAttr:$dtypeC
+    TypeAttr:$dtypeC,
+    I1:$skipPacking
   );
 
   let results = (outs Index:$result);
@@ -229,7 +230,8 @@ def TTC_BrgemmExecute : TTC_Op<"brgemm_execute",
     AnyTypeOf<[AnyInteger, Index]>:$stepA,
     AnyTypeOf<[AnyInteger, Index]>:$stepB,
     AnyTypeOf<[AnyInteger, Index]>:$blockedBsize,
-    AnyTypeOf<[AnyInteger, Index]>:$numBatches
+    AnyTypeOf<[AnyInteger, Index]>:$numBatches,
+    I1:$skipPacking
   );
 }
 
