@@ -108,15 +108,20 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto rhsDnnType = b.i64_val(getDnnlDataTypeVal(adaptor.getDtypeB()));
     auto accDnnType = b.i64_val(getDnnlDataTypeVal(adaptor.getDtypeC()));
 
-    auto brgemmArgs =
-        SmallVector<Value>{adaptor.getM(),   adaptor.getN(),
-                           adaptor.getKK(),  adaptor.getBatchSize(),
-                           adaptor.getLda(), adaptor.getLdb(),
-                           adaptor.getLdc(), lhsDnnType,
-                           rhsDnnType,       accDnnType, 
-                           adaptor.getNeedPacking()};
-    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
-                                     i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i1_ty};
+    auto brgemmArgs = SmallVector<Value>{adaptor.getM(),
+                                         adaptor.getN(),
+                                         adaptor.getKK(),
+                                         adaptor.getBatchSize(),
+                                         adaptor.getLda(),
+                                         adaptor.getLdb(),
+                                         adaptor.getLdc(),
+                                         lhsDnnType,
+                                         rhsDnnType,
+                                         accDnnType,
+                                         adaptor.getNeedPacking()};
+    SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty,
+                                     i64_ty, i64_ty, i64_ty, i64_ty,
+                                     i64_ty, i64_ty, i1_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
@@ -163,9 +168,9 @@ struct BrgemmExecuteConversion : public ConvertOpToLLVMPattern<BrgemmExecute> {
         adaptor.getNumBatches(),
         adaptor.getNeedPacking()};
 
-    auto brgemmArgTypes =
-        SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
-                          i64_ty,      i64_ty,      i64_ty,      i64_ty, i1_ty};
+    auto brgemmArgTypes = SmallVector<Type>{
+        ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), i64_ty,
+        i64_ty,      i64_ty,      i64_ty,      i1_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,

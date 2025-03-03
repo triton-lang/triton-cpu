@@ -388,8 +388,8 @@ convertCandidate(DotOpCandidate &candidate,
   auto isPacking = int_cst(integer1, isPackingRequired);
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
-      ldb, ldc, op.getA().getType(), op.getB().getType(),
-      rewriter.getF32Type(), isPacking);
+      ldb, ldc, op.getA().getType(), op.getB().getType(), rewriter.getF32Type(),
+      isPacking);
 
   auto rhsTypeSize =
       int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
