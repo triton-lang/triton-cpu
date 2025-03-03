@@ -94,5 +94,5 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
             cc_cmd += ["-mcpu=native"]
     ret = subprocess.check_call(cc_cmd)
     if ret != 0:
-        raise RuntimeError("Failed to compile so.")
+        raise RuntimeError("Totaly Failed to compile so.")
     return so
