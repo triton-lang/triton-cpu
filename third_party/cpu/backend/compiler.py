@@ -199,6 +199,7 @@ class CPUBackend(BaseBackend):
             # For further analysis simplification
             cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
+            passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
@@ -268,6 +269,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_math_to_libm(pm)
         cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
+        passes.convert.add_reconcile_unrealized(pm)
         passes.convert.add_arith_to_llvmir(pm)
         # passes.convert.add_cf_to_llvmir(pm)
         cpu.passes.ttcpuir.add_func_to_llvmir(pm)

@@ -34,7 +34,7 @@ add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
-  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation MLIRMemRefTransforms PRIVATE Python3::Module pybind11::headers)
+  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRAMXToLLVMIRTranslation MLIRMemRefTransforms MLIRReconcileUnrealizedCasts PRIVATE Python3::Module pybind11::headers)
 endif()
 
 # Configure and build Triton-CPU runtime
