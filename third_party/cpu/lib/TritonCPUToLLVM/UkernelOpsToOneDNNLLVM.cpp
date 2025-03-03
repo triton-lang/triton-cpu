@@ -113,9 +113,10 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
                            adaptor.getKK(),  adaptor.getBatchSize(),
                            adaptor.getLda(), adaptor.getLdb(),
                            adaptor.getLdc(), lhsDnnType,
-                           rhsDnnType,       accDnnType};
+                           rhsDnnType,       accDnnType, 
+                           adaptor.getNeedPacking()};
     SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
-                                     i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
+                                     i64_ty, i64_ty, i64_ty, i64_ty, i64_ty, i1_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
@@ -159,11 +160,12 @@ struct BrgemmExecuteConversion : public ConvertOpToLLVMPattern<BrgemmExecute> {
         adaptor.getStepA(),
         adaptor.getStepB(),
         adaptor.getBlockedBsize(),
-        adaptor.getNumBatches()};
+        adaptor.getNumBatches(),
+        adaptor.getNeedPacking()};
 
     auto brgemmArgTypes =
         SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx),
-                          i64_ty,      i64_ty,      i64_ty,      i64_ty};
+                          i64_ty,      i64_ty,      i64_ty,      i64_ty, i1_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,

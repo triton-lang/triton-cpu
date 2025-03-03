@@ -29,6 +29,35 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_config.h"
+#include "oneapi/dnnl/dnnl_ukernel.hpp"
+#endif
+
+static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
+#if defined(DNNL_EXPERIMENTAL_UKERNEL)
+  ty = getElementTypeOrSelf(ty);
+  if (ty.isF32())
+    return dnnl::memory::data_type::f32;
+  if (ty.isF64())
+    return dnnl::memory::data_type::f64;
+  if (ty.isBF16())
+    return dnnl::memory::data_type::bf16;
+  if (ty.isF16())
+    return dnnl::memory::data_type::f16;
+#endif
+  llvm_unreachable("Unexpected type for conversion to DNNL type.");
+}
+
+bool isPackingExpected(Type dtypeA, Type dtypeB) {
+#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
+  return false;
+#endif
+  return dnnl::ukernel::brgemm::get_B_pack_type(getDnnlDataTypeVal(dtypeA),
+                                                getDnnlDataTypeVal(dtypeB)) ==
+         dnnl::ukernel::pack_type::pack32;
+}
+
 // This structure is used to hold candidates for conversion to ukernel calls.
 struct DotOpCandidate {
   // Operation to convert.
@@ -329,6 +358,8 @@ convertCandidate(DotOpCandidate &candidate,
     accToStore = maybeCast(loc, accToStore, rewriter.getF32Type(), rewriter);
     accBuf = storeToTmpBuffer(loc, accToStore, allocaPoint, rewriter);
   }
+  bool isPackingRequired =
+      isPackingExpected(op.getA().getType(), op.getB().getType());
 
   auto lhsSubView =
       addMemrefSubView(rewriter, loc, candidate.op.getA(),
@@ -345,13 +376,20 @@ convertCandidate(DotOpCandidate &candidate,
       rewriter.create<memref::ExtractStridedMetadataOp>(loc, accBuf.memRef);
 
   Value lda = metadataA.getStrides()[metadataA.getStrides().size() - 2];
-  Value ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
+  Value ldb;
+  if (isPackingRequired) {
+    ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
+  } else {
+    ldb = blockN;
+  }
   Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
 
+  IntegerType integer1 = IntegerType::get(rewriter.getContext(), 1);
+  auto isPacking = int_cst(integer1, isPackingRequired);
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
       ldb, ldc, op.getA().getType(), op.getB().getType(),
-      rewriter.getF32Type());
+      rewriter.getF32Type(), isPacking);
 
   auto rhsTypeSize =
       int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
@@ -378,7 +416,7 @@ convertCandidate(DotOpCandidate &candidate,
 
   rewriter.create<triton::cpu::BrgemmExecute>(
       loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
-      rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
+      rhsStepInBytes, rhsBlockSizeInBytes, numBatches, isPacking);
 
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
