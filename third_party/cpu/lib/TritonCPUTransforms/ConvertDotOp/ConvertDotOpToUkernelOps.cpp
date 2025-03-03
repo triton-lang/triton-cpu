@@ -34,8 +34,8 @@ namespace {
 #include "oneapi/dnnl/dnnl_ukernel.hpp"
 #endif
 
-static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
 #if defined(DNNL_EXPERIMENTAL_UKERNEL)
+static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
   ty = getElementTypeOrSelf(ty);
   if (ty.isF32())
     return dnnl::memory::data_type::f32;
@@ -45,9 +45,9 @@ static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
     return dnnl::memory::data_type::bf16;
   if (ty.isF16())
     return dnnl::memory::data_type::f16;
-#endif
   llvm_unreachable("Unexpected type for conversion to DNNL type.");
 }
+#endif
 
 bool isPackingExpected(Type dtypeA, Type dtypeB) {
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
