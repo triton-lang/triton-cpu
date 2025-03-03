@@ -52,10 +52,11 @@ static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
 bool isPackingExpected(Type dtypeA, Type dtypeB) {
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
   return false;
-#endif
+#else
   return dnnl::ukernel::brgemm::get_B_pack_type(getDnnlDataTypeVal(dtypeA),
                                                 getDnnlDataTypeVal(dtypeB)) ==
          dnnl::ukernel::pack_type::pack32;
+#endif
 }
 
 // This structure is used to hold candidates for conversion to ukernel calls.
