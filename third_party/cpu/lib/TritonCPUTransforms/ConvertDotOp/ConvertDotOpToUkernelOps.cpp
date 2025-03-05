@@ -29,6 +29,38 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+#if defined(ONEDNN_AVAILABLE)
+#include "oneapi/dnnl/dnnl_config.h"
+#include "oneapi/dnnl/dnnl_ukernel.hpp"
+#endif
+
+#if defined(DNNL_EXPERIMENTAL_UKERNEL)
+static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
+  ty = getElementTypeOrSelf(ty);
+  if (ty.isF32())
+    return dnnl::memory::data_type::f32;
+  if (ty.isF64())
+    return dnnl::memory::data_type::f64;
+  if (ty.isBF16())
+    return dnnl::memory::data_type::bf16;
+  if (ty.isF16())
+    return dnnl::memory::data_type::f16;
+  llvm_unreachable("Unexpected type for conversion to DNNL type.");
+}
+#endif
+
+bool isPackingExpected(Type dtypeA, Type dtypeB) {
+#if !defined(DNNL_EXPERIMENTAL_UKERNEL)
+  // TODO: Actually it's not correct, we shouldn't call this pass without DNNL
+  // available.
+  return false;
+#else
+  return dnnl::ukernel::brgemm::get_B_pack_type(getDnnlDataTypeVal(dtypeA),
+                                                getDnnlDataTypeVal(dtypeB)) ==
+         dnnl::ukernel::pack_type::pack32;
+#endif
+}
+
 // This structure is used to hold candidates for conversion to ukernel calls.
 struct DotOpCandidate {
   // Operation to convert.
@@ -155,6 +187,13 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
   auto vecTy = cast<VectorType>(vecVal.getType());
   auto ctx = rewriter.getContext();
   auto memrefTy = cast<MemRefType>(memRef.getType());
+  if (memrefTy.getRank() == vecTy.getRank() &&
+      memrefTy.getShape() == vecTy.getShape()) {
+    LDBG("  Skipping subveiw creation as original MemRef size is whole Vector: "
+         "\n    memref - "
+         << memRef << "\n       vec - " << vecVal);
+    return memRef;
+  }
   SmallVector<int64_t> strides(memrefTy.getRank(), 1);
   SmallVector<int64_t> shape(memrefTy.getRank(), 1);
   // we will add 1 to leading dimensions of shapes or just copy existing vector
@@ -167,6 +206,7 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
   Value memRef_view = rewriter.create<memref::SubViewOp>(
       loc, memRef, getAsOpFoldResult(indices),
       getAsIndexOpFoldResult(ctx, shape), getAsIndexOpFoldResult(ctx, strides));
+  LDBG("Adding subview with type: " << memRef_view);
   return memRef_view;
 }
 
@@ -329,6 +369,8 @@ convertCandidate(DotOpCandidate &candidate,
     accToStore = maybeCast(loc, accToStore, rewriter.getF32Type(), rewriter);
     accBuf = storeToTmpBuffer(loc, accToStore, allocaPoint, rewriter);
   }
+  bool isPackingRequired =
+      isPackingExpected(op.getA().getType(), op.getB().getType());
 
   auto lhsSubView =
       addMemrefSubView(rewriter, loc, candidate.op.getA(),
@@ -345,13 +387,20 @@ convertCandidate(DotOpCandidate &candidate,
       rewriter.create<memref::ExtractStridedMetadataOp>(loc, accBuf.memRef);
 
   Value lda = metadataA.getStrides()[metadataA.getStrides().size() - 2];
-  Value ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
+  Value ldb;
+  if (isPackingRequired) {
+    ldb = blockN;
+  } else {
+    ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
+  }
   Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
 
+  IntegerType integer1 = IntegerType::get(rewriter.getContext(), 1);
+  auto isPacking = int_cst(integer1, isPackingRequired);
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
-      ldb, ldc, op.getA().getType(), op.getB().getType(),
-      rewriter.getF32Type());
+      ldb, ldc, op.getA().getType(), op.getB().getType(), rewriter.getF32Type(),
+      isPacking);
 
   auto rhsTypeSize =
       int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
@@ -378,7 +427,7 @@ convertCandidate(DotOpCandidate &candidate,
 
   rewriter.create<triton::cpu::BrgemmExecute>(
       loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
-      rhsStepInBytes, rhsBlockSizeInBytes, numBatches);
+      rhsStepInBytes, rhsBlockSizeInBytes, numBatches, isPacking);
 
   if (candidate.isAccLoopCarried && candidate.canFuseLoop) {
     LDBG("Loading the result to a vector to replace orig op result.");
