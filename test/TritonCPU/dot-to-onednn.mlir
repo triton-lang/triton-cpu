@@ -10,13 +10,14 @@
 // CHECK-NEXT:  %[[RHS_INDICES:.+]]:2 = triton_cpu.extract_indices %1 : <tensor<64x32xbf16>> -> index, index
 // CHECK:       %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x32xf32>
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_MEMREF]] : memref<16x64xbf16, strided<[64, 1]>> -> memref<bf16>, index, index, index, index, index
+// CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_MEMREF]] : memref<64x32xbf16, strided<[32, 1]>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[ACC_BUF]] : memref<16x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c16{{.*}}, %c32{{.*}}, %c64{{.*}}, %c1{{.*}}, %[[LHS_STRIDES]]#0, %c32{{.*}}, %[[ACC_STRIDES]]#0, %false) <{dtypeA = vector<16x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, i64, index, i1) -> index
+// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c16{{.*}}, %c32{{.*}}, %c64{{.*}}, %c1{{.*}}, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %false) <{dtypeA = vector<16x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, i1) -> index
 // CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
 // CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_MEMREF]], %[[RHS_MEMREF]], %[[ACC_BUF]], %c0, %c0, %[[BLOCKEDB_SIZE]], %c1, %false) : (index, memref<16x64xbf16, strided<[64, 1]>>, memref<64x32xbf16, strided<[32, 1]>>, memref<16x32xf32>, index, index, i64, index, i1) -> ()
-// CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_5 : memref<16x32xf32>, vector<16x32xf32>
+// CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_9 : memref<16x32xf32>, vector<16x32xf32>
 
 #loc = loc(unknown)
 module {
@@ -63,7 +64,7 @@ module {
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_SUBVIEW]] : memref<64x64xbf16, strided<[128, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_SUBVIEW]] : memref<64x32xbf16, strided<[32, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[ACC_BUF]] : memref<64x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %c32{{.*}}, %[[ACC_STRIDES]]#0, %false)  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, i64, index, i1) -> index
+// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %false)  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, i1) -> index
 // CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
@@ -147,9 +148,10 @@ module {
 // CHECK:         vector.transfer_write %[[LHS_VEC_T]], %[[LHS_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xbf16>, memref<32x32xbf16>
 // CHECK:         vector.transfer_write %[[RHS_VEC_D]], %[[RHS_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xbf16>, memref<32x32xbf16>
 // CHECK-NEXT:    %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_ALLOCA]] : memref<32x32xbf16> -> memref<bf16>, index, index, index, index, index
+// CHECK-NEXT:    %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_ALLOCA]] : memref<32x32xbf16> -> memref<bf16>, index, index, index, index, index
 // CHECK-NEXT:    %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RES_ALLOCA]] : memref<32x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK-NEXT:    %false = arith.constant true
-// CHECK-NEXT:    %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c32{{.*}}, %c32{{.*}}, %c32{{.*}}, %c1, %[[LHS_STRIDES]]#0, %c32{{.*}}, %[[ACC_STRIDES]]#0, %false) <{dtypeA = vector<32x32xbf16>, dtypeB = vector<32x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, i64, index, i1) -> index
+// CHECK-NEXT:    %false = arith.constant false
+// CHECK-NEXT:    %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c32{{.*}}, %c32{{.*}}, %c32{{.*}}, %c1, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %false) <{dtypeA = vector<32x32xbf16>, dtypeB = vector<32x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, i1) -> index
 // CHECK-NEXT:    %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK-NEXT:    %[[BLOCK:.+]] = arith.muli %c32{{.*}}, %c32{{.*}} : i64
 // CHECK-NEXT:    %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
