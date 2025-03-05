@@ -51,7 +51,8 @@ static inline dnnl::memory::data_type getDnnlDataTypeVal(Type ty) {
 
 bool isPackingExpected(Type dtypeA, Type dtypeB) {
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
-  // TODO: Actually it's not correct, we shouldn't call this pass without DNNL available. 
+  // TODO: Actually it's not correct, we shouldn't call this pass without DNNL
+  // available.
   return false;
 #else
   return dnnl::ukernel::brgemm::get_B_pack_type(getDnnlDataTypeVal(dtypeA),

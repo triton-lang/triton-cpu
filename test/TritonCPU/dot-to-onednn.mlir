@@ -1,7 +1,7 @@
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=oneDNN" -cse  | FileCheck %s
 
 // Replacement of a triton_cpu.dot operation with triton_cpu.brgemm_execute
-// %false is incorrect in those tests. Should be %true in tests that actually have OneDNN. 
+// %false is incorrect in those tests. Should be %true in tests that actually have OneDNN.
 
 // CHECK-LABEL: @test_two_tiles_four_mulf
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <tensor<16x64xbf16>> -> memref<16x64xbf16, strided<[64, 1]>>
