@@ -185,6 +185,13 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
   auto vecTy = cast<VectorType>(vecVal.getType());
   auto ctx = rewriter.getContext();
   auto memrefTy = cast<MemRefType>(memRef.getType());
+  if (memrefTy.getRank() == vecTy.getRank() &&
+      memrefTy.getShape() == vecTy.getShape()) {
+    LDBG("  Skipping subveiw creation as original MemRef size is whole Vector: "
+         "\n    memref - "
+         << memRef << "\n       vec - " << vecVal);
+    return memRef;
+  }
   SmallVector<int64_t> strides(memrefTy.getRank(), 1);
   SmallVector<int64_t> shape(memrefTy.getRank(), 1);
   // we will add 1 to leading dimensions of shapes or just copy existing vector
@@ -197,6 +204,7 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc, Value vecVal,
   Value memRef_view = rewriter.create<memref::SubViewOp>(
       loc, memRef, getAsOpFoldResult(indices),
       getAsIndexOpFoldResult(ctx, shape), getAsIndexOpFoldResult(ctx, strides));
+  LDBG("Adding subview with type: " << memRef_view);
   return memRef_view;
 }
 
@@ -379,9 +387,9 @@ convertCandidate(DotOpCandidate &candidate,
   Value lda = metadataA.getStrides()[metadataA.getStrides().size() - 2];
   Value ldb;
   if (isPackingRequired) {
-    ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
-  } else {
     ldb = blockN;
+  } else {
+    ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
   }
   Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
 
