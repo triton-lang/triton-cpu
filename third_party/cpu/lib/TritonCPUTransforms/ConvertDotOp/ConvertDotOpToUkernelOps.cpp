@@ -60,8 +60,8 @@ bool isLoopInvariant(SmallVector<Value> vals, LoopLikeOpInterface loopLike) {
   return true;
 }
 
-bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                    Type resElemTy) {
+bool checkElemTypesOneDNN(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                          Type resElemTy) {
   // Integer types are not supported yet.
   if (lhsElemTy.isInteger() || rhsElemTy.isInteger() || resElemTy.isInteger()) {
     // Should be also lhs = [u8, s8] rhs = [u8, s8] res = [s32]
@@ -87,14 +87,60 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   return true;
 }
 
-bool checkInputShapes(VectorType lhsTy, VectorType resTy,
-                      DotOpCandidate &candidate) {
+bool checkElemTypesXSMM(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                        Type resElemTy) {
+  // Integer types are not supported yet.
+  if (lhsElemTy.isInteger() || rhsElemTy.isInteger() || resElemTy.isInteger()) {
+    // TODO: Add integer support.
+    LDBG("Drop candidate. Integer types are not supported.");
+    return false;
+  }
+
+  if (accElemTy != resElemTy) {
+    // Constrain the two for simplicity.
+    // Lowering assumes XSMM can
+    // TODO: Relax check when dtypeAcc is available in ukernel ops.
+    LDBG("Drop candidate. Expect same accumulation and result type.");
+    return false;
+  }
+
+  if (lhsElemTy != rhsElemTy) {
+    LDBG("Drop candidate. Mixed type input is not supported");
+    return false;
+  }
+
+  // FP8 input is not supported yet.
+  // TODO: Enable 8-bit support
+  if (lhsElemTy.getIntOrFloatBitWidth() == 8 ||
+      rhsElemTy.getIntOrFloatBitWidth() == 8) {
+    LDBG("Drop candidate. FP8 input is not supported.");
+    return false;
+  }
+
+  // Int64 and FP64 result are not supported.
+  // TODO: Enable 64-bit support
+  if (accElemTy.getIntOrFloatBitWidth() == 64 ||
+      resElemTy.getIntOrFloatBitWidth() == 64) {
+    LDBG("Drop candidate. 64-bit result is not supported.");
+    return false;
+  }
+
+  return true;
+}
+
+bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                    Type resElemTy, Ukernels ukernel) {
+  if (ukernel == Ukernels::OneDNN)
+    return checkElemTypesOneDNN(lhsElemTy, rhsElemTy, accElemTy, resElemTy);
+  if (ukernel == Ukernels::XSMM)
+    return checkElemTypesXSMM(lhsElemTy, rhsElemTy, accElemTy, resElemTy);
+  return false;
+}
+
+bool checkInputShapesOneDNN(VectorType lhsTy, VectorType resTy,
+                            DotOpCandidate &candidate) {
   if (lhsTy.getRank() != 2)
     return false;
-
-  candidate.blockM = resTy.getDimSize(0);
-  candidate.blockN = resTy.getDimSize(1);
-  candidate.blockK = lhsTy.getDimSize(1);
 
   // Todo enable types that require transform (bfloat16, fp16, int8) to have
   // block-size (blockN) more than 64 (OneDNN ukernels transform issue)
@@ -106,10 +152,29 @@ bool checkInputShapes(VectorType lhsTy, VectorType resTy,
   return true;
 }
 
-// Check if specified ContractionOp can be lowered to OneDNN ukernel operations.
+bool checkInputShapesXSMM(VectorType lhsTy, VectorType resTy,
+                          DotOpCandidate &candidate) {
+  return lhsTy.getRank() == 2;
+}
+
+bool checkInputShapes(VectorType lhsTy, VectorType resTy,
+                      DotOpCandidate &candidate, Ukernels ukernel) {
+  candidate.blockM = resTy.getDimSize(0);
+  candidate.blockN = resTy.getDimSize(1);
+  candidate.blockK = lhsTy.getDimSize(1);
+
+  if (ukernel == Ukernels::OneDNN)
+    return checkInputShapesOneDNN(lhsTy, resTy, candidate);
+  if (ukernel == Ukernels::XSMM)
+    return checkInputShapesXSMM(lhsTy, resTy, candidate);
+  return false;
+}
+
+// Check if specified ContractionOp can be lowered to a ukernel operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
-bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate) {
+bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
+                         Ukernels ukernel) {
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
   VectorType accTy = cast<VectorType>(op.getC().getType());
@@ -124,11 +189,11 @@ bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate) {
 
   // Check input/output types.
   if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
-                      accTy.getElementType(), resTy.getElementType()))
+                      accTy.getElementType(), resTy.getElementType(), ukernel))
     return false;
 
   // Check input shapes.
-  if (!checkInputShapes(lhsTy, resTy, candidate))
+  if (!checkInputShapes(lhsTy, resTy, candidate, ukernel))
     return false;
 
   candidate.op = op;
@@ -348,10 +413,15 @@ convertCandidate(DotOpCandidate &candidate,
   Value ldb = metadataB.getStrides()[metadataB.getStrides().size() - 2];
   Value ldc = metadataAcc.getStrides()[metadataAcc.getStrides().size() - 2];
 
+  Value lhsStepInBytes =
+      computeStepInBytes(loc, metadataA, candidate.lhsBuf.step, rewriter);
+  Value rhsStepInBytes =
+      computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
+
   Value brgemm = rewriter.create<triton::cpu::BrgemmCreate>(
       loc, rewriter.getIndexType(), blockM, blockN, blockK, numBatches, lda,
-      ldb, ldc, op.getA().getType(), op.getB().getType(),
-      rewriter.getF32Type());
+      ldb, ldc, lhsStepInBytes, rhsStepInBytes, op.getA().getType(),
+      op.getB().getType(), rewriter.getF32Type());
 
   auto rhsTypeSize =
       int_cst(integer64, op.getB().getType().getElementTypeBitWidth() / 8);
@@ -370,11 +440,6 @@ convertCandidate(DotOpCandidate &candidate,
        << "              step " << candidate.rhsBuf.step.size() << "\n"
        << "          blockptr " << candidate.rhsBuf.origBlockPtr << "\n"
        << "        transposed " << candidate.rhsBuf.transposed << "\n} \n");
-
-  Value lhsStepInBytes =
-      computeStepInBytes(loc, metadataA, candidate.lhsBuf.step, rewriter);
-  Value rhsStepInBytes =
-      computeStepInBytes(loc, metadataB, candidate.rhsBuf.step, rewriter);
 
   rewriter.create<triton::cpu::BrgemmExecute>(
       loc, brgemm, lhsSubView, rhsSubView, accBuf.memRef, lhsStepInBytes,
@@ -427,22 +492,17 @@ struct ConvertDotOpToUkernelOps
   ConvertDotOpToUkernelOps(Ukernels ukernels) { this->ukernels = ukernels; }
 
   void runOnOperation() override {
-    if (ukernels != Ukernels::OneDNN) {
-      LDBG("Pass disabled.");
-      return;
-    }
-
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
     ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
 
     SmallVector<DotOpCandidate, 2> candidates;
-    mod->walk([&candidates](triton::cpu::DotOp op) {
+    mod->walk([&candidates, this](triton::cpu::DotOp op) {
       DotOpCandidate candidate;
-      if (isUkernelsCandidate(op, candidate)) {
+      if (isUkernelsCandidate(op, candidate, this->ukernels)) {
         LLVM_DEBUG({
-          LDBG("Found OneDNN candidate");
+          LDBG("Found ukernel candidate");
           LDBG("  Op: " << candidate.op);
           LDBG("  blockM: " << candidate.blockM);
           LDBG("  blockN: " << candidate.blockN);

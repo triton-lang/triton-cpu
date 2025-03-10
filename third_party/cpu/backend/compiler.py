@@ -92,6 +92,16 @@ class CPUOptions:
                 "Warning! Triton build was made without OneDNN support. Check if \"CMAKE_PREFIX_PATH\" contains path to OneDNN during build. \n\t -------OneDNN will NOT be used-------",
                 stacklevel=1)
             return None
+
+        if ukernels == Ukernels.XSMM and not cpu.xsmm_available():
+            import warnings
+            # Warns on each compileation
+            warnings.simplefilter('once', category=UserWarning)
+            warnings.warn(
+                "Warning! Triton build was made without XSMM support. Check if \"CMAKE_PREFIX_PATH\" contains path to XSMM during build. \n\t -------XSMM will NOT be used-------",
+                stacklevel=1)
+            return None
+
         return ukernels
 
 
@@ -233,6 +243,8 @@ class CPUBackend(BaseBackend):
         pm.enable_debug()
         if options.get_ukernels() == Ukernels.OneDNN:
             cpu.passes.ttcpuir.add_ukernels_to_onednn_llvmir(pm)
+        if options.get_ukernels() == Ukernels.XSMM:
+            cpu.passes.ttcpuir.add_ukernels_to_xsmm_llvmir(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
         cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
         cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)

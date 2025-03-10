@@ -205,6 +205,8 @@ def TTC_BrgemmCreate : TTC_Op<"brgemm_create", [NoMemoryEffect]> {
     AnyTypeOf<[AnyInteger, Index]>:$lda,
     AnyTypeOf<[AnyInteger, Index]>:$ldb,
     AnyTypeOf<[AnyInteger, Index]>:$ldc,
+    AnyTypeOf<[AnyInteger, Index]>:$stepA,
+    AnyTypeOf<[AnyInteger, Index]>:$stepB,
     // TODO: Maybe Use properties
     TypeAttr:$dtypeA,
     TypeAttr:$dtypeB,

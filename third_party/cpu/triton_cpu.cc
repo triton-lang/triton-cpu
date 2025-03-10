@@ -39,6 +39,14 @@ bool is_onednn_available() {
 #endif
 }
 
+bool is_xsmm_available() {
+#ifdef XSMM_AVAILABLE
+  return true;
+#else
+  return false;
+#endif
+}
+
 namespace py = pybind11;
 
 void init_triton_cpu_passes_ttcpuir(py::module &&m) {
@@ -49,7 +57,8 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
       .value("libmvec", cpu::VecLib::Mvec);
 
   py::enum_<cpu::Ukernels>(m, "Ukernels")
-      .value("OneDNN", cpu::Ukernels::OneDNN);
+      .value("OneDNN", cpu::Ukernels::OneDNN)
+      .value("XSMM", cpu::Ukernels::XSMM);
 
   m.def("add_scalarize", [](mlir::PassManager &pm, bool skip_gather_scatter) {
     pm.addPass(
@@ -163,6 +172,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_ukernels_to_onednn_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createUkernelOpsToOneDNNLLVMPass());
   });
+  m.def("add_ukernels_to_xsmm_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createUkernelOpsToXSMMLLVMPass());
+  });
   m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
   });
@@ -230,6 +242,8 @@ void init_triton_cpu(py::module &&m) {
   });
 
   m.def("onednn_available", is_onednn_available);
+
+  m.def("xsmm_available", is_xsmm_available);
 
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
