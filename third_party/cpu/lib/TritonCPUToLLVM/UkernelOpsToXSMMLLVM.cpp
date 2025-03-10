@@ -108,12 +108,11 @@ struct BrgemmCreateConversion : public ConvertOpToLLVMPattern<BrgemmCreate> {
     auto inXsmmType = b.i64_val(getXSMMDataTypeVal(adaptor.getDtypeA()));
     auto outXsmmType = b.i64_val(getXSMMDataTypeVal(adaptor.getDtypeC()));
 
-    auto brgemmArgs =
-        SmallVector<Value>{adaptor.getM(),     adaptor.getN(),
-                           adaptor.getKK(),    adaptor.getLda(),
-                           adaptor.getLdb(),   adaptor.getLdc(),
-                           adaptor.getStepA(), adaptor.getStepB(),
-                           inXsmmType,         outXsmmType};
+    auto brgemmArgs = SmallVector<Value>{adaptor.getM(),     adaptor.getN(),
+                                         adaptor.getKK(),    adaptor.getLda(),
+                                         adaptor.getLdb(),   adaptor.getLdc(),
+                                         adaptor.getStepA(), adaptor.getStepB(),
+                                         inXsmmType,         outXsmmType};
     SmallVector<Type> brgemmArgTypes{i64_ty, i64_ty, i64_ty, i64_ty, i64_ty,
                                      i64_ty, i64_ty, i64_ty, i64_ty, i64_ty};
 
@@ -157,8 +156,8 @@ struct BrgemmExecuteConversion : public ConvertOpToLLVMPattern<BrgemmExecute> {
                        cast<MemRefType>(brgemmOp.getCPtr().getType())),
         adaptor.getNumBatches()};
 
-    auto brgemmArgTypes =
-        SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), ptr_ty(ctx), i64_ty};
+    auto brgemmArgTypes = SmallVector<Type>{ptr_ty(ctx), ptr_ty(ctx),
+                                            ptr_ty(ctx), ptr_ty(ctx), i64_ty};
 
     auto dispatched = LLVM::createLLVMCallOp(
         rewriter, loc,
@@ -171,8 +170,7 @@ struct BrgemmExecuteConversion : public ConvertOpToLLVMPattern<BrgemmExecute> {
 };
 
 struct UkernelOpsToXSMMLLVM
-    : public triton::cpu::impl::UkernelOpsToXSMMLLVMBase<
-    UkernelOpsToXSMMLLVM> {
+    : public triton::cpu::impl::UkernelOpsToXSMMLLVMBase<UkernelOpsToXSMMLLVM> {
   using UkernelOpsToXSMMLLVMBase::UkernelOpsToXSMMLLVMBase;
 
   void runOnOperation() override {
