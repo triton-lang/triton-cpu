@@ -317,6 +317,8 @@ def decode_provider(provider):
         ukernel = None
     if '-ukOneDNN' in provider:
         ukernel = "OneDNN"
+    if '-ukXSMM' in provider:
+        ukernel = "XSMM"
 
     if 'triton-cpu' in provider:
         backend = 'triton-cpu'
@@ -332,7 +334,7 @@ BLOCK_TRANSPOSE_PACK_B_OPTS = [(True, True, True), (True, True, False), (False, 
 PREPACK_OPTS = [False, True]
 SINGLE_THREAD_OPTS = [False]
 DTYPE_OPTS = [DTYPE]
-UKERNEL_OPTS = [None, "OneDNN"]
+UKERNEL_OPTS = [None, "OneDNN", "XSMM"]
 LINE_VALS = [
     encode_triton_provider(blocked_a, transposed_a, blocked_b, transposed_b, packed_b, prepack, single_thread, dtype,
                            ukernel)

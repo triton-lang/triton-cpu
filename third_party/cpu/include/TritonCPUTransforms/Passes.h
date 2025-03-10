@@ -17,6 +17,7 @@ namespace cpu {
 
 enum class Ukernels {
   OneDNN,
+  XSMM,
 };
 
 #define GEN_PASS_DECL

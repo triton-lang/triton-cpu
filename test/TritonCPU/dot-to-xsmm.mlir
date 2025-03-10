@@ -1,4 +1,8 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=oneDNN" -cse  | FileCheck %s
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=XSMM" -cse  | FileCheck %s
+
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=XSMM" -cse \
+// RUN:  -triton-cpu-ukernels-to-xsmm-llvm \
+// RUN: | FileCheck %s --check-prefix=LLVM
 
 // Replacement of a triton_cpu.dot operation with triton_cpu.brgemm_execute
 
@@ -19,6 +23,9 @@
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
 // CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %c0, %c0, %[[BLOCKEDB_SIZE]], %c1) : (index, memref<16x64xbf16, strided<[64, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<16x32xf32>, index, index, i64, index) -> ()
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_10 : memref<16x32xf32>, vector<16x32xf32>
+
+// LLVM: llvm.call @xsmm_brgemm_dispatch
+// LLVM: llvm.call @xsmm_brgemm_invoke
 
 #loc = loc(unknown)
 module {
@@ -84,6 +91,9 @@ module {
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
 // CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %[[LHS_STEP]], %[[RHS_STEP]], %[[BLOCKEDB_SIZE]], %[[NUM_BATCHES]]) : (index, memref<64x64xbf16, strided<[128, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<64x32xf32>, index, index, i64, index) -> ()
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_10 {in_bounds = [true, true]} : memref<64x32xf32>, vector<64x32xf32>
+
+// LLVM: llvm.call @xsmm_brgemm_dispatch
+// LLVM: llvm.call @xsmm_brgemm_invoke
 
 #loc = loc(unknown)
 module {
@@ -164,6 +174,8 @@ module {
 // CHECK-NEXT:  }
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[RES_ALLOCA]][%c0, %c0], %cst_3 {in_bounds = [true, true]} : memref<32x32xf32>, vector<32x32xf32>
 
+// LLVM: llvm.call @xsmm_brgemm_dispatch
+// LLVM: llvm.call @xsmm_brgemm_invoke
 
 #loc = loc(unknown)
 module {
