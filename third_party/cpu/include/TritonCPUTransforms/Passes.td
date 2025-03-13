@@ -145,10 +145,12 @@ def ConvertDotOpToUkernelOps : Pass<"triton-cpu-convert-dot-to-ukernels", "mlir:
     let options = [
         Option<"ukernels", "ukernels",
                "mlir::triton::cpu::Ukernels", /*default*/"mlir::triton::cpu::Ukernels::OneDNN",
-               "Ukernels provider to be used for replacement of dot op (OneDNN/Xsmm/etc).",
+               "Ukernels provider to be used for replacement of dot op (OneDNN/XSMM/etc).",
                [{::llvm::cl::values(
                clEnumValN(mlir::triton::cpu::Ukernels::OneDNN, "oneDNN",
-                "Use OneDNN as a ukernels provider")
+                "Use OneDNN as a ukernels provider"),
+               clEnumValN(mlir::triton::cpu::Ukernels::XSMM, "XSMM",
+                "Use XSMM as a ukernels provider")
               )}]>,
     ];
 

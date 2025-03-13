@@ -1,4 +1,4 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=oneDNN" -cse  | FileCheck %s
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-ukernels="ukernels=XSMM" -cse  | FileCheck %s
 
 // Replacement of a triton_cpu.dot operation with triton_cpu.brgemm_execute
 
@@ -163,7 +163,6 @@ module {
 // CHECK-NEXT:    scf.yield %[[RES_IV]], %[[LHS_IV_UPD]], %[[RHS_IV_UPD]] : vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>>
 // CHECK-NEXT:  }
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[RES_ALLOCA]][%c0, %c0], %cst_3 {in_bounds = [true, true]} : memref<32x32xf32>, vector<32x32xf32>
-
 
 #loc = loc(unknown)
 module {
