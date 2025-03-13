@@ -64,10 +64,6 @@ module {
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_SUBVIEW]] : memref<64x64xbf16, strided<[128, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_SUBVIEW]] : memref<64x32xbf16, strided<[32, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[ACC_BUF]] : memref<64x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %false)  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, i1) -> index
-// CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
-// CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
-// CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
 // CHECK:       %[[STEP:.+]] = arith.index_cast %c0{{.*}} : i32 to index
 // CHECK:       %[[OFFSET:.+]] = arith.muli %[[STEP]], %[[LHS_STRIDES]]#0 : index
 // CHECK:       %[[SZ:.+]] = arith.addi %c0, %[[OFFSET]] : index
@@ -81,6 +77,10 @@ module {
 // CHECK:       %[[R_OFFSET1:.+]] = arith.muli %[[STEP]], %[[RHS_STRIDES]]#1 : index
 // CHECK:       %[[RHS_STEP_ELEM:.+]] = arith.addi %[[SZ1]], %[[R_OFFSET1]] : index
 // CHECK:       %[[RHS_STEP:.+]] = arith.muli %[[RHS_STEP_ELEM]], %[[CONST]] : index
+// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %[[LHS_STEP]], %[[RHS_STEP]],  %false)  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index, i1) -> index
+// CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
+// CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
+// CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
 // CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %[[LHS_STEP]], %[[RHS_STEP]], %[[BLOCKEDB_SIZE]], %[[NUM_BATCHES]], %false) : (index, memref<64x64xbf16, strided<[128, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<64x32xf32>, index, index, i64, index, i1) -> ()
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_10 {in_bounds = [true, true]} : memref<64x32xf32>, vector<64x32xf32>
 
