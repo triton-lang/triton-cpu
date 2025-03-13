@@ -43,7 +43,7 @@ struct onednn_handle {
 EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
                            int64_t batch_size, int64_t lda, int64_t ldb,
                            int64_t ldc, int64_t dtypeA, int64_t dtypeB,
-                           int64_t dtypeC) {
+                           int64_t dtypeC, bool need_packing) {
   using KeyT = std::array<int64_t, 10>;
   KeyT key{M, N, K_k, batch_size, lda, ldb, ldc, dtypeA, dtypeB, dtypeC};
 
@@ -65,23 +65,14 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
   auto dnnl_dtypeB = static_cast<dnnl::memory::data_type>(dtypeB);
   auto dnnl_dtypeC = static_cast<dnnl::memory::data_type>(dtypeC);
 
-  dnnl::ukernel::brgemm brg;
-  brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
-                              dnnl_dtypeB, dnnl_dtypeC);
+  dnnl::ukernel::brgemm brg =
+      dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, ldb, ldc, dnnl_dtypeA,
+                            dnnl_dtypeB, dnnl_dtypeC);
+
   // Instruct the kernel to append the result to C tensor.
   brg.set_add_C(true);
   // Finalize the initialization.
   brg.finalize();
-
-  bool need_packing = brg.get_B_pack_type() == pack_type::pack32;
-  if (need_packing) {
-    brg = dnnl::ukernel::brgemm(M, N, K_k, batch_size, lda, N, ldc, dnnl_dtypeA,
-                                dnnl_dtypeB, dnnl_dtypeC);
-    // Instruct the kernel to append the result to C tensor.
-    brg.set_add_C(true);
-    // Finalize the initialization.
-    brg.finalize();
-  }
 
   // Generate the executable JIT code for the objects.
   brg.generate();
@@ -109,7 +100,8 @@ EXPORT void *create_brgemm(int64_t M, int64_t N, int64_t K_k,
 EXPORT void brgemm_execute(const void *handle, void *A_ptr,
                            void *original_B_ptr, void *C_ptr,
                            int64_t A_step_in_bytes, int64_t B_step_in_bytes,
-                           int64_t B_block_size_in_bytes, int64_t num_batches) {
+                           int64_t B_block_size_in_bytes, int64_t num_batches,
+                           bool need_packing) {
 
   uint8_t *blocked_data = reinterpret_cast<uint8_t *>(original_B_ptr);
   const uint8_t *B_ptr_calc = reinterpret_cast<const uint8_t *>(original_B_ptr);
@@ -119,7 +111,6 @@ EXPORT void brgemm_execute(const void *handle, void *A_ptr,
   const auto pack_B = kernel->transform;
   const auto brg = kernel->brg;
 
-  const bool need_packing = brg.get_B_pack_type() == pack_type::pack32;
   if (need_packing) {
     blocked_data = new uint8_t[B_block_size_in_bytes * num_batches];
   }
