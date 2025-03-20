@@ -76,12 +76,15 @@ class CPUOptions:
         return vec_lib
 
     def get_ukernels(self) -> Ukernels:
-        if self.ukernels is None:
+        raw_ukernels = self.ukernels
+        if os.getenv("UKERNELS_LIB") != None and os.getenv("UKERNELS_LIB") != "":
+            raw_ukernels = os.getenv("UKERNELS_LIB")
+        if raw_ukernels is None:
             return None
-        ukernels = Ukernels.__members__.get(self.ukernels, None)
+        ukernels = Ukernels.__members__.get(raw_ukernels, None)
         if ukernels is None:
             raise ValueError(
-                f"Unexpected value for ukernels: {self.ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
+                f"Unexpected value for ukernels: {raw_ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
             )
 
         if ukernels == Ukernels.OneDNN and not cpu.onednn_available():

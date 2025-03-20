@@ -52,6 +52,7 @@ jobs:
         python: ['3.11']
         config:
           - {runner: 'Ubuntu Intel x86', runs_on: ['glados', 'intel', 'x86'], target-os: 'ubuntu', arch: 'x86'}
+          - {runner: 'GNR Intel x86(fp16, bf16, amx)', runs_on: ['intel', 'x86', 'granite-rapids'], target-os: 'ubuntu-gnr', arch: 'x86-gnr'}
           - {runner: 'MacOS-latest ARM64', runs_on: ['macos-latest'], target-os: 'macos',  arch: 'arm64'}
     steps:
       - name: Checkout repository
@@ -71,13 +72,14 @@ jobs:
           echo "RUNNER_TARGET_OS: ${RUNNER_TARGET_OS}"
           python3 -m pip install --upgrade pip
           python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit pybind11
-          if [[ "${RUNNER_TARGET_OS}" == "ubuntu" ]]; then
+          if [[ "${RUNNER_TARGET_OS}" == "ubuntu" || "${RUNNER_TARGET_OS}" == "ubuntu-gnr" ]]; then
             sudo apt-get update
             sudo apt-get install -y zlib1g-dev g++
           fi
           pip install torch==2.5.1
 
       - name: Install Triton
+        if: matrix.config.target-os != 'ubuntu-gnr'
         run: |
           echo "PATH is '$PATH'"
           cd python
@@ -149,6 +151,7 @@ jobs:
             python/test/unit/test_debug_dump.py
 
       - name: Run lit tests
+        if: matrix.config.target-os != 'ubuntu-gnr'
         run: |
           cd python
           LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
@@ -156,3 +159,67 @@ jobs:
             echo "Could not find '${LIT_TEST_DIR}'" ; exit -1
           fi
           lit -v "${LIT_TEST_DIR}/TritonCPU"
+
+      - name: Install Ukernel XSMM
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        id: ukernels-xsmm
+        uses: ./.github/actions/checkout-install-ukernels
+        with:
+          lib_name: 'XSMM'
+
+      - name: Install Ukernel OneDNN
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        id: ukernels-onednn
+        uses: ./.github/actions/checkout-install-ukernels
+        with:
+          lib_name: 'OneDNN'
+
+      - name: Check Ukernels installed
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        env:
+          XSMM_INSTALL: ${{ steps.ukernels-xsmm.outputs.path }}
+          CMAKE_PREFIX_PATH: ${{ steps.ukernels-onednn.outputs.path }}
+        run: |
+          if [[ -z "$XSMM_INSTALL" || -z "$CMAKE_PREFIX_PATH" ]]; then
+            exho "Ukernels not installed properly"
+            echo "XSMM path is '$XSMM_INSTALL'"
+            echo "OneDNN path is '$CMAKE_PREFIX_PATH'"
+            exit -1;
+          fi
+
+      - name: Install Triton with Ukernels support
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        env:
+          XSMM_INSTALL: ${{ steps.ukernels-xsmm.outputs.path }}
+          CMAKE_PREFIX_PATH: ${{ steps.ukernels-onednn.outputs.path }}
+        run: |
+          export XSMM_LIBRARY_DIRS=$XSMM_INSTALL/lib
+          export XSMM_INCLUDE_DIRS=$XSMM_INSTALL/include
+          echo "CMAKE_PREFIX_PATH is '$CMAKE_PREFIX_PATH'"
+          echo "XSMM_INSTALL is '$XSMM_INSTALL'"
+          echo "XSMM_INCLUDE_DIRS is '$XSMM_INCLUDE_DIRS'"
+          cd python
+          python3 -m pip install --no-build-isolation -vvv '.[tests]'
+
+      - name: OneDNN Run python unit tests on GNR
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        env:
+          UKERNELS_LIB: "OneDNN"
+          TRITON_ALWAYS_COMPILE: 1
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+
+      - name: XSMM Run python unit tests on GNR
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        env:
+          UKERNELS_LIB: "XSMM"
+          TRITON_ALWAYS_COMPILE: 1
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+
+      - name: AMX/FMA Run python unit tests on GNR
+        if: matrix.config.target-os == 'ubuntu-gnr'
+        env:
+          TRITON_ALWAYS_COMPILE: 1
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
