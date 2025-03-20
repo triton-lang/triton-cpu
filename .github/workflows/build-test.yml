@@ -12,6 +12,9 @@ on:
     branches:
       - main
 
+env:
+  python-verson: '3.11'
+
 jobs:
   pre-commit:
     name: Pre-commit checks
@@ -23,15 +26,14 @@ jobs:
       - name: Print inputs
         run: |
           echo "${{ toJSON(github.event.inputs) }}"
-          echo INSTALL_IPEX=${{ env.INSTALL_IPEX }}
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python 3.11
+      - name: Install Python ${{ env.python-verson }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.python-verson }}
 
       - name: Run pre-commit checks
         run: |
@@ -49,7 +51,6 @@ jobs:
     runs-on: ${{ matrix.config.runs_on }}
     strategy:
       matrix:
-        python: ['3.11']
         config:
           - {runner: 'Ubuntu Intel x86', runs_on: ['glados', 'intel', 'x86'], target-os: 'ubuntu', arch: 'x86'}
           - {runner: 'MacOS-latest ARM64', runs_on: ['macos-latest'], target-os: 'macos',  arch: 'arm64'}
@@ -59,10 +60,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Python ${{ matrix.python }}
+      - name: Install Python ${{ env.python-verson }}
+        id: install-python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: ${{ env.python-verson }}
 
       - name: Install pip and apt dependencies
         env:
@@ -156,3 +158,81 @@ jobs:
             echo "Could not find '${LIT_TEST_DIR}'" ; exit -1
           fi
           lit -v "${LIT_TEST_DIR}/TritonCPU"
+
+  build-with-optional-deps:
+    name: Build with optional dependencies on GNR Intel x86(fp16, bf16, amx)
+    runs-on:
+      - granite-rapids
+      - intel
+      - x86
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Python ${{ env.python-verson }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.python-verson }}
+
+      - name: Install pip and apt dependencies
+        run: |
+          echo "RUNNER_TARGET_OS: ${RUNNER_TARGET_OS}"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit pybind11 matplotlib pandas
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev g++
+          pip install torch==2.5.1
+
+      - name: Install Ukernel XSMM
+        id: ukernels-xsmm
+        uses: ./.github/actions/checkout-install-ukernels
+        with:
+          lib_name: 'XSMM'
+
+      - name: Install Ukernel OneDNN
+        id: ukernels-onednn
+        uses: ./.github/actions/checkout-install-ukernels
+        with:
+          lib_name: 'OneDNN'
+
+      - name: Install Triton with Ukernels support
+        env:
+          XSMM_INSTALL: ${{ steps.ukernels-xsmm.outputs.path }}
+          CMAKE_PREFIX_PATH: ${{ steps.ukernels-onednn.outputs.path }}
+        run: |
+          export XSMM_LIBRARY_DIRS=$XSMM_INSTALL/lib
+          export XSMM_INCLUDE_DIRS=$XSMM_INSTALL/include
+          echo "CMAKE_PREFIX_PATH is '$CMAKE_PREFIX_PATH'"
+          echo "XSMM_INSTALL is '$XSMM_INSTALL'"
+          echo "XSMM_INCLUDE_DIRS is '$XSMM_INCLUDE_DIRS'"
+          cd python
+          python3 -m pip install --no-build-isolation -vvv '.[tests]'
+
+      - name: AMX/FMA Run python unit tests on GNR
+        env:
+          TRITON_CPU_UKERNELS_LIB: "None"
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
+
+      - name: OneDNN Run python unit tests on GNR
+        env:
+          TRITON_CPU_UKERNELS_LIB: "OneDNN"
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
+
+      - name: XSMM Run python unit tests on GNR
+        env:
+          TRITON_CPU_UKERNELS_LIB: "XSMM"
+        run: |
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
