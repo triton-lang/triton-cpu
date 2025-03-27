@@ -275,13 +275,6 @@ bool isAmxCandidate(cpu::DotOp op, bool supportInt8, bool supportFp16,
   return true;
 }
 
-template <typename T> T getSwizzledRhsTileType(T origTileType) {
-  int64_t rowsPerGroup = 32 / origTileType.getElementTypeBitWidth();
-  SmallVector<int64_t> shape({origTileType.getDimSize(0) / rowsPerGroup,
-                              origTileType.getDimSize(1) * rowsPerGroup});
-  return origTileType.cloneWith(shape, origTileType.getElementType());
-}
-
 // In AMX, element values shoud be packed to 32-bit groups that would be
 // multiplied elementwise with following accumulation. It means that RHS
 // needs to be pre-packed. E.g. for the following input
@@ -395,7 +388,7 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
     if (interleave && !inputBuf.vnni) {
       LDBG("  Copying from the original memref with interleave: "
            << inputBuf.memRef);
-      auto tmpBuf = allocateTmpBufferStack(loc, getSwizzledRhsTileType(vecTy),
+      auto tmpBuf = allocateTmpBufferStack(loc, getPackedLayoutType(vecTy),
                                            allocaPoint, rewriter);
       copyWithInterleave(loc, vecTy, inputBuf, tmpBuf, rewriter);
       return tmpBuf;
@@ -410,7 +403,7 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
   }
 
   if (interleave)
-    vecTy = getSwizzledRhsTileType(vecTy);
+    vecTy = getPackedLayoutType(vecTy);
   MemBuffer buf = allocateTmpBufferStack(loc, vecTy, allocaPoint, rewriter);
 
   if (interleave) {
@@ -599,7 +592,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
   amx::TileType lhsTileTy = amx::TileType::get(
       SmallVector<int64_t>({candidate.tileM, candidate.tileK}),
       candidate.lhsTileElemTy);
-  amx::TileType rhsTileTy = getSwizzledRhsTileType(amx::TileType::get(
+  amx::TileType rhsTileTy = getPackedLayoutType(amx::TileType::get(
       SmallVector<int64_t>({candidate.tileK, candidate.tileN}),
       candidate.rhsTileElemTy));
   amx::TileType accTileTy = amx::TileType::get(

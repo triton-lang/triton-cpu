@@ -140,6 +140,9 @@ MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
   buf.indices = valLoad.getIndices();
   LLVM_DEBUG(
       DBGS() << "Found buffer with input: " << val << "\n";
+      DBGS() << "  is Transposed: " << (buf.transposed ? "true" : "false")
+             << "\n";
+      DBGS() << "  is VNNI: " << (buf.vnni ? "true" : "false") << "\n";
       DBGS() << "  MemRef: " << buf.memRef << "\n"; DBGS() << "  Indices: ";
       llvm::interleaveComma(buf.indices, llvm::dbgs()); llvm::dbgs() << "\n");
 

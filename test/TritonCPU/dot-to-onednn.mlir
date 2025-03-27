@@ -13,12 +13,12 @@
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_SUBVIEW]] : memref<16x64xbf16, strided<[64, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_SUBVIEW]] : memref<64x32xbf16, strided<[32, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[ACC_BUF]] : memref<16x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c16{{.*}}, %c32{{.*}}, %c64{{.*}}, %c1{{.*}}, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %c0, %c0) <{dtypeA = vector<16x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index) -> index
+// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c16{{.*}}, %c32{{.*}}, %c64{{.*}}, %c1{{.*}}, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %c0, %c0, %{{true|false}}) <{dtypeA = vector<16x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index, i1) -> index
 // CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
-// CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %c0, %c0, %[[BLOCKEDB_SIZE]], %c1) : (index, memref<16x64xbf16, strided<[64, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<16x32xf32>, index, index, i64, index) -> ()
-// CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_10 : memref<16x32xf32>, vector<16x32xf32>
+// CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %c0, %c0, %[[BLOCKEDB_SIZE]], %c1, %{{true|false}}) : (index, memref<16x64xbf16, strided<[64, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<16x32xf32>, index, index, i64, index, i1) -> ()
+// CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst{{.*}} : memref<16x32xf32>, vector<16x32xf32>
 
 #loc = loc(unknown)
 module {
@@ -78,11 +78,11 @@ module {
 // CHECK:       %[[R_OFFSET1:.+]] = arith.muli %[[STEP]], %[[RHS_STRIDES]]#1 : index
 // CHECK:       %[[RHS_STEP_ELEM:.+]] = arith.addi %[[SZ1]], %[[R_OFFSET1]] : index
 // CHECK:       %[[RHS_STEP:.+]] = arith.muli %[[RHS_STEP_ELEM]], %[[CONST]] : index
-// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %[[LHS_STEP]], %[[RHS_STEP]])  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index) -> index
+// CHECK:       %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c64{{.*}}, %c32{{.*}}, %c64{{.*}}, %[[NUM_BATCHES]], %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %[[LHS_STEP]], %[[RHS_STEP]],  %{{true|false}})  <{dtypeA = vector<64x64xbf16>, dtypeB = vector<64x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index, i1) -> index
 // CHECK:       %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK:       %[[BLOCK:.+]] = arith.muli  %c32{{.*}}, %c64{{.*}} : i64
 // CHECK:       %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
-// CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %[[LHS_STEP]], %[[RHS_STEP]], %[[BLOCKEDB_SIZE]], %[[NUM_BATCHES]]) : (index, memref<64x64xbf16, strided<[128, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<64x32xf32>, index, index, i64, index) -> ()
+// CHECK:       "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[ACC_BUF]], %[[LHS_STEP]], %[[RHS_STEP]], %[[BLOCKEDB_SIZE]], %[[NUM_BATCHES]], %{{true|false}}) : (index, memref<64x64xbf16, strided<[128, 1], offset: ?>>, memref<64x32xbf16, strided<[32, 1], offset: ?>>, memref<64x32xf32>, index, index, i64, index, i1) -> ()
 // CHECK:       %[[RES:.+]] = vector.transfer_read %[[ACC_BUF]][%c0, %c0], %cst_10 {in_bounds = [true, true]} : memref<64x32xf32>, vector<64x32xf32>
 
 #loc = loc(unknown)
@@ -133,6 +133,7 @@ module {
 // CHECK:       %[[LHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
 // CHECK:       %[[RHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
 // CHECK:       %[[RES_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xf32>
+// CHECK:       vector.transfer_write %cst_0, %[[RES_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xf32>, memref<32x32xf32>
 // CHECK:       %31:3 = scf.for %[[IV1:.*]] = %c0_i32 to %30 step %c1_i32 iter_args(%[[RES_IV:.*]] = %cst_0, %[[LHS_IV:.*]] = %[[LHS_TPTR]], %[[RHS_IV:.*]] = %[[RHS_TPTR]]) -> (vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>>)  : i32 {
 // CHECK-NEXT:    %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %[[LHS_IV]] : <tensor<1x1x32x32xbf16>> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
 // CHECK-NEXT:    %[[LHS_INDICES:.+]]:4 = triton_cpu.extract_indices %[[LHS_IV]] : <tensor<1x1x32x32xbf16>> -> index, index, index, index
@@ -145,25 +146,22 @@ module {
 // CHECK-NEXT:    %[[RHS_VEC_D_0_T:.+]] = vector.transpose %[[RHS_VEC_D_0]], [1, 0] : vector<16x32xbf16> to vector<32x16xbf16>
 // CHECK-NEXT:    %[[RHS_VEC_D_1_T:.+]] = vector.transpose %[[RHS_VEC_D_1]], [1, 0] : vector<16x32xbf16> to vector<32x16xbf16>
 // CHECK-NEXT:    %[[RHS_VEC_D_T:.+]] = vector.interleave %[[RHS_VEC_D_0_T]], %[[RHS_VEC_D_1_T]] : vector<32x16xbf16> -> vector<32x32xbf16>
-// CHECK-NEXT:    %[[RHS_VEC_D:.+]] = vector.transpose %[[RHS_VEC_D_T]], [1, 0] : vector<32x32xbf16> to vector<32x32xbf16>
+// CHECK-NEXT:    %[[RHS_VEC_T:.+]] = vector.transpose %[[RHS_VEC_D_T]], [1, 0] : vector<32x32xbf16> to vector<32x32xbf16>
 // CHECK:         vector.transfer_write %[[LHS_VEC_T]], %[[LHS_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xbf16>, memref<32x32xbf16>
-// CHECK-NEXT:    vector.transfer_write %[[RHS_VEC_D]], %[[RHS_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xbf16>, memref<32x32xbf16>
-// CHECK:         %[[LHS_SUBVIEW:.+]] = memref.subview %[[LHS_ALLOCA]][0, 0] [32, 32] [1, 1] : memref<32x32xbf16> to memref<32x32xbf16, strided<[32, 1]>>
-// CHECK-NEXT:    %[[RHS_SUBVIEW:.+]] = memref.subview %[[RHS_ALLOCA]][0, 0] [32, 32] [1, 1] : memref<32x32xbf16> to memref<32x32xbf16, strided<[32, 1]>>
-// CHECK-NEXT:    %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_SUBVIEW]] : memref<32x32xbf16, strided<[32, 1]>> -> memref<bf16>, index, index, index, index, index
-// CHECK-NEXT:    %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_SUBVIEW]] : memref<32x32xbf16, strided<[32, 1]>> -> memref<bf16>, index, index, index, index, index
+// CHECK:         vector.transfer_write %[[RHS_VEC_T]], %[[RHS_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xbf16>, memref<32x32xbf16>
+// CHECK-NEXT:    %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_ALLOCA]] : memref<32x32xbf16> -> memref<bf16>, index, index, index, index, index
+// CHECK-NEXT:    %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_ALLOCA]] : memref<32x32xbf16> -> memref<bf16>, index, index, index, index, index
 // CHECK-NEXT:    %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RES_ALLOCA]] : memref<32x32xf32> -> memref<f32>, index, index, index, index, index
-// CHECK-NEXT:    %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c32{{.*}}, %c32{{.*}}, %c32{{.*}}, %c1, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %c0{{.*}}, %c0{{.*}}) <{dtypeA = vector<32x32xbf16>, dtypeB = vector<32x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index) -> index
+// CHECK:         %[[ONEDNN_HANDLE:.+]] = "triton_cpu.brgemm_create"(%c32{{.*}}, %c32{{.*}}, %c32{{.*}}, %c1, %[[LHS_STRIDES]]#0, %[[RHS_STRIDES]]#0, %[[ACC_STRIDES]]#0, %c0{{.*}}, %c0{{.*}}, %{{true|false}}) <{dtypeA = vector<32x32xbf16>, dtypeB = vector<32x32xbf16>, dtypeC = f32}> : (i64, i64, i64, index, index, index, index, index, index, i1) -> index
 // CHECK-NEXT:    %[[BTW:.+]] = arith.constant 2 : i64
 // CHECK-NEXT:    %[[BLOCK:.+]] = arith.muli %c32{{.*}}, %c32{{.*}} : i64
 // CHECK-NEXT:    %[[BLOCKEDB_SIZE:.+]] = arith.muli %[[BLOCK]], %[[BTW]] : i64
-// CHECK-NEXT:    "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_SUBVIEW]], %[[RHS_SUBVIEW]], %[[RES_ALLOCA]], %c0{{.*}}, %c0{{.*}}, %[[BLOCKEDB_SIZE]], %c1) : (index, memref<32x32xbf16, strided<[32, 1]>>, memref<32x32xbf16, strided<[32, 1]>>, memref<32x32xf32>, index, index, i64, index) -> ()
+// CHECK-NEXT:    "triton_cpu.brgemm_execute"(%[[ONEDNN_HANDLE]], %[[LHS_ALLOCA]], %[[RHS_ALLOCA]], %[[RES_ALLOCA]], %c0{{.*}}, %c0{{.*}}, %[[BLOCKEDB_SIZE]], %c1, %{{true|false}}) : (index, memref<32x32xbf16>, memref<32x32xbf16>, memref<32x32xf32>, index, index, i64, index, i1) -> ()
 // CHECK-NEXT:    %[[LHS_IV_UPD:.*]] = tt.advance %[[LHS_IV]], [%c0_i32, %c1_i32, %c0_i32, %c0_i32] : <tensor<1x1x32x32xbf16>>
 // CHECK-NEXT:    %[[RHS_IV_UPD:.*]] = tt.advance %[[RHS_IV]], [%c1_i32, %c0_i32, %c0_i32, %c0_i32] : <tensor<1x1x16x64xbf16>>
 // CHECK-NEXT:    scf.yield %[[RES_IV]], %[[LHS_IV_UPD]], %[[RHS_IV_UPD]] : vector<32x32xf32>, !tt.ptr<tensor<1x1x32x32xbf16>>, !tt.ptr<tensor<1x1x16x64xbf16>>
 // CHECK-NEXT:  }
-// CHECK:       %[[RES:.+]] = vector.transfer_read %[[RES_ALLOCA]][%c0, %c0], %cst_3 {in_bounds = [true, true]} : memref<32x32xf32>, vector<32x32xf32>
-
+// CHECK:       %[[RES:.+]] = vector.transfer_read %[[RES_ALLOCA]][%c0, %c0], %cst{{.*}} {in_bounds = [true, true]} : memref<32x32xf32>, vector<32x32xf32>
 
 #loc = loc(unknown)
 module {

@@ -13,3 +13,7 @@ add_triton_library(TritonCPUTransforms
     DEPENDS
     TritonCPUTransformsPassIncGen
 )
+
+if (dnnl_FOUND)
+  target_link_libraries(TritonCPUTransforms PRIVATE DNNL::dnnl)
+endif()
