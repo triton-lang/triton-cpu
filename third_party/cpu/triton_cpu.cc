@@ -190,14 +190,21 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
           // opts.vectorTransformsOptions();
           // TODO: Check whether we need these parameters.
           // Somehow it helps arm.
+          //
+          // VectorContractLowering::Dot is default and fine, but it takes too
+          // long to compile on arm. I guess it generated too many ir ops.
+          // (!WA!)
+          //
+          // VectorContractLowering::Matmul generates error: "Do not know
+          // how to split the result of this operator!" with
+          // "llvm.matrix.multiply". On those ops no progress for some time, so
+          // it can be replaced with `vector.matmul`.
+          //
+          // VectorContractLowering::OuterProduct somehow
+          // works, but it might not be the most performant way. It's most
+          // widely used path for this lowering in CPU case.
           opts.vectorTransformsOptions.setVectorTransformsOptions(
               mlir::vector::VectorContractLowering::OuterProduct);
-          opts.vectorTransformsOptions.setVectorMultiReductionLowering(
-              mlir::vector::VectorMultiReductionLowering::InnerParallel);
-          opts.vectorTransformsOptions.setVectorTransposeLowering(
-              mlir::vector::VectorTransposeLowering::EltWise);
-          opts.vectorTransformsOptions.setVectorTransferSplit(
-              mlir::vector::VectorTransferSplit::VectorTransfer);
           pm.addPass(mlir::createConvertVectorToLLVMPass(opts));
         });
   m.def("add_lower_affine", [](mlir::PassManager &pm) {
