@@ -77,7 +77,7 @@ class CPUOptions:
 
     def get_ukernels(self) -> Ukernels:
         raw_ukernels = os.getenv("TRITON_CPU_UKERNELS_LIB", self.ukernels)
-        if raw_ukernels is None:
+        if raw_ukernels is None or raw_ukernels == "None":
             return None
         ukernels = Ukernels.__members__.get(raw_ukernels, None)
         if ukernels is None:
