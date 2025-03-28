@@ -30,10 +30,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python ${ python-verson }
+      - name: Install Python ${{ env.python-verson }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${ python-verson }
+          python-version: ${{ env.python-verson }}
 
       - name: Run pre-commit checks
         run: |
@@ -60,11 +60,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Python ${ python-verson }
+      - name: Install Python ${{ env.python-verson }}
         id: install-python
         uses: actions/setup-python@v5
         with:
-          python-version: ${ python-verson }
+          python-version: ${{ env.python-verson }}
 
       - name: Install pip and apt dependencies
         env:
@@ -171,10 +171,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Python ${ python-verson }
+      - name: Install Python ${{ env.python-verson }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${ python-verson }
+          python-version: ${{ env.python-verson }}
 
       - name: Install pip and apt dependencies
         run: |
