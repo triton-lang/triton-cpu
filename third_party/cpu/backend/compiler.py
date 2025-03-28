@@ -76,9 +76,7 @@ class CPUOptions:
         return vec_lib
 
     def get_ukernels(self) -> Ukernels:
-        raw_ukernels = self.ukernels
-        if os.getenv("UKERNELS_LIB") != None and os.getenv("UKERNELS_LIB") != "":
-            raw_ukernels = os.getenv("UKERNELS_LIB")
+        raw_ukernels = os.getenv("TRITON_CPU_UKERNELS_LIB", self.ukernels)
         if raw_ukernels is None:
             return None
         ukernels = Ukernels.__members__.get(raw_ukernels, None)
