@@ -184,13 +184,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev g++
           pip install torch==2.5.1
-      
+
       - name: Install Ukernel XSMM
         id: ukernels-xsmm
         uses: ./.github/actions/checkout-install-ukernels
         with:
           lib_name: 'XSMM'
-  
+
       - name: Install Ukernel OneDNN
         id: ukernels-onednn
         uses: ./.github/actions/checkout-install-ukernels
@@ -246,4 +246,3 @@ jobs:
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
           DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
           DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
-
