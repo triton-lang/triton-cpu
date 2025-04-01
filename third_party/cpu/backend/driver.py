@@ -488,35 +488,12 @@ class CPUDriver(DriverBase):
         return do_bench_cpu
 
     def get_empty_cache_for_benchmark(self):
-        import numpy as np
+        import torch
 
         # A typical LLC size for high-end server CPUs are ~400MB.
         cache_size = 512 * 1024 * 1024
-        return np.empty(int(cache_size // 4), dtype=np.int32)
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
 
+    # TODO maybe CPU should do anything here
     def clear_cache(self, cache):
-        global tl
-        import triton.language as tl
-
-        class Pointer:
-
-            def __init__(self, data):
-                self.data = data
-                self.dtype = data.dtype
-
-            def data_ptr(self):
-                return self.data.ctypes.data
-
-        @triton.jit
-        def clear_kernel(x_ptr, n_elements, BLOCK_SIZE: tl.constexpr, TILE_SIZE: tl.constexpr):
-            pid = tl.program_id(axis=0)
-            block_start = pid * BLOCK_SIZE
-            for i in range(0, tl.cdiv(BLOCK_SIZE, TILE_SIZE)):
-                offsets = block_start + i * TILE_SIZE + tl.arange(0, TILE_SIZE)
-                mask = offsets < n_elements
-                tl.store(x_ptr + offsets, 0, mask=mask)
-
-        n_elements = len(cache)
-        BLOCK_SIZE = 4096
-        grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )
-        clear_kernel[grid](Pointer(cache), n_elements, BLOCK_SIZE, TILE_SIZE=16)
+        cache.zero_()
