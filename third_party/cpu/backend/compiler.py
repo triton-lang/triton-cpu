@@ -76,12 +76,13 @@ class CPUOptions:
         return vec_lib
 
     def get_ukernels(self) -> Ukernels:
-        if self.ukernels is None:
+        raw_ukernels = os.getenv("TRITON_CPU_UKERNELS_LIB", self.ukernels)
+        if raw_ukernels is None or raw_ukernels == "None":
             return None
-        ukernels = Ukernels.__members__.get(self.ukernels, None)
+        ukernels = Ukernels.__members__.get(raw_ukernels, None)
         if ukernels is None:
             raise ValueError(
-                f"Unexpected value for ukernels: {self.ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
+                f"Unexpected value for ukernels: {raw_ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
             )
 
         if ukernels == Ukernels.OneDNN and not cpu.onednn_available():
