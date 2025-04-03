@@ -69,7 +69,7 @@ createTargetMachine(llvm::Module *module, std::string proc,
     if (!target) {
       throw std::runtime_error("target lookup error: " + error);
     }
-    module->setTargetTriple(triple);
+    module->setTargetTriple(Triple(triple));
   }
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
@@ -443,10 +443,10 @@ void init_triton_llvm(py::module &&m) {
 
   m.def("set_host_target", [](llvm::Module *mod) {
     auto triple = getDefaultTargerOrProcessTriple();
-    mod->setTargetTriple(triple);
+    mod->setTargetTriple(Triple(triple));
     std::string error;
     auto target =
-        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple(), error);
+        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple().str(), error);
     if (!target) {
       throw std::runtime_error("target lookup error: " + error);
     }
