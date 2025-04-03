@@ -9,7 +9,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.runtime.jit import JITFunction
+from triton.runtime.jit import JITFunction, get_device_key
 from triton._internal_testing import is_hip
 
 
@@ -192,12 +192,11 @@ def test_annotation(device):
 
     x = torch.empty(1, dtype=torch.int32, device=device)
 
-    device = getattr(torch, device).current_device()
     kernel[(1, )](x, 1)
     kernel[(1, )](x, 8)
     kernel[(1, )](x, 16)
     kernel[(1, )](x, 17)
-    assert len(kernel.device_caches[device][0]) == 3
+    assert len(kernel.device_caches[get_device_key()][0]) == 3
 
 
 GLOBAL_DEFAULT_ARG = 1
@@ -220,7 +219,7 @@ def test_kernel_default_arg(device):
     kernel[(1, )](x)
     assert x == torch.ones_like(x)
 
-    device = getattr(torch, device).current_device()
+    device = get_device_key()
     assert len(kernel.device_caches[device][0]) == 1
 
 
@@ -392,7 +391,7 @@ def test_jit_warmup_cache(device) -> None:
         torch.randn(32, dtype=torch.float32, device=device),
         32,
     ]
-    device = getattr(torch, device).current_device()
+    device = get_device_key()  # getattr(torch, device).current_device()
     assert len(kernel_add.device_caches[device][0]) == 0
     kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, grid=(1, ))
     assert len(kernel_add.device_caches[device][0]) == 1
@@ -408,7 +407,10 @@ def test_jit_debug(device) -> None:
     def kernel(tmp):
         tl.device_assert(tl.load(tmp) == 1, "tmp == 1")
 
-    device = getattr(torch, device).current_device()
+    if device == "cpu":
+        pytest.skip('Device Assert is not yet supported on CPU')
+
+    device = get_device_key()
     tmp = torch.tensor([1], dtype=torch.int32, device=device)
     assert len(kernel.device_caches[device][0]) == 0
     kernel[(1, )](tmp, debug=False)
@@ -431,7 +433,7 @@ def test_jit_noinline(device) -> None:
     def kernel_add_device(a, b, o, N: tl.constexpr):
         add_fn(a, b, o, N)
 
-    device = getattr(torch, device).current_device()
+    device = get_device_key()
     assert len(kernel_add_device.device_caches[device][0]) == 0
     kernel_add_device.warmup(torch.float32, torch.float32, torch.float32, 32, grid=(1, ))
     assert len(kernel_add_device.device_caches[device][0]) == 1
@@ -475,8 +477,7 @@ def test_preload(device, fresh_triton_cache) -> None:
         tl.device_assert(idx < 32, "idx < 32")
         tl.store(o + idx, tl.load(a + idx) - tl.load(b + idx))
 
-    device = getattr(torch, device).current_device()
-
+    device = get_device_key()
     # get the serialized specialization data
     specialization_data = None
 
@@ -549,7 +550,7 @@ def test_hooks(device, fresh_triton_cache) -> None:
     kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
     assert specialization_data is not None and specialization_data_compiled == specialization_data
     assert is_warmup is True
-    assert key in kernel_add.device_caches[getattr(torch, device).current_device()][0]
+    assert key in kernel_add.device_caches[get_device_key()][0]
 
 
 @pytest.mark.skipif(reason="within_2g is a HIP specific optimization", condition=not is_hip())
@@ -625,5 +626,5 @@ def test_function_arguments(device):
     kernel[(1, )](y[2], func3, (3, ))
     kernel[(1, )](y[3], func4, (3, 4))
     kernel[(1, )](y[4], func1, tuple())
-    assert len(kernel.device_caches[0][0]) == 4
+    assert len(kernel.device_caches[get_device_key()][0]) == 4
     assert y.tolist() == [1, 2, 3, 7, 1]
