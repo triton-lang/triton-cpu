@@ -27,6 +27,8 @@ BLOCK_SIZE_N = 32
 BLOCK_SIZE_K = 8 if DTYPE == "float32" else 64 // in_dtype.itemsize
 GROUP_SIZE_M = 8
 
+# DUMMY Change, just to check
+
 
 # This kernel is used for blocked encoding of input tensors for matmul.
 #
