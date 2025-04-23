@@ -358,13 +358,22 @@ struct MathToVecLibPass
     //  Refactor this as an independent function.
     //  And improve this to support other x86 SIMD ISAs and also for arm SVE
     //  (VLA)
-    vec_size_in_bits = 512;
+    vec_size_in_bits = 0;
     for (auto feature : cpu_features) {
-      // Arm NEON is fixed 128-bit SIMD ISA.
-      if (feature == "neon") {
+      if (feature == "avx512f") {
+        vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 512);
+      } else if (feature == "avx") {
+        vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 256);
+      } else if (feature == "sse") {
+        vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 128);
+      } else if (feature == "neon") {
+        // Arm NEON is fixed 128-bit SIMD ISA.
         vec_size_in_bits = 128;
         break;
       }
+    }
+    if (vec_size_in_bits == 0) {
+      vec_size_in_bits = 512;
     }
   }
 
