@@ -346,7 +346,8 @@ void populatePatternsForOp(RewritePatternSet &patterns,
 struct MathToVecLibPass
     : public mlir::triton::cpu::impl::MathToVecLibBase<MathToVecLibPass> {
   MathToVecLibPass() = default;
-  size_t vec_size_in_bits;
+  // Default to 128-bit if no features are specified.
+  size_t vec_size_in_bits = 128;
 
   explicit MathToVecLibPass(VecLib lib, std::set<std::string> cpu_features) {
     this->lib = lib;
@@ -358,7 +359,6 @@ struct MathToVecLibPass
     //  Refactor this as an independent function.
     //  And improve this to support other x86 SIMD ISAs and also for arm SVE
     //  (VLA)
-    vec_size_in_bits = 0;
     for (auto feature : cpu_features) {
       if (feature == "avx512f") {
         vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 512);
@@ -371,9 +371,6 @@ struct MathToVecLibPass
         vec_size_in_bits = 128;
         break;
       }
-    }
-    if (vec_size_in_bits == 0) {
-      vec_size_in_bits = 512;
     }
   }
 
