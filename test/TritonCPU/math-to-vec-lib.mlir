@@ -26,16 +26,16 @@
 
 module {
   tt.func public @exp_kernel(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32} , %arg1: !tt.ptr<f32> {tt.divisibility = 16 : i32} , %arg2: i32 {tt.divisibility = 16 : i32} ) attributes {noinline = false} {
-    %c0 = arith.constant 0 : index 
-    %0 = tt.get_program_id x : i32 
-    %1 = arith.muli %0, %arg2 : i32 
-    %2 = tt.addptr %arg1, %1 : !tt.ptr<f32>, i32 
-    %3 = triton_cpu.ptr_to_memref %2 : <f32> -> memref<1024xf32> 
-    %4 = vector.load %3[%c0] : memref<1024xf32>, vector<1024xf32> 
-    %5 = math.exp %4 : vector<1024xf32> 
-    %6 = tt.addptr %arg0, %1 : !tt.ptr<f32>, i32 
-    %7 = triton_cpu.ptr_to_memref %6 : <f32> -> memref<1024xf32> 
-    vector.store %5, %7[%c0] : memref<1024xf32>, vector<1024xf32> 
-    tt.return 
-  } 
-} 
+    %c0 = arith.constant 0 : index
+    %0 = tt.get_program_id x : i32
+    %1 = arith.muli %0, %arg2 : i32
+    %2 = tt.addptr %arg1, %1 : !tt.ptr<f32>, i32
+    %3 = triton_cpu.ptr_to_memref %2 : <f32> -> memref<1024xf32>
+    %4 = vector.load %3[%c0] : memref<1024xf32>, vector<1024xf32>
+    %5 = math.exp %4 : vector<1024xf32>
+    %6 = tt.addptr %arg0, %1 : !tt.ptr<f32>, i32
+    %7 = triton_cpu.ptr_to_memref %6 : <f32> -> memref<1024xf32>
+    vector.store %5, %7[%c0] : memref<1024xf32>, vector<1024xf32>
+    tt.return
+  }
+}
