@@ -381,10 +381,7 @@ struct MathToVecLibPass
     RewritePatternSet patterns(context);
 
     if (!cpu_features.empty()) {
-      std::set<std::string> cpu_features_set;
-      for (auto feature : cpu_features) {
-        cpu_features_set.insert(feature);
-      }
+      std::set<std::string> cpu_features_set{cpu_features.begin(), cpu_features.end()};
       update_vec_size(cpu_features_set);
     }
 
