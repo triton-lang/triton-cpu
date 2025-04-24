@@ -104,6 +104,8 @@ def MathToVecLib : Pass<"triton-cpu-math-to-vec-lib", "mlir::ModuleOp"> {
                clEnumValN(mlir::triton::cpu::VecLib::Mvec, "mvec",
                 "Use Mvec as mm lib")
               )}]>,
+        ListOption<"cpu_features", "cpu_features", "std::string",
+             "A list of available CPU features to choose proper vector functions">,
     ];
 
     let dependentDialects = ["mlir::vector::VectorDialect",
