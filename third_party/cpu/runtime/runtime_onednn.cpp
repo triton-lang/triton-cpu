@@ -3,7 +3,7 @@
 #include "oneapi/dnnl/dnnl_ukernel.hpp"
 #include "oneapi/dnnl/dnnl_ukernel_types.h"
 #if !defined(DNNL_EXPERIMENTAL_UKERNEL)
-#error "DNNL Ukerenel ismissing"
+#error "DNNL Ukerenel is missing"
 #endif
 #endif
 
