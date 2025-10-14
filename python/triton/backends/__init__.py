@@ -30,6 +30,7 @@ def _find_concrete_subclasses(module: ModuleType, base_class: Type[T]) -> Type[T
 
 @dataclass(frozen=True)
 class Backend:
+    name: str
     compiler: Type[BaseBackend]
     driver: Type[DriverBase]
 
@@ -39,7 +40,7 @@ def _discover_backends() -> dict[str, Backend]:
     for ep in entry_points().select(group="triton.backends"):
         compiler = importlib.import_module(f"{ep.value}.compiler")
         driver = importlib.import_module(f"{ep.value}.driver")
-        backends[ep.name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),  # type: ignore
+        backends[ep.name] = Backend(ep.name, _find_concrete_subclasses(compiler, BaseBackend),  # type: ignore
                                     _find_concrete_subclasses(driver, DriverBase))  # type: ignore
     return backends
 

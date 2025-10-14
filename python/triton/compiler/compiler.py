@@ -257,6 +257,7 @@ class CompileTimer:
 
 
 def compile(src, target=None, options=None):
+    print("Compiling from triton-cpu merged...")
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()

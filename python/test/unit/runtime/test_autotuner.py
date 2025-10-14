@@ -4,6 +4,8 @@ import triton
 import triton.language as tl
 import pytest
 
+from triton._internal_testing import is_cuda
+
 
 def do_bench(kernel_call, quantiles, use_cuda_graph=False):
     if use_cuda_graph:
@@ -13,8 +15,10 @@ def do_bench(kernel_call, quantiles, use_cuda_graph=False):
 
 @pytest.mark.parametrize('use_cuda_graph', [False, True])
 def test_kwargs(use_cuda_graph: bool, device: str):
-    if use_cuda_graph and not torch.cuda.is_available():
+
+    if not is_cuda() and use_cuda_graph:
         pytest.xfail("CUDA is not available")
+        pytest.skip("Use cuda graph without cuda looks strange")
 
     M, N = 1024, 16
     src = torch.randn(M * N, device=device)
