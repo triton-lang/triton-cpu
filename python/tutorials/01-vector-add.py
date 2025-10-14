@@ -121,7 +121,7 @@ def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, device):
     if output is None:
         # We need to preallocate the output.
         output = torch.empty_like(x)
-    assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
+    assert x.device.type == DEVICE.type and y.device.type == DEVICE.type and output.device.type == DEVICE.type
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -176,7 +176,7 @@ triton.runtime.driver.set_active_to_cpu()
 x = torch.rand(size, device=DEVICE)
 y = torch.rand(size, device=DEVICE)
 output_torch_cpu = torch.add(x, y)
-output_triton_cpu = add(x, y, None, device='cpu')
+output_triton_cpu = add(x, y, None, device=torch.device('cpu'))
 print(output_torch_cpu)
 print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
@@ -241,7 +241,7 @@ def benchmark(size, provider):
     x = torch.rand(size, device=DEVICE, dtype=torch.float32)
     y = torch.rand(size, device=DEVICE, dtype=torch.float32)
 
-    if DEVICE == 'cpu':
+    if DEVICE.type == torch.device('cpu').type:
         triton.runtime.driver.set_active_to_cpu()
     else:
         triton.runtime.driver.set_active_to_gpu()

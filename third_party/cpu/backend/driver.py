@@ -79,7 +79,7 @@ class CPUUtils(object):
             lib = ctypes.cdll.LoadLibrary(f.name)
             fn_ptr = getattr(lib, name)
             fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value
-            return (lib, fn_ptr_as_void_p, 0, 0)
+            return (lib, fn_ptr_as_void_p, 0, 0, 0)
 
     def get_device_properties(self, *args):
         return {"max_shared_mem": 0}
@@ -424,13 +424,13 @@ class CPUDeviceInterface:
         self.kernel_times = []
         self.last_start = 0
         self.use_hooks = False
-        triton.compiler.CompiledKernel.launch_enter_hook = None
-        triton.compiler.CompiledKernel.launch_exit_hook = None
+        triton.knobs.runtime.launch_enter_hook = None
+        triton.knobs.runtime.launch_exit_hook = None
 
     def enable_hook_timing(self):
         self.use_hooks = True
-        triton.compiler.CompiledKernel.launch_enter_hook = lambda arg: self._enter_hook()
-        triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
+        triton.knobs.runtime.launch_enter_hook = lambda arg: self._enter_hook()
+        triton.knobs.runtime.launch_exit_hook = lambda arg: self._exit_hook()
 
     def synchronize(self):
         pass

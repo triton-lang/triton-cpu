@@ -30,7 +30,7 @@ def _find_concrete_subclasses(module: ModuleType, base_class: Type[T]) -> Type[T
 
 @dataclass(frozen=True)
 class Backend:
-    name: str = ""
+    name: str
     compiler: Type[BaseBackend]
     driver: Type[DriverBase]
 
