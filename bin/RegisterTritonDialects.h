@@ -12,6 +12,7 @@
 #include "proton/Dialect/include/Dialect/ProtonGPU/Transforms/Passes.h"
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -26,6 +27,10 @@
 #include "triton/Dialect/TritonInstrument/Transforms/Passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 
+#include "cpu/include/ScalarizePass/ScalarizeInterfaceImpl.h"
+#include "cpu/include/TritonCPUToLLVM/Passes.h"
+#include "cpu/include/TritonCPUTransforms/Passes.h"
+#include "cpu/include/TritonToTritonCPU/Passes.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/include/Dialect/NVWS/Transforms/Passes.h"
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
@@ -34,9 +39,12 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 
+#include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/InitAllPasses.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -148,6 +156,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
+  // CPU passes
+  mlir::triton::cpu::registerTritonToTritonCPUPasses();
+  mlir::triton::cpu::registerTritonCPUTransformsPasses();
+  mlir::triton::cpu::registerTritonCPUToLLVMPasses();
+  mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
+
   // Plugin passes
   if (std::string filename =
           mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
@@ -178,11 +192,14 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
+      mlir::triton::cpu::TritonCPUDialect,
       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
       mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
+      mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+      mlir::amx::AMXDialect, mlir::tensor::TensorDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect,

@@ -6,7 +6,7 @@ import pytest
 
 import pathlib
 import uuid
-from triton._internal_testing import is_cuda, is_hip_cdna2
+from triton._internal_testing import is_cuda, is_hip_cdna2, is_cpu
 
 
 def do_bench(kernel_call, quantiles, use_cuda_graph=False):
@@ -17,8 +17,10 @@ def do_bench(kernel_call, quantiles, use_cuda_graph=False):
 
 @pytest.mark.parametrize('use_cuda_graph', [False, True])
 def test_kwargs(use_cuda_graph: bool, device: str):
-    if use_cuda_graph and not torch.cuda.is_available():
+
+    if not is_cuda() and use_cuda_graph:
         pytest.xfail("CUDA is not available")
+        pytest.skip("Use cuda graph without cuda looks strange")
 
     M, N = 1024, 16
     src = torch.randn(M * N, device=device)
@@ -411,6 +413,9 @@ def test_exceed_tmem(device):
 
 
 def test_exceed_threads(device):
+    if is_cpu():
+        pytest.skip("Not supported on CPU")
+
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     x = torch.empty(1024, device=device, dtype=torch.float32)

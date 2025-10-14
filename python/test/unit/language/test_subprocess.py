@@ -5,7 +5,7 @@ import sys
 from collections import Counter
 
 import triton
-from triton._internal_testing import is_interpreter
+from triton._internal_testing import is_interpreter, is_cpu
 
 import pytest
 
@@ -14,9 +14,10 @@ print_path = os.path.join(dir_path, "print_helper.py")
 torch_types = ["int8", "uint8", "int16", "int32", "long", "float16", "float32", "float64"]
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("func_type, data_type", [(fn, data_type)
-                                                  for fn in ["device_print", "device_print_scalar"]
+                                                  for fn in ["device_print", "device_print_scalars"]
                                                   for data_type in torch_types] + [
                                                       ("print", "int32"),
                                                       ("static_print", "int32"),
@@ -35,9 +36,13 @@ torch_types = ["int8", "uint8", "int16", "int32", "long", "float16", "float32", 
                                                       ("device_print_2d_tensor", "int32"),
                                                   ])
 def test_print(func_type: str, data_type: str, device: str):
+    if is_cpu() and (data_type == "float16" or func_type in ["device_print_pointer", "device_print_large"]):
+        pytest.skip("test_print for float16/pointer/large are not yet supported on CPU.")
+
     proc = subprocess.run(
         [sys.executable, print_path, "test_print", func_type, data_type, device],
         capture_output=True,
+        env={**os.environ, "TRITON_CPU_BACKEND": "1" if is_cpu() else "0"},
     )
     assert proc.returncode == 0
 
@@ -54,6 +59,11 @@ def test_print(func_type: str, data_type: str, device: str):
     # Constant for testing the printing of scalar values
     SCALAR_VAL = 42
 
+    # TODO: Consider cases for signedness, overflow, and multiple pids (non-determinism).
+    if is_cpu():
+        _check_cpu_print(proc.stdout.decode("UTF-8"), func_type, data_type, N, SCALAR_VAL)
+        return
+
     # Format is
     #   pid (<x>, <y>, <z>) idx (<i1>, <i2>, ...) <prefix> (operand <n>) <elem>
     expected_lines = Counter()
@@ -68,10 +78,14 @@ def test_print(func_type: str, data_type: str, device: str):
             if data_type.startswith("float"):
                 line += ".000000"
             expected_lines[line] = 1
-    elif func_type == "device_print_scalar":
+    elif func_type == "device_print_scalars":
         line = f"pid (0, 0, 0) idx () x: {SCALAR_VAL}"
         if data_type.startswith("float"):
             line += ".000000"
+        expected_lines[line] = N
+        line = f"pid (0, 0, 0) idx () int: {SCALAR_VAL}"
+        expected_lines[line] = N
+        line = "pid (0, 0, 0) idx () float: 3.140000"
         expected_lines[line] = N
     elif func_type == "device_print_negative":
         for i in range(N):
@@ -124,3 +138,108 @@ def test_print(func_type: str, data_type: str, device: str):
             continue
         print(f'Expected line "{line}" {expected_lines[line]} time(s), but saw {actual_lines[line]} time(s)')
     assert all(delta == 0 for delta in diff.values())
+
+
+def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
+    # An example of a tensor printing is like:
+    # (0, 0, 0) x: [  0,   1,   2,   3,   4,   5,   6,   7,
+    #                 8,   9,  10,  11,  12,  13,  14,  15,
+    #                 ...
+    #               120, 121, 122, 123, 124, 125, 126, 127]
+    PID_PREFIX = "(0, 0, 0)"
+    NEWLINE_WITH_PADDING = "\n" + " " * (len(PID_PREFIX + " x: ["))
+    if func_type in ("print", "device_print", "device_print_uint", "device_print_uint_cast"):
+        expected = PID_PREFIX + " x: ["
+        for i in range(N):
+            if func_type == "device_print_uint_cast":
+                offset = 128  # tl.arange(0, BLOCK) + 128
+            elif data_type == "uint32":
+                offset = 1 << 31
+            else:
+                offset = 0
+            expected += f"{i + offset:3}"
+            if data_type.startswith("float"):
+                expected += ".0000"
+            if i == N - 1:
+                continue
+            expected += ","
+            if i % 8 == 7:
+                expected += NEWLINE_WITH_PADDING
+            else:
+                expected += " "
+        expected += "]"
+    elif func_type == "device_print_scalars":
+        expected = f"{PID_PREFIX} x: {SCALAR_VAL}"
+        if data_type.startswith("float"):
+            expected += ".000000"
+        expected += f"\n{PID_PREFIX} int: {SCALAR_VAL}"
+        expected += f"\n{PID_PREFIX} float: 3.140000"
+    elif func_type == "device_print_negative":
+        expected = PID_PREFIX + " x: ["
+        for i in range(N):
+            expected += f"{-i:4}"
+            if i == N - 1:
+                continue
+            expected += ","
+            if i % 8 == 7:
+                expected += NEWLINE_WITH_PADDING
+            else:
+                expected += " "
+        expected += "]"
+    elif func_type == "device_print_hex":
+        expected = PID_PREFIX + " x: ["
+        for i in range(N):
+            if data_type.endswith("8"):
+                expected += f"0x{i:02x}"
+            elif data_type.endswith("16"):
+                expected += f"0x{i:04x}"
+            elif data_type.endswith("32"):
+                expected += f"0x{i:08x}"
+            elif data_type.endswith("64"):
+                expected += f"0x{i:016x}"
+            if i == N - 1:
+                continue
+            expected += ","
+            if i % 8 == 7:
+                expected += NEWLINE_WITH_PADDING
+            else:
+                expected += " "
+        expected += "]"
+    elif func_type == "static_print":
+        expected = f" int32[constexpr[{N}]]"
+    elif func_type == "no_arg_print":
+        expected = f"{PID_PREFIX}: 0"
+    elif func_type == "print_no_arg":
+        expected = f"{PID_PREFIX} no arg"
+    elif func_type == "print_multiple_args" or func_type == "device_print_multiple_args":
+        expected = ""
+        for k in range(2):
+            expected += PID_PREFIX + ": ["
+            for i in range(N):
+                expected += f"{i:3}" if k == 0 else "1"
+                if i == N - 1:
+                    continue
+                expected += ","
+                if i % 8 == 7:
+                    expected += "\n" + " " * (len(PID_PREFIX + ": ["))
+                else:
+                    expected += " "
+            expected += "]"
+            if k == 0:
+                expected += "\n"
+    elif func_type == "device_print_2d_tensor":
+        # For CPU, the 2D tensor has shape (N, 1) since warp_size is 1
+        expected = PID_PREFIX + ": ["
+        for i in range(N):
+            expected += f"[{i:3}]"
+            if i == N - 1:
+                continue
+            expected += ","
+            if i % 8 == 7:
+                expected += "\n" + " " * (len(PID_PREFIX + ": ["))
+            else:
+                expected += "\n" + " " * (len(PID_PREFIX + ": ["))
+        expected += "]"
+
+    # Ignore the trailing new line.
+    assert actual[:-1] == expected

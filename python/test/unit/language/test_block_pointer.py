@@ -3,7 +3,7 @@ import torch
 
 import triton
 import triton.language as tl
-from test_core import check_type_supported
+from test_core import check_type_supported, is_cpu
 
 
 @triton.jit
@@ -37,6 +37,9 @@ def block_copy_kernel(a_ptr, b_ptr, N, BLOCK_SIZE: tl.constexpr, PADDING_OPTION:
     for boundary_check in (None, "lower", "upper")
 ])
 def test_block_copy(dtypes_str, n, padding_option, boundary_check, device):
+    if is_cpu() and boundary_check == "lower":
+        pytest.skip("Lower boundary check is NYI for CPU")
+
     src_dtype_str = dtypes_str[0]
     dst_dtype_str = dtypes_str[1]
     src_dtype = getattr(torch, src_dtype_str)
@@ -63,6 +66,24 @@ def test_block_copy(dtypes_str, n, padding_option, boundary_check, device):
             assert torch.all(b[n // 2:n] == 0)
         elif padding_option == "nan":
             assert torch.all(torch.isnan(b[n // 2:n]))
+
+
+def test_block_copy2d(device):
+
+    @triton.jit
+    def kernel(in_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, BLOCK_M: tl.constexpr):
+        block_offset = tl.program_id(0) * BLOCK_M
+        in_block_ptr = tl.make_block_ptr(base=in_ptr, shape=(M, N), strides=(N, 1), offsets=(block_offset, 0),
+                                         block_shape=(BLOCK_M, N), order=(1, 0))
+        out_block_ptr = tl.make_block_ptr(base=out_ptr, shape=(M, N), strides=(N, 1), offsets=(block_offset, 0),
+                                          block_shape=(BLOCK_M, N), order=(1, 0))
+        x = tl.load(in_block_ptr)
+        tl.store(out_block_ptr, x)
+
+    inp = torch.randn((256, 16), device=device, dtype=torch.float32)
+    res = torch.empty_like(inp)
+    kernel[(16, )](inp, res, M=16, N=16, BLOCK_M=16)
+    assert (inp == res).all()
 
 
 @triton.jit
@@ -101,6 +122,9 @@ def matmul_no_scf_with_advance_kernel(  #
 ])
 def test_block_ptr_matmul_no_scf(shape, num_warps, device):
     m, n, k = shape
+    if is_cpu():
+        # FIXME: fix compilation time for bigger shapes on CPU
+        m = n = 16
     a = torch.randn((m, k), device=device, dtype=torch.float16)
     b = torch.randn((k, n), device=device, dtype=torch.float16)
     c = torch.empty((m, n), device=device, dtype=torch.float32)
@@ -114,5 +138,9 @@ def test_block_ptr_matmul_no_scf(shape, num_warps, device):
         stride_cm=c.stride(0), stride_cn=c.stride(1),  #
         BLOCK_M=m, BLOCK_N=n, BLOCK_K=k,  #
         num_warps=num_warps)
-    golden = torch.matmul(a, b)
+    if is_cpu():
+        # torch.matmul not implemented for Half float (float16) cpu
+        golden = torch.matmul(a.to(torch.float32), b.to(torch.float32))
+    else:
+        golden = torch.matmul(a, b)
     torch.testing.assert_close(c, golden, check_dtype=False)

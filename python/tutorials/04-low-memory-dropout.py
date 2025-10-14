@@ -72,6 +72,7 @@ def dropout(x, x_keep, p):
     return output
 
 
+device = triton.runtime.driver.active.get_current_target().backend
 # Input tensor
 x = torch.randn(size=(10, ), device=DEVICE)
 # Dropout mask
