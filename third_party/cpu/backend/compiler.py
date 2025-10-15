@@ -35,7 +35,7 @@ class CPUOptions:
     num_ctas: int = 0
     # Max number of threads to be used for a kernel call.
     # Zero value is used to utilize all available CPU cores.
-    num_threads: int = 0
+    num_cpu_threads: int = 0
     cluster_dims: tuple = (1, 1, 1)
     extern_libs: dict = None
     debug: bool = False

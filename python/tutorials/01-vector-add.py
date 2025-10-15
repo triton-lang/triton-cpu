@@ -23,12 +23,11 @@ import torch
 import triton
 import triton.language as tl
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
 GPU_BLOCK_SIZE = 1024
 CPU_BLOCK_SIZE = 4096
 # Single Thread Threshold
 CPU_ST_THRESHOLD = 65536
-USE_GPU = False
+USE_GPU = True
 
 
 @triton.jit
@@ -84,12 +83,12 @@ def add_kernel_tiled(x_ptr,  # *Pointer* to first input vector.
         # For small vectors it might be faster to use a single thread instead
         # of paying OMP threading overhead, so add a single-threaded option.
         # Other options use all available threads.
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_threads=1),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 8192}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 16384}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 32768}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 65536}, num_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_cpu_threads=1),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 8192}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 16384}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 32768}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 65536}, num_cpu_threads=0),
     ],
     key=['n_elements'],
 )
@@ -121,7 +120,7 @@ def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, device):
     if output is None:
         # We need to preallocate the output.
         output = torch.empty_like(x)
-    assert x.device.type == DEVICE.type and y.device.type == DEVICE.type and output.device.type == DEVICE.type
+    assert x.device.type == device.type and y.device.type == device.type and output.device.type == device.type
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -131,7 +130,8 @@ def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, device):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if device == 'cpu' else GPU_BLOCK_SIZE)
+    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if x.device.type == 'cpu' else GPU_BLOCK_SIZE,
+                     num_warps=1)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
@@ -173,10 +173,10 @@ def add_tiled_autotuned(x: torch.Tensor, y: torch.Tensor, output):
 torch.manual_seed(0)
 size = 98432
 triton.runtime.driver.set_active_to_cpu()
-x = torch.rand(size, device=DEVICE)
-y = torch.rand(size, device=DEVICE)
+x = torch.rand(size, device=torch.device('cpu'))
+y = torch.rand(size, device=torch.device('cpu'))
 output_torch_cpu = torch.add(x, y)
-output_triton_cpu = add(x, y, None, device=torch.device('cpu'))
+output_triton_cpu = add(x, y, None, torch.device('cpu'))
 print(output_torch_cpu)
 print(output_triton_cpu)
 print(f'The maximum difference between torch-cpu and triton-cpu is '
@@ -197,10 +197,11 @@ LINE_STYLES = [('blue', '--'), ('blue', '-.'), ('red', '-'), ('red', '--'), ('re
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
-    x = x.to(DEVICE)
-    y = y.to(DEVICE)
-    output_torch_gpu = x + y
-    output_triton_gpu = add(x, y, None, device=DEVICE)
+    device = triton.runtime.driver.active.get_active_torch_device()
+    x = x.to(device)
+    y = y.to(device)
+    output_torch_gpu = torch.add(x, y)
+    output_triton_gpu = add(x, y, None, device=device)
     print(output_torch_gpu)
     print(output_triton_gpu)
     print(f'The maximum difference between torch and triton is '
@@ -238,28 +239,29 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
         args={},  # Values for function arguments not in `x_names` and `y_name`.
     ))
 def benchmark(size, provider):
-    x = torch.rand(size, device=DEVICE, dtype=torch.float32)
-    y = torch.rand(size, device=DEVICE, dtype=torch.float32)
-
-    if DEVICE.type == torch.device('cpu').type:
+    if 'cpu' in provider:
         triton.runtime.driver.set_active_to_cpu()
     else:
         triton.runtime.driver.set_active_to_gpu()
+
+    device = triton.runtime.driver.active.get_active_torch_device()
+    x = torch.rand(size, device=device, dtype=torch.float32)
+    y = torch.rand(size, device=device, dtype=torch.float32)
     output = torch.empty_like(x)
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch-gpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)
     elif provider == 'triton-gpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, False), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, None, device), quantiles=quantiles)
     elif provider == 'torch-cpu':
         # Note that we preallocate the output buffer here to only measure the kernel performance
         # without a large chunk of memory allocation.
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.add(x, y, out=output), quantiles=quantiles)
     elif provider == 'triton-cpu':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, DEVICE), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, device), quantiles=quantiles)
     elif provider == 'triton-cpu-hooks':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, DEVICE), quantiles=quantiles,
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: add(x, y, output, device), quantiles=quantiles,
                                                      measure_time_with_hooks=True)
     elif provider == 'triton-cpu-tiled':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: add_tiled(x, y, output), quantiles=quantiles)

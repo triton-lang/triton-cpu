@@ -318,7 +318,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // Extract num_threads metadata.
   int num_threads = 0;
-  PyObject *num_threads_attr = PyObject_GetAttrString(kernel_metadata, "num_threads");
+  PyObject *num_threads_attr = PyObject_GetAttrString(kernel_metadata, "num_cpu_threads");
   if (num_threads_attr && PyLong_Check(num_threads_attr))
     num_threads = PyLong_AsLong(num_threads_attr);
 
