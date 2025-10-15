@@ -328,6 +328,7 @@ class Config:
         self.num_warps = state.get("num_warps", 4)
         self.num_stages = state.get("num_stages", 3)
         self.num_ctas = state.get("num_ctas", 1)
+        self.num_threads = state.get("num_threads", 0)
         self.maxnreg = state.get("maxnreg", None)
         self.pre_hook = state.get("pre_hook", None)
 

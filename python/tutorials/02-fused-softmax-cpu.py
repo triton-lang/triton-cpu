@@ -159,7 +159,8 @@ LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '-'), ('green', '--'), (
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
-    x = x.to('cuda')
+    device = triton.runtime.driver.active.get_active_torch_device()
+    x = x.to(device)
     y_triton_gpu = softmax(x)
     y_torch_gpu = torch.softmax(x, axis=1)
     assert torch.allclose(y_triton_gpu, y_torch_gpu), (y_triton_gpu, y_torch_gpu)

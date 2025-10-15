@@ -166,6 +166,7 @@ PREPACKED = os.getenv("PREPACKED", "0") != "0"
 PAD_B_ONLY = True
 USE_BLOCK_POINTERS = os.getenv("USE_BLOCK_POINTERS", "1") != "0"
 GROUP_SIZE_M = 8
+# FIXME: GPU doesn't work with this example
 USE_GPU = False
 
 
