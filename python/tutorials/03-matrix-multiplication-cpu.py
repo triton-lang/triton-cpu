@@ -285,7 +285,7 @@ a_scratch = torch.empty((), dtype=DTYPE)
 b_scratch = torch.empty((), dtype=DTYPE)
 
 
-def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
+def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_cpu_threads=0):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
     assert a.is_contiguous(), "Matrix A must be contiguous"
@@ -297,9 +297,9 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         a_scratch.resize_(M, K + 32)
         b_scratch.resize_(K, N + 32)
         if not PAD_B_ONLY:
-            pad_kernel[(M // BLOCK_SIZE_M, )](a, a_scratch, K, BLOCK_SIZE_M, BLOCK_SIZE_K, 32, num_threads=num_threads)
+            pad_kernel[(M // BLOCK_SIZE_M, )](a, a_scratch, K, BLOCK_SIZE_M, BLOCK_SIZE_K, 32, num_cpu_threads=num_cpu_threads)
             a = a_scratch
-        pad_kernel[(K // BLOCK_SIZE_K, )](b, b_scratch, N, BLOCK_SIZE_K, BLOCK_SIZE_N, 32, num_threads=num_threads)
+        pad_kernel[(K // BLOCK_SIZE_K, )](b, b_scratch, N, BLOCK_SIZE_K, BLOCK_SIZE_N, 32, num_cpu_threads=num_cpu_threads)
         b = b_scratch
 
     #TODO: Currently masked load is not supported yet.
@@ -314,9 +314,9 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
     return a, b, c
 
 
-def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K: int, num_threads=0):
+def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K: int, num_cpu_threads=0):
     if not PREPACKED:
-        a, b, c = matmul_preprocess_input(a, b, c, num_threads=num_threads)
+        a, b, c = matmul_preprocess_input(a, b, c, num_cpu_threads=num_cpu_threads)
 
     # 1D launch kernel where each block gets its own program.
     grid = (triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, BLOCK_SIZE_N), )
@@ -329,7 +329,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K:
         BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
-        num_threads=num_threads,  #
+        num_cpu_threads=num_cpu_threads,  #
     )
     return c
 
@@ -452,7 +452,7 @@ def benchmark(M, N, K, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled(a, b, out=c), quantiles=quantiles)
     elif provider == 'triton-cpu-single':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: matmul(triton_a, triton_b, triton_c, M, N, K, num_threads=1), quantiles=quantiles,
+            lambda: matmul(triton_a, triton_b, triton_c, M, N, K, num_cpu_threads=1), quantiles=quantiles,
             measure_time_with_hooks=True)
     elif provider == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(triton_a, triton_b, triton_c, M, N, K),

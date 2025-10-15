@@ -83,12 +83,12 @@ def add_kernel_tiled(x_ptr,  # *Pointer* to first input vector.
         # For small vectors it might be faster to use a single thread instead
         # of paying OMP threading overhead, so add a single-threaded option.
         # Other options use all available threads.
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_threads=1),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 8192}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 16384}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 32768}, num_threads=0),
-        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 65536}, num_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_cpu_threads=1),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 4096}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 8192}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 16384}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 32768}, num_cpu_threads=0),
+        triton.Config({'TILE_SIZE': 16, 'BLOCK_SIZE': 65536}, num_cpu_threads=0),
     ],
     key=['n_elements'],
 )
