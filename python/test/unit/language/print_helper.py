@@ -150,7 +150,7 @@ def test_print(func: str, data_type: str, device: str):
         kernel_print_pointer[(1, )](x, y, num_warps=num_warps, BLOCK=N)
     elif func == "device_print_2d_tensor":
         BLOCK_SIZE_X = num_warps
-        BLOCK_SIZE_Y = get_current_target_warp_size()
+        BLOCK_SIZE_Y = get_current_target_warp_size() if device != "cpu" else 1
         x_2d_tensor = x.reshape((BLOCK_SIZE_X, BLOCK_SIZE_Y))
         kernel_print_2d_tensor[(1, )](x_2d_tensor, y, num_warps=num_warps, BLOCK_SIZE_X=BLOCK_SIZE_X,
                                       BLOCK_SIZE_Y=BLOCK_SIZE_Y)

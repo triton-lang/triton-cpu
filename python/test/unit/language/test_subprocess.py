@@ -42,6 +42,7 @@ def test_print(func_type: str, data_type: str, device: str):
     proc = subprocess.run(
         [sys.executable, print_path, "test_print", func_type, data_type, device],
         capture_output=True,
+        env={**os.environ, "TRITON_CPU_BACKEND": "1" if is_cpu() else "0"},
     )
     assert proc.returncode == 0
 
@@ -124,11 +125,8 @@ def test_print(func_type: str, data_type: str, device: str):
             for y in range(y_dim):
                 expected_lines[f"pid (0, 0, 0) idx ({x}, {y:2}): {(x * y_dim + y)}"] = 1
 
-    cpu_gpu_msg = "Both CPU and GPU backends are available. Using the GPU backend."
     actual_lines = Counter()
     for line in outs:
-        if line == cpu_gpu_msg:
-            continue
         # Trim the exact pointer address in the output--they can change per run.
         line = (line.split(':')[0] + ": 0x") if func_type == "device_print_pointer" else line
         actual_lines[line] += 1
@@ -150,10 +148,15 @@ def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
     #               120, 121, 122, 123, 124, 125, 126, 127]
     PID_PREFIX = "(0, 0, 0)"
     NEWLINE_WITH_PADDING = "\n" + " " * (len(PID_PREFIX + " x: ["))
-    if func_type in ("print", "device_print", "device_print_uint"):
+    if func_type in ("print", "device_print", "device_print_uint", "device_print_uint_cast"):
         expected = PID_PREFIX + " x: ["
         for i in range(N):
-            offset = (1 << 31) if data_type == "uint32" else 0
+            if func_type == "device_print_uint_cast":
+                offset = 128  # tl.arange(0, BLOCK) + 128
+            elif data_type == "uint32":
+                offset = 1 << 31
+            else:
+                offset = 0
             expected += f"{i + offset:3}"
             if data_type.startswith("float"):
                 expected += ".0000"
@@ -224,6 +227,19 @@ def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
             expected += "]"
             if k == 0:
                 expected += "\n"
+    elif func_type == "device_print_2d_tensor":
+        # For CPU, the 2D tensor has shape (N, 1) since warp_size is 1
+        expected = PID_PREFIX + ": ["
+        for i in range(N):
+            expected += f"[{i:3}]"
+            if i == N - 1:
+                continue
+            expected += ","
+            if i % 8 == 7:
+                expected += "\n" + " " * (len(PID_PREFIX + ": ["))
+            else:
+                expected += "\n" + " " * (len(PID_PREFIX + ": ["))
+        expected += "]"
 
     # Ignore the trailing new line.
     assert actual[:-1] == expected

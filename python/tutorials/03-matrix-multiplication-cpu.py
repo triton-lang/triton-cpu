@@ -297,9 +297,11 @@ def matmul_preprocess_input(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, n
         a_scratch.resize_(M, K + 32)
         b_scratch.resize_(K, N + 32)
         if not PAD_B_ONLY:
-            pad_kernel[(M // BLOCK_SIZE_M, )](a, a_scratch, K, BLOCK_SIZE_M, BLOCK_SIZE_K, 32, num_cpu_threads=num_cpu_threads)
+            pad_kernel[(M // BLOCK_SIZE_M, )](a, a_scratch, K, BLOCK_SIZE_M, BLOCK_SIZE_K, 32,
+                                              num_cpu_threads=num_cpu_threads)
             a = a_scratch
-        pad_kernel[(K // BLOCK_SIZE_K, )](b, b_scratch, N, BLOCK_SIZE_K, BLOCK_SIZE_N, 32, num_cpu_threads=num_cpu_threads)
+        pad_kernel[(K // BLOCK_SIZE_K, )](b, b_scratch, N, BLOCK_SIZE_K, BLOCK_SIZE_N, 32,
+                                          num_cpu_threads=num_cpu_threads)
         b = b_scratch
 
     #TODO: Currently masked load is not supported yet.

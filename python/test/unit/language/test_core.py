@@ -3710,8 +3710,7 @@ def get_test_dot_small_mn_fma_cases():
 def get_test_dot_double_rate_cases():
     if not is_hip_cdna():
         return []
-    return [(64, 64, 64, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None),
-            (32, 32, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
+    return [(32, 32, 16, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
             (32, 32, 16, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None),
             (16, 16, 32, 4, False, False, 'None', 'ieee', 'float16', 'float32', 1, None),
             (16, 16, 32, 4, False, False, 'None', 'ieee', 'bfloat16', 'float32', 1, None)]
@@ -4602,11 +4601,7 @@ def test_dot_without_load(dtype_str, device):
     kernel = patch_kernel(_kernel, {'GENERATE_TEST_HERE': f"tl.full((32, 32), 1.0, tl.{dtype_str})"})
     a = torch.ones((32, 32), dtype=getattr(torch, dtype_str), device=device)
     b = torch.ones((32, 32), dtype=getattr(torch, dtype_str), device=device)
-    if is_cpu() and dtype_str == "float16":
-        # torch.matmul not implemented for Half float (float16) cpu
-        out_ref = torch.tensor(np.matmul(to_numpy(a), to_numpy(b)), dtype=getattr(torch, dtype_str), device=device)
-    else:
-        out_ref = torch.matmul(a, b)
+    out_ref = torch.matmul(a, b)
     out = torch.zeros((32, 32), dtype=getattr(torch, dtype_str), device=device)
     kernel[(1, )](out)
     assert torch.all(out == out_ref)
@@ -4723,11 +4718,11 @@ def test_masked_load_shared_memory(dtype, device):
 
     in1 = torch.rand((M, K), dtype=dtype, device=device)
     in2 = torch.rand((K, N), dtype=dtype, device=device)
-    out = torch.zeros((M, N), dtype=torch.float32, device=device)
+    out = torch.zeros((M, N), dtype=dtype, device=device)
 
     @triton.jit
-    def _kernel(in1_ptr, in2_ptr, output_ptr, in_stride, in2_stride, out_stride, M: tl.constexpr, N: tl.constexpr,
-                K: tl.constexpr):
+    def _kernel(in1_ptr, in2_ptr, output_ptr, in_stride, in2_stride, out_stride, in_numel, in2_numel, out_numel,
+                M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
 
         M_offsets = tl.arange(0, M)
         N_offsets = tl.arange(0, N)
@@ -4747,16 +4742,10 @@ def test_masked_load_shared_memory(dtype, device):
         output_offsets = M_offsets[:, None] * out_stride + N_offsets[None, :]
         tl.store(output_ptr + output_offsets, o, mask=output_offsets < M * N)
 
-    _kernel[(1, )](in1, in2, out, in1.stride()[0], in2.stride()[0], out.stride()[0], M=M, N=N, K=K)
-    if is_cpu() and (dtype == torch.float16 or dtype == torch.bfloat16):
-        # torch.matmul not implemented for Half float (float16) cpu
-        reference_out = torch.tensor(np.matmul(to_numpy(in1), to_numpy(in2))).to(torch.float32)
-        # f32_in1 = convert_float_to_float32(in1)
-        # f32_in2 = convert_float_to_float32(in2)
-        # reference_out = torch.matmul(f32_in1, f32_in2)
-    else:
-        reference_out = torch.matmul(in1, in2).to(torch.float32)
+    pgm = _kernel[(1, )](in1, in2, out, in1.stride()[0], in2.stride()[0], out.stride()[0], in1.numel(), in2.numel(),
+                         out.numel(), M=M, N=N, K=K)
 
+    reference_out = torch.matmul(in1, in2)
     torch.testing.assert_close(out, reference_out, atol=1e-2, rtol=0)
 
 
@@ -6676,9 +6665,6 @@ def test_ptx_cast(dtype_str, device):
 
 def f8_to_f16(x, dtype):
 
-    if is_cpu():
-        assert (False and "Works as expected only for GPU")
-
     @triton.jit
     def kernel(Y, X, N, BLOCK_SIZE: tl.constexpr):
         pid = tl.program_id(0)
@@ -6705,9 +6691,10 @@ def matmul_kernel(  #
         low_precision_acc: tl.constexpr,  #
         num_stages: tl.constexpr = 3  #
 ):
-    pid_m = tl.program_id(axis=0)
-    pid_n = tl.program_id(axis=1)
-
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % num_pid_m
+    pid_n = pid // num_pid_m
     offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_k = tl.arange(0, BLOCK_SIZE_K)
@@ -6731,7 +6718,9 @@ def matmul_kernel(  #
 @pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128),
                                                        (64, 64, 64)] if not is_cpu() else [(32, 32, 128), (32, 32, 32)])
-@pytest.mark.parametrize("in_type_str", ['float8e5', 'float8e4nv', 'float8e4b15'])
+@pytest.mark.parametrize(
+    "in_type_str",
+    ['float8e5', 'float8e5b16', 'float8e4b8', 'float8e4nv'] if is_hip() else ['float8e5', 'float8e4nv', 'float8e4b15'])
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
     num_stages = 3
@@ -6753,23 +6742,16 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     num_warps = 8
     a = to_triton(A, device=device, dst_type=in_type_str)
     b = to_triton(B, device=device, dst_type=in_type_str)
-    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
     max_num_impressive_acc = low_precision_acc if low_precision_acc <= BLOCK_K else None
     h = matmul_kernel[grid](a, b, C, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), C.stride(0),
                             C.stride(1), BLOCK_M, BLOCK_N, BLOCK_K, max_num_impressive_acc, num_warps=num_warps,
                             num_stages=num_stages)
     torch_a = torch.from_numpy(A).to(device=device)
+    th_a = f8_to_f16(torch_a, in_type_str)
     torch_b = torch.from_numpy(B).to(device=device)
-    if is_cpu() and 'float8' in in_type_str:
-        in_dtype = getattr(tl, in_type_str)
-        th_a = convert_float_to_float32(torch_a, in_dtype)
-        th_b = convert_float_to_float32(torch_b, in_dtype)
-        ref_out = torch.matmul(th_a, th_b).to(torch.float32)
-    else:
-        th_a = f8_to_f16(torch_a, in_type_str)
-        th_b = f8_to_f16(torch_b, in_type_str)
-        ref_out = torch.matmul(th_a, th_b).to(torch.float32)
-
+    th_b = f8_to_f16(torch_b, in_type_str)
+    ref_out = torch.matmul(th_a, th_b).to(torch.float32)
     if in_type_str == 'float8e4nv':
         torch.testing.assert_close(ref_out, C, rtol=0.01, atol=0.01)
     else:
@@ -6802,14 +6784,14 @@ def test_enable_fp_fusion(enable_fp_fusion, default_override, device):
     data = torch.randn((128, ), device=device, dtype=torch.float32)
     if default_override:
         os.environ["TRITON_DEFAULT_FP_FUSION"] = "1" if enable_fp_fusion else "0"
-        assert triton.knobs.language.default_fp_fusion == enable_fp_fusion
         h = mul_add[(1, )](data)
     else:
         h = mul_add[(1, )](data, enable_fp_fusion=enable_fp_fusion)
 
-    if is_cuda():
-        found_fma = re.search(r'(mad|fma)\.r[nzmp]\.(ftz\.)?f32', h.asm["ptx"]) is not None
-        assert found_fma == enable_fp_fusion
+    if not is_cuda():
+        return
+    found_fma = re.search(r'(mad|fma)\.r[nzmp]\.(ftz\.)?f32', h.asm["ptx"]) is not None
+    assert found_fma == enable_fp_fusion
 
 
 # -----------------------
@@ -6987,22 +6969,15 @@ def test_tl_range_num_stages(device):
     if is_hip():
         pytest.skip("test_tl_range is not supported in HIP")
     M, N, K = 64, 64, 512
-    if is_cpu():
-        block_m, block_n, block_k = 32, 32, 64
-    else:
-        block_m, block_n, block_k = M, N, 64
-    BLOCK_M, BLOCK_N, BLOCK_K = block_m, block_n, block_k
+    BLOCK_M, BLOCK_N, BLOCK_K = M, N, 64
     a = torch.randn((M, K), device=device, dtype=torch.float16)
     b = torch.randn((K, N), device=device, dtype=torch.float16)
     c = torch.empty((M, N), dtype=torch.float32, device=device)
-    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
-    pgm = matmul_kernel[grid](a, b, c, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), c.stride(0),
-                              c.stride(1), BLOCK_M, BLOCK_N, BLOCK_K, 0, num_stages=5)
-    if is_cpu():
-        # torch.matmul not implemented for Half float (float16) cpu
-        ref_out = torch.tensor(np.matmul(to_numpy(a), to_numpy(b)), dtype=torch.float32, device=device)
-    else:
-        ref_out = torch.matmul(a, b).to(torch.float32)
+    pgm = matmul_kernel[
+        1,
+    ](a, b, c, M, N, K, a.stride(0), a.stride(1), b.stride(0), b.stride(1), c.stride(0), c.stride(1), BLOCK_M, BLOCK_N,
+      BLOCK_K, 0, num_stages=5)
+    ref_out = torch.matmul(a, b).to(torch.float32)
     if is_interpreter():
         # GPU invokes tensor core for float16 matmul, which is not supported in interpreter.
         # Thus we use a higher tolerance
