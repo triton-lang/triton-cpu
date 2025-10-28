@@ -5,6 +5,9 @@ import torch
 import triton
 import triton.language as tl
 
+"""
+This test is only for the CPU backend.
+"""
 
 def is_interpreter():
     return os.environ.get('TRITON_INTERPRET', '0') == '1'

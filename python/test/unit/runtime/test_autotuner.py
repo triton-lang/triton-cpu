@@ -4,7 +4,7 @@ import triton
 import triton.language as tl
 import pytest
 
-from triton._internal_testing import is_cuda
+from triton._internal_testing import is_cuda, is_cpu
 
 
 def do_bench(kernel_call, quantiles, use_cuda_graph=False):
@@ -213,6 +213,9 @@ def test_exceed_tmem(device):
 
 
 def test_exceed_threads(device):
+    if is_cpu():
+        pytest.skip("Not supported on CPU")
+
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     x = torch.empty(1024, device=device, dtype=torch.float32)
