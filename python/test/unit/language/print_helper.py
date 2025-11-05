@@ -8,7 +8,9 @@ import triton
 import triton.language as tl
 
 
-def get_current_target_warp_size():
+def get_current_target_warp_size(device: str):
+    if device == "cpu":
+        return 1
     return triton.runtime.driver.active.get_current_target().warp_size
 
 
@@ -109,7 +111,7 @@ def test_print(func: str, data_type: str, device: str):
     # TODO(antiagainst): Currently the warp count is chosen to make sure we don't have multiple
     # threads printing duplicated messages due to broadcasting. Improve print op lowering logic
     # to filter out duplicated data range.
-    num_warps = N // get_current_target_warp_size()
+    num_warps = N // get_current_target_warp_size(device)
 
     x = torch.arange(0, N, dtype=torch.int32, device=device).to(getattr(torch, data_type))
     y = torch.zeros((N, ), dtype=x.dtype, device=device)
@@ -146,7 +148,7 @@ def test_print(func: str, data_type: str, device: str):
         kernel_print_pointer[(1, )](x, y, num_warps=num_warps, BLOCK=N)
     elif func == "device_print_2d_tensor":
         BLOCK_SIZE_X = num_warps
-        BLOCK_SIZE_Y = get_current_target_warp_size()
+        BLOCK_SIZE_Y = get_current_target_warp_size(device)
         x_2d_tensor = x.reshape((BLOCK_SIZE_X, BLOCK_SIZE_Y))
         kernel_print_2d_tensor[(1, )](x_2d_tensor, y, num_warps=num_warps, BLOCK_SIZE_X=BLOCK_SIZE_X,
                                       BLOCK_SIZE_Y=BLOCK_SIZE_Y)

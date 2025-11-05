@@ -29,6 +29,14 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/InitAllPasses.h"
 
+// For CPU
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
+#include "cpu/include/ScalarizePass/ScalarizeInterfaceImpl.h"
+#include "cpu/include/TritonCPUToLLVM/Passes.h"
+#include "cpu/include/TritonCPUTransforms/Passes.h"
+#include "cpu/include/TritonToTritonCPU/Passes.h"
+#include "mlir/Dialect/AMX/AMXDialect.h"
+
 namespace mlir {
 namespace test {
 void registerTestAliasPass();
@@ -87,6 +95,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   // NVGPU transform passes
   mlir::registerNVHopperTransformsPasses();
 
+  // CPU passes
+  mlir::triton::cpu::registerTritonToTritonCPUPasses();
+  mlir::triton::cpu::registerTritonCPUTransformsPasses();
+  mlir::triton::cpu::registerTritonCPUToLLVMPasses();
+  mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
+
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
@@ -96,4 +110,9 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect, mlir::ROCDL::ROCDLDialect>();
+
+  // For CPU
+  registry.insert<mlir::triton::cpu::TritonCPUDialect,
+                  mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+                  mlir::amx::AMXDialect, mlir::tensor::TensorDialect>();
 }

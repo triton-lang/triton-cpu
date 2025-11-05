@@ -1,0 +1,5 @@
+add_subdirectory(Dialect)
+add_subdirectory(ScalarizePass)
+add_subdirectory(TritonCPUToLLVM)
+add_subdirectory(TritonCPUTransforms)
+add_subdirectory(TritonToTritonCPU)

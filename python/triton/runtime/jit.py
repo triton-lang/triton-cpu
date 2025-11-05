@@ -564,8 +564,8 @@ class JITFunction(KernelInterface[T]):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
 
         # parse options
-        device = driver.active.get_current_device()
-        stream = driver.active.get_current_stream(device)
+        stream = driver.active.get_current_stream(driver.active.get_current_device())
+        device = driver.active.get_active_torch_device()
 
         # Execute pre run hooks with args and kwargs
         for hook in self.pre_run_hooks:
@@ -715,7 +715,6 @@ class JITFunction(KernelInterface[T]):
         from ..compiler import compile, ASTSource
         import json
         import triton.language as tl
-        device = driver.active.get_current_device()
         deserialized_obj = json.loads(specialization_data)
         if deserialized_obj['name'] != self.fn.__name__:
             raise RuntimeError(
@@ -737,6 +736,7 @@ class JITFunction(KernelInterface[T]):
         }
         key = deserialized_obj['key']
         kernel = compile(src, None, options)
+        device = driver.active.get_active_torch_device()
         self.device_caches[device][0][key] = kernel
         return kernel
 

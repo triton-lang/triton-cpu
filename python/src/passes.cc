@@ -82,12 +82,19 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPUCoalesceAsyncCopy);
 }
 
+void init_triton_passes_ttcpuir(py::module &&m) {}
+
 void init_triton_passes_convert(py::module &&m) {
   using namespace mlir;
   ADD_PASS_WRAPPER_0("add_scf_to_cf", createSCFToControlFlowPass);
   ADD_PASS_WRAPPER_0("add_cf_to_llvmir", createConvertControlFlowToLLVMPass);
   ADD_PASS_WRAPPER_0("add_index_to_llvmir", createConvertIndexToLLVMPass);
   ADD_PASS_WRAPPER_0("add_arith_to_llvmir", createArithToLLVMConversionPass);
+
+  // For CPU
+  ADD_PASS_WRAPPER_0("add_math_to_llvmir", createConvertMathToLLVMPass);
+  ADD_PASS_WRAPPER_0("add_reconcile_unrealized",
+                     createReconcileUnrealizedCastsPass);
 }
 
 void init_triton_passes_llvmir(py::module &&m) {
@@ -102,4 +109,7 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_ttir(m.def_submodule("ttir"));
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
+
+  // For CPU
+  init_triton_passes_ttcpuir(m.def_submodule("ttcpuir"));
 }

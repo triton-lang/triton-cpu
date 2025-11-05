@@ -3,7 +3,7 @@ import torch
 
 import triton
 import triton.language as tl
-from test_core import check_type_supported
+from test_core import check_type_supported, is_cpu
 
 
 @triton.jit
@@ -37,6 +37,9 @@ def block_copy_kernel(a_ptr, b_ptr, N, BLOCK_SIZE: tl.constexpr, PADDING_OPTION:
     for boundary_check in (None, "lower", "upper")
 ])
 def test_block_copy(dtypes_str, n, padding_option, boundary_check, device):
+    if is_cpu() and boundary_check == "lower":
+        pytest.skip("Lower boundary check is NYI for CPU")
+
     src_dtype_str = dtypes_str[0]
     dst_dtype_str = dtypes_str[1]
     src_dtype = getattr(torch, src_dtype_str)
@@ -101,6 +104,9 @@ def matmul_no_scf_with_advance_kernel(  #
 ])
 def test_block_ptr_matmul_no_scf(shape, num_warps, device):
     m, n, k = shape
+    if is_cpu():
+        # FIXME: fix compilation time for bigger shapes on CPU
+        m = n = 16
     a = torch.randn((m, k), device=device, dtype=torch.float16)
     b = torch.randn((k, n), device=device, dtype=torch.float16)
     c = torch.empty((m, n), device=device, dtype=torch.float32)

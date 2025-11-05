@@ -7,7 +7,7 @@ import triton
 import triton.language as tl
 from triton.compiler.errors import CompilationError, CompileTimeAssertionFailure
 import traceback
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_hip_cdna4, is_cpu
 
 
 def format_exception(type, value, tb):
@@ -381,6 +381,8 @@ def test_fp8_support(fresh_triton_cache, dtype):
             supported_dtypes += [tl.float8e4nv, tl.float8e4b8, tl.float8e5b16]
         if is_hip_cdna4():
             supported_dtypes += [tl.float8e4nv]
+    elif is_cpu():
+        supported_dtypes = [tl.float8e5, tl.float8e5b16, tl.float8e4nv]
 
     @triton.jit
     def dtype_kernel(dtype: tl.constexpr):

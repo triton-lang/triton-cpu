@@ -32,6 +32,8 @@ class HIPOptions:
     waves_per_eu: int = 1
     num_stages: int = 2
     num_ctas: int = 1
+    # FIXME: Ugly, this is only used by CPU
+    num_cpu_threads: int = 0
     extern_libs: dict = None
     cluster_dims: tuple = (1, 1, 1)
     debug: bool = False
