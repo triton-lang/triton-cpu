@@ -9,7 +9,7 @@ from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
 from triton._C.libtriton import cpu, ir, llvm, passes
-from triton.backends.compiler import BaseBackend, GPUTarget
+from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.runtime.build import _build
 import triton.backends.cpu.driver as cpu_driver
 
@@ -320,7 +320,8 @@ class CPUBackend(BaseBackend):
             with open(so, "rb") as f:
                 return f.read()
 
-    def add_stages(self, stages, options):
+    def add_stages(self, stages, options, language):
+        assert language == Language.TRITON
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
         stages["ttcir"] = lambda src, metadata: self.make_ttcir(src, metadata, options)
         stages["tttcir"] = lambda src, metadata: self.make_tttcir(src, metadata, options)

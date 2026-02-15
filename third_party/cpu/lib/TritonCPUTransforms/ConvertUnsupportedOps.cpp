@@ -167,7 +167,7 @@ struct ConvertBf16TransferReadOp
       return failure();
 
     Location loc = op.getLoc();
-    Value newSource = convertMemRefToI16(op.getSource(), rewriter);
+    Value newSource = convertMemRefToI16(op.getBase(), rewriter);
     Value newPadding =
         op.getPadding()
             ? rewriter.create<arith::BitcastOp>(
@@ -193,7 +193,7 @@ struct ConvertBf16TransferWriteOp
       return failure();
 
     Location loc = op.getLoc();
-    Value newSource = convertMemRefToI16(op.getSource(), rewriter);
+    Value newSource = convertMemRefToI16(op.getBase(), rewriter);
     Value intVal = rewriter.create<arith::BitcastOp>(
         loc, toInt16(op.getVector().getType()), op.getVector());
     rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(

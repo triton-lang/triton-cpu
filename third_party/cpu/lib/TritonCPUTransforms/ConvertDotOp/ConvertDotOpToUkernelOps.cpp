@@ -263,7 +263,7 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc,
   auto ctx = rewriter.getContext();
   auto memrefTy = cast<MemRefType>(memRef.getType());
 
-  bool allZero = llvm::all_of(indices, isZeroIndex);
+  bool allZero = llvm::all_of(indices, isZeroInteger);
   if (allZero && memrefTy.getShape() == vecTy.getShape()) {
     LDBG("  Skipping subveiw creation as original MemRef size is whole Vector: "
          "\n    memref - "

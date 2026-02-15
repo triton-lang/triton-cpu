@@ -220,7 +220,7 @@ void findOutputBuffer(Value val, AmxDotOpCandidate &candidate) {
   if (val.hasOneUse()) {
     auto store = dyn_cast<vector::TransferWriteOp>(*val.user_begin());
     if (store && !hasMaskOrBoundsCheck(store))
-      candidate.outBuf = MemBuffer{store.getSource(), store.getIndices()};
+      candidate.outBuf = MemBuffer{store.getBase(), store.getIndices()};
     candidate.origStore = store;
   }
 }

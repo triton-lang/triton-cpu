@@ -13,7 +13,6 @@
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Target/LLVMIR/Dialect/AMX/AMXToLLVMIRTranslation.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/TargetSelect.h"
@@ -257,7 +256,6 @@ void init_triton_cpu(py::module &&m) {
     registry.insert<mlir::triton::cpu::TritonCPUDialect,
                     mlir::vector::VectorDialect>();
     mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
-    mlir::registerAMXDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

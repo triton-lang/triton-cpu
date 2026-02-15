@@ -136,7 +136,7 @@ MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
     return buf;
   }
 
-  buf.memRef = valLoad.getSource();
+  buf.memRef = valLoad.getBase();
   buf.indices = valLoad.getIndices();
   LLVM_DEBUG(
       DBGS() << "Found buffer with input: " << val << "\n";
