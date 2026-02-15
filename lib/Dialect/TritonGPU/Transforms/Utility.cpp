@@ -6,16 +6,15 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Analysis/AxisInfo.h"
-#include "triton/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "llvm/ADT/SetOperations.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -24,6 +23,7 @@
 
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
+namespace ttng = mlir::triton::nvidia_gpu;
 namespace mlir {
 
 using namespace triton;
@@ -92,9 +92,11 @@ bool isLoadFromTensorPtr(triton::LoadOp op) {
   return mlir::triton::isTensorPointerType(op.getPtr().getType());
 }
 
-SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr) {
+SmallVector<unsigned, 4>
+getOrderFromContiguity(const SmallVector<int64_t> &arr) {
   SmallVector<unsigned, 4> ret(arr.size());
   std::iota(ret.begin(), ret.end(), 0);
+  std::reverse(ret.begin(), ret.end());
   std::stable_sort(ret.begin(), ret.end(),
                    [&](unsigned x, unsigned y) { return arr[x] > arr[y]; });
   return ret;
@@ -145,6 +147,17 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
 
 bool isView(Operation *op) {
   return isa<ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp>(op);
+}
+
+bool isNoop(Operation *op) {
+  if (isa<ReshapeOp, TransOp>(op))
+    return true;
+  if (auto cvt = dyn_cast<ttg::ConvertLayoutOp>(op)) {
+    // The conversion op is a noop if the conversion layout is trivial
+    return minimalCvtLayout(cvt.getSrc().getType(),
+                            cvt.getResult().getType()) == LinearLayout::empty();
+  }
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -399,7 +412,8 @@ static Attribute inferTransOpDstEncoding(Attribute srcEnc,
   if (succeeded(
           srcEnc.getDialect()
               .getRegisteredInterface<triton::DialectInferLayoutInterface>()
-              ->inferTransOpEncoding(srcEnc, shape, order, retEncoding))) {
+              ->inferTransOpEncoding(srcEnc, shape, order, retEncoding,
+                                     /*loc=*/{}))) {
     return retEncoding;
   }
   return {};
@@ -670,17 +684,15 @@ scf::ForOp replaceForOpWithNewSignature(OpBuilder &rewriter, scf::ForOp loop,
   return newForOp;
 }
 
-Block::BlockArgListType addIterArgsToLoop(OpBuilder &rewriter, scf::ForOp &loop,
-                                          ValueRange newIterOperands) {
-  unsigned curArgIdx = loop.getNumRegionIterArgs();
+scf::ForOp addIterArgsToLoop(OpBuilder &rewriter, scf::ForOp loop,
+                             ValueRange newIterOperands) {
   scf::ForOp newLoop =
       replaceForOpWithNewSignature(rewriter, loop, newIterOperands);
   // Save the caller from insertion point invalidation.
   if (rewriter.getInsertionPoint() == loop->getIterator())
     rewriter.setInsertionPoint(newLoop);
   loop.erase();
-  loop = newLoop;
-  return loop.getRegionIterArgs().slice(curArgIdx);
+  return newLoop;
 }
 
 scf::WhileOp replaceWhileOpWithNewSignature(
@@ -931,6 +943,13 @@ LogicalResult getConvertBackwardSlice(
         auto srcEncoding = inferSrcEncoding(definingOp, encoding);
         if (!srcEncoding)
           return failure();
+        // If the infered layout matches the original one we don't need to keep
+        // propagating.
+        if (auto operandType =
+                dyn_cast<RankedTensorType>(operand.get().getType())) {
+          if (srcEncoding == operandType.getEncoding())
+            continue;
+        }
         enqueue(operand, srcEncoding);
       }
       continue;
@@ -1048,6 +1067,45 @@ StringRef getAMDArch(Operation *module) {
   return ref.drop_front(4); // drop the "hip:"
 }
 
+inline ttg::SwizzledSharedEncodingAttr
+swizzleDotOperandLike(RankedTensorType type, ttg::CTALayoutAttr ctaLayout) {
+  // We want to see if the linear layout has the same order as an mma microtile
+  // of shape (8, 4*kWidth) or (4*kWidth, 8). If so, we return a
+  // DotOperandEncodingAttr with a tile of this shape This works because
+  // SwizzledSharedEncodingAttr::get just looks at the microtile to determine
+  // the swizzling
+
+  auto *ctx = type.getContext();
+  auto layout = ttg::toLinearEncoding(type);
+  auto order = layout.getThreadOrder();
+  auto rank = order.size();
+  if (rank < 2) {
+    return {};
+  }
+  int opIdx;
+  if (ttg::getOrderForDotOperand(0, rank, /*kContig=*/true) == order) {
+    opIdx = 0;
+  } else if (ttg::getOrderForDotOperand(1, rank, /*kContig=*/true) == order) {
+    opIdx = 1;
+  } else {
+    return {};
+  }
+  auto kWidth = layout.getContigPerThread()[order[0]];
+  SmallVector<unsigned> microtileShape(rank, 1);
+  microtileShape[order[0]] = 4 * kWidth;
+  microtileShape[order[1]] = 8;
+  // All the LinearLayouts contained within LinearEncoidngAttr have order [0, 1,
+  // 2, ...]
+  auto repOrder = to_vector(llvm::seq<unsigned>(rank));
+  auto tile = ttg::nvidiaMmaTile(ctx, microtileShape, kWidth, order, repOrder);
+  if (!divideLeft(layout.getLinearLayout(), tile).has_value()) {
+    return {};
+  }
+  return ttg::SwizzledSharedEncodingAttr::get(
+      ctx, opIdx, kWidth, type.getShape(), order, ctaLayout,
+      type.getElementTypeBitWidth(), false);
+}
+
 // If all the transitive uses of the given value have are used by a convert to
 // the same dot operand encoding, return the shared encoding that needs to be
 // used to be compatible with users' layouts. If there are incompatible shared
@@ -1074,18 +1132,28 @@ getSharedEncIfAllUsersAreDotEnc(Value val, bool &incompatible) {
     } else {
       if (!isa<ttg::LocalLoadOp, ttg::ConvertLayoutOp>(user))
         return std::nullopt;
-      auto dotOpEnc = dyn_cast<ttg::DotOperandEncodingAttr>(
-          cast<triton::gpu::TensorOrMemDesc>(user->getResult(0).getType())
-              .getEncoding());
-      if (!dotOpEnc)
-        return std::nullopt;
       auto srcTy = cast<triton::gpu::TensorOrMemDesc>(val.getType());
-      auto CTALayout = ttg::getCTALayout(srcTy.getEncoding());
-      auto order = getOrderForMemory(srcTy);
-      unsigned bitWidth = srcTy.getElementType().getIntOrFloatBitWidth();
-      tempAttr = ttg::SwizzledSharedEncodingAttr::get(
-          val.getContext(), dotOpEnc, srcTy.getShape(), order, CTALayout,
-          bitWidth, /*needTrans=*/false);
+      auto dstTy = cast<RankedTensorType>(user->getResult(0).getType());
+
+      // FIXME This may not be correct for multiple CTA, but getCTALayout is NYI
+      // for LinearEncodingAttr
+      auto CTALayout = isa<ttg::LinearEncodingAttr>(dstTy.getEncoding())
+                           ? ttg::getCTALayout(srcTy.getEncoding())
+                           : ttg::getCTALayout(dstTy.getEncoding());
+
+      if (auto dot =
+              dyn_cast<ttg::DotOperandEncodingAttr>(dstTy.getEncoding())) {
+        auto order = getOrderForMemory(srcTy);
+        unsigned bitWidth = srcTy.getElementTypeBitWidth();
+        tempAttr = ttg::SwizzledSharedEncodingAttr::get(
+            val.getContext(), dot, srcTy.getShape(), order, CTALayout, bitWidth,
+            /*needTrans=*/false);
+      } else {
+        // Try to see if the layout is like an mma microtile
+        tempAttr = swizzleDotOperandLike(dstTy, CTALayout);
+      }
+      if (!tempAttr)
+        return std::nullopt;
     }
     // Check that the shared encodings needed by the users are compatible.
     if (attr != nullptr && attr != tempAttr) {
@@ -1239,10 +1307,10 @@ ttg::LocalAllocOp findShmemAlloc(Value operand) {
   // come from an MemDescSubview op. Only ConvertLayout and Trans ops are
   // allowed in between.
   Value transitiveOperand = operand;
-  while (
-      isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp>(
-          transitiveOperand.getDefiningOp()) ||
-      isa<BlockArgument>(transitiveOperand)) {
+  while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
+                         ttg::MemDescReshapeOp>(
+             transitiveOperand.getDefiningOp()) ||
+         isa<BlockArgument>(transitiveOperand)) {
     if (auto blockArg = dyn_cast<BlockArgument>(transitiveOperand)) {
       assert(isa<scf::ForOp>(blockArg.getOwner()->getParentOp()) &&
              "Block argument must come from a for loop");
@@ -1284,8 +1352,10 @@ getMMAsWithMultiBufferredOperands(scf::ForOp forOp,
   return eligible;
 }
 
-Operation *findNearestCommonDominator(ArrayRef<Operation *> ops,
-                                      DominanceInfo &domInfo) {
+template <typename DomInfoT>
+static Operation *findNearestCommonDominatorImpl(
+    ArrayRef<Operation *> ops, DomInfoT &domInfo,
+    function_ref<bool(Operation *, Operation *)> isBefore) {
   if (ops.size() == 0) {
     return nullptr;
   }
@@ -1306,11 +1376,25 @@ Operation *findNearestCommonDominator(ArrayRef<Operation *> ops,
   }
   Operation *dom = ancestorOps[0];
   for (unsigned i = 1; i < ops.size(); i++) {
-    if (ancestorOps[i]->isBeforeInBlock(dom)) {
+    if (isBefore(ancestorOps[i], dom)) {
       dom = ancestorOps[i];
     }
   }
   return dom;
+}
+
+Operation *findNearestCommonDominator(ArrayRef<Operation *> ops,
+                                      DominanceInfo &domInfo) {
+  return findNearestCommonDominatorImpl(
+      ops, domInfo,
+      [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+}
+
+Operation *findNearestCommonPostDominator(ArrayRef<Operation *> ops,
+                                          PostDominanceInfo &domInfo) {
+  return findNearestCommonDominatorImpl(
+      ops, domInfo,
+      [](Operation *a, Operation *b) { return b->isBeforeInBlock(a); });
 }
 
 void visitNestedOperands(Operation *op,
@@ -1374,3 +1458,127 @@ void eraseLoopCarriedValues(scf::ForOp &loop, llvm::BitVector indices) {
 }
 
 } // namespace mlir
+
+namespace mlir::triton {
+void replaceUsesAndPropagateType(OpBuilder &builder, Operation *oldUse,
+                                 Value val) {
+  SmallVector<Operation *> opsToDelete;
+  SmallVector<OpOperand *> operandsToReplace;
+
+  // Save the operand to replace / delete later (avoid iterator invalidation).
+  // TODO: can we use an early_inc iterator?
+  for (OpOperand &use : oldUse->getUses()) {
+    // Propagate through `ttg.warp_specialize`.
+    if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(use.getOwner())) {
+      for (Region *region : wsOp.getPartitionRegions())
+        region->getArgument(use.getOperandNumber()).setType(val.getType());
+    }
+
+    // Non-subview/trans ops will be replaced by `val`.
+    if (!use.getOwner()->hasTrait<OpTrait::MemDescViewTrait>()) {
+      operandsToReplace.push_back(&use);
+      continue;
+    }
+
+    Operation *user = use.getOwner();
+    // `subview(old_op)` is replaced by a new `subview(val)`.
+    OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPoint(user);
+    Value newVal;
+    if (auto subview = dyn_cast<ttg::MemDescSubviewOp>(user)) {
+      ttg::MemDescType oldType = subview.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable);
+      newVal = builder.create<ttg::MemDescSubviewOp>(
+          subview.getLoc(), newDstType, val, subview.getOffsets());
+    } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
+      newVal = builder.create<ttg::MemDescTransOp>(trans.getLoc(), val,
+                                                   trans.getOrder());
+    } else if (auto reshape = dyn_cast<ttg::MemDescReshapeOp>(user)) {
+      newVal = builder.create<ttg::MemDescReshapeOp>(reshape.getLoc(),
+                                                     reshape.getType(), val);
+    }
+    assert(newVal && "unhandled memdesc view");
+    newVal.getDefiningOp()->setAttrs(user->getAttrs());
+    replaceUsesAndPropagateType(builder, user, newVal);
+    opsToDelete.push_back(use.getOwner());
+  }
+
+  // Perform late replacement.
+  for (OpOperand *operand : operandsToReplace) {
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
+      // Need to update the return type on the wait op as well
+      builder.setInsertionPointAfter(wait);
+      auto operands = llvm::to_vector(wait.getOperands());
+      operands[operand->getOperandNumber()] = val;
+      auto newWait = builder.create<ttng::WarpGroupDotWaitOp>(
+          wait.getLoc(), operands, wait.getPendings());
+      wait.replaceAllUsesWith(newWait.getResults());
+      wait.erase();
+    } else {
+      Operation *op = operand->getOwner();
+      operand->set(val);
+    }
+  }
+
+  // Perform late op erasure.
+  for (Operation *op : opsToDelete)
+    op->erase();
+}
+
+void replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
+                              TypedValue<ttg::MemDescType> alloc,
+                              TypedValue<ttg::AsyncTokenType> token) {
+  //  Remove redundant local_load -> local_alloc
+  auto allocTy = alloc.getType();
+  SmallVector<ttg::LocalAllocOp> allocsToErase;
+  for (Operation *user : old.getUsers()) {
+    if (auto userAlloc = dyn_cast<ttg::LocalAllocOp>(user)) {
+      if (allocTy.getEncoding() == userAlloc.getType().getEncoding()) {
+        replaceUsesAndPropagateType(builder, userAlloc, alloc);
+        allocsToErase.push_back(userAlloc);
+      }
+    }
+  }
+
+  // If there are some uses that were not local_allocs, we need to create a
+  // local_load for them.
+  if (std::distance(old.getUsers().begin(), old.getUsers().end()) >
+      allocsToErase.size()) {
+    auto loc = old.getOwner()->getLoc();
+    auto sharedLoad = builder.template create<ttg::LocalLoadOp>(
+        loc, old.getType(), alloc, token);
+    old.replaceAllUsesWith(sharedLoad.getResult());
+  }
+  for (auto alloc : allocsToErase) {
+    alloc.erase();
+  }
+}
+
+bool comesFromLoadOrBlockArg(Value v) {
+  // Peel out the original cvt dot_op<..., #blocked>
+  // and any other potential cvt/trans ops
+  while (true) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      break;
+    if (auto cvtOp = dyn_cast<ttg::ConvertLayoutOp>(def)) {
+      v = cvtOp.getSrc();
+      continue;
+    }
+    if (def->hasTrait<OpTrait::MemDescViewTrait>()) {
+      v = def->getOperand(0);
+      continue;
+    }
+    break;
+  }
+  // We also accept block arguments as they appear in many MLIR tests
+  // If this is problematic we can totally drop them
+  return isa<BlockArgument>(v) ||
+         (v.getDefiningOp() &&
+          isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()));
+}
+
+} // namespace mlir::triton

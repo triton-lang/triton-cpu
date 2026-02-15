@@ -9,7 +9,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.runtime.jit import JITFunction, get_device_key
+from triton.runtime.jit import get_device_key
 from triton._internal_testing import is_hip
 
 
@@ -160,7 +160,7 @@ def test_reuse(device, fresh_triton_cache):
         nonlocal counter
         counter += 1
 
-    JITFunction.cache_hook = inc_counter
+    triton.knobs.runtime.jit_cache_hook = inc_counter
     x = torch.empty(1, dtype=torch.int32, device=device)
     for i in range(10):
         kernel[(1, )](x, 1, BLOCK=1024)
@@ -175,7 +175,7 @@ def test_specialize(mode, device, fresh_triton_cache):
         nonlocal counter
         counter += 1
 
-    JITFunction.cache_hook = inc_counter
+    triton.knobs.runtime.jit_cache_hook = inc_counter
     x = torch.empty(1, dtype=torch.int32, device=device)
     function = {'enable': kernel, 'disable': kernel_nospec, 'disable_on_alignment': kernel_nospec_on_alignment}[mode]
     target = {'enable': 3, 'disable': 1, 'disable_on_alignment': 2}[mode]
@@ -362,6 +362,27 @@ def test_cache_builtin_as_global():
     assert "global variable" in str(e.value).lower()
 
 
+def test_cache_closure():
+
+    def make_closure(cst):
+
+        @triton.jit
+        def closure():
+            tl.full((16, ), cst, dtype=tl.int32)
+
+        return closure
+
+    cst = tl.constexpr(42)
+    closure = make_closure(cst)
+
+    closure[(1, )]()
+    cst.value = 43
+    with pytest.raises(RuntimeError) as e:
+        closure[(1, )]()
+
+    assert "cst has changed since we compiled this kernel, from constexpr[42] to constexpr[43]" in str(e.value)
+
+
 @triton.jit
 def no_cache_callable_inner():
     pass
@@ -485,7 +506,7 @@ def test_preload(device, fresh_triton_cache) -> None:
         nonlocal specialization_data
         specialization_data = kwargs["compile"]["specialization_data"]
 
-    JITFunction.cache_hook = cache_hook
+    triton.knobs.runtime.jit_cache_hook = cache_hook
     pre_compile = kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
     hash = pre_compile.hash
     assert specialization_data is not None
@@ -506,9 +527,9 @@ def test_preload(device, fresh_triton_cache) -> None:
         nonlocal counter
         counter += 1
 
-    JITFunction.cache_hook = inc_counter
+    triton.knobs.runtime.jit_cache_hook = inc_counter
     final_kernel = kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
-    JITFunction.cache_hook = None
+    triton.knobs.runtime.jit_cache_hook = None
     assert counter == 0
     assert len(kernel_add.device_caches[device][0]) == 1
     assert final_kernel.hash == hash
@@ -530,6 +551,7 @@ def test_hooks(device, fresh_triton_cache) -> None:
     specialization_data = None
     is_warmup = False
     key = 0
+    name = None
 
     def cache_hook(*args, **kwargs):
         nonlocal specialization_data
@@ -538,6 +560,8 @@ def test_hooks(device, fresh_triton_cache) -> None:
         is_warmup = kwargs["compile"]["is_warmup"]
         nonlocal key
         key = kwargs["compile"]["key"]
+        nonlocal name
+        name = kwargs["fn"].name
 
     specialization_data_compiled = None
 
@@ -545,27 +569,24 @@ def test_hooks(device, fresh_triton_cache) -> None:
         nonlocal specialization_data_compiled
         specialization_data_compiled = kwargs["compile"]["specialization_data"]
 
-    JITFunction.cache_hook = cache_hook
-    JITFunction.compiled_hook = compiled_hook
+    triton.knobs.runtime.jit_cache_hook = cache_hook
+    triton.knobs.runtime.jit_post_compile_hook = compiled_hook
     kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
     assert specialization_data is not None and specialization_data_compiled == specialization_data
     assert is_warmup is True
     assert key in kernel_add.device_caches[get_device_key()][0]
+    assert name == "test_hooks.<locals>.kernel_add"
 
 
 @pytest.mark.skipif(reason="within_2g is a HIP specific optimization", condition=not is_hip())
 def test_within_2gb(device, fresh_triton_cache) -> None:
     default_buffer_ops = os.environ.get("AMDGCN_USE_BUFFER_OPS", "0")
-    from triton.backends import backends
-
-    amd_backend = backends["amd"]
     try:
         use_buffer_ops_opts = ["1", "0"]
         # The ranges should only be available when buffer ops are enabled
         pointer_ranges = [[(0, )], []]
         for use_buffer_ops, pointer_range in zip(use_buffer_ops_opts, pointer_ranges):
             # Set AMDGCN_USE_BUFFER_OPS
-            amd_backend.compiler.use_buffer_ops.cache_clear()
             os.environ["AMDGCN_USE_BUFFER_OPS"] = use_buffer_ops
 
             @triton.jit
@@ -581,7 +602,7 @@ def test_within_2gb(device, fresh_triton_cache) -> None:
                     k for k, v in kwargs["compile"]["configs"][0].items() if ["tt.pointer_range", 32] in v
                 ]
 
-            JITFunction.cache_hook = cache_hook
+            triton.knobs.runtime.jit_cache_hook = cache_hook
             # In warmup we assume that the pointer range is 32 bits
             kernel_add.warmup(torch.float32, grid=(1, ))
             assert pointer_range_32 == pointer_range
@@ -592,7 +613,6 @@ def test_within_2gb(device, fresh_triton_cache) -> None:
             kernel_add[(1, 0)](torch.empty(2**31 - 1, dtype=torch.int8, device=device))
             assert pointer_range_32 == pointer_range
     finally:
-        amd_backend.compiler.use_buffer_ops.cache_clear()
         os.environ["AMDGCN_USE_BUFFER_OPS"] = default_buffer_ops
 
 
@@ -618,8 +638,8 @@ def test_function_arguments(device):
     def kernel(Y, fn: tl.constexpr, fn_args):
         tl.store(Y, fn(*fn_args))
 
-    JITFunction.cache_hook = None
-    JITFunction.compiled_hook = None
+    triton.knobs.runtime.jit_cache_hook = None
+    triton.knobs.runtime.jit_post_compile_hook = None
     y = torch.zeros((5, ), dtype=torch.int32, device=device)
     kernel[(1, )](y[0], func1, tuple())
     kernel[(1, )](y[1], func2, tuple())

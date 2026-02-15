@@ -3,6 +3,7 @@
 #include "TritonAMDGPUToLLVM/GCNAsmFormat.h"
 #include "TritonAMDGPUToLLVM/TargetUtils.h"
 #include "Utility.h"
+#include "amd/lib/TritonAMDGPUToLLVM/AsyncUtility.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -99,7 +100,9 @@ int TargetInfo::getSharedMemorySize() const {
   return kbytes * 1024;
 }
 
-bool TargetInfo::supportMaximumMinimum() const { return false; }
+bool TargetInfo::supportMaximumMinimum() const {
+  return getISAFamily() == ISAFamily::CDNA4;
+}
 
 Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {
   // On AMD hardware we don't have CTA clusters like NVIDIA. So this will always
@@ -510,8 +513,9 @@ bool TargetInfo::supportVectorizedAtomics() const {
   return true;
 }
 
-void TargetInfo::storeOpAnnotation(triton::gpu::LocalStoreOp op,
-                                   size_t localStoreOpCount, Type type) const {
+void TargetInfo::localStoreOpAnnotation(triton::gpu::LocalStoreOp op,
+                                        size_t localStoreOpCount,
+                                        Type type) const {
   storeOpSchedAnnotations(op, localStoreOpCount, type);
 }
 
@@ -520,15 +524,21 @@ bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth) const {
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
-    return llvm::is_contained({32, 16, 8}, bitWidth);
+    // Disable 8 and 16 bits because they get extended to 32 bit.
+    return llvm::is_contained({32, /*16, 8*/}, bitWidth);
   case ISAFamily::CDNA4:
-    // Disable 96 bits as it uses 128bit strides between threads in a warp
-    return llvm::is_contained({128, /*96, */ 32, 16, 8}, bitWidth);
+    // Disable 8, 16, 96 bits because they get extended to 32/128 bit.
+    return llvm::is_contained({128, /*96, */ 32, /*16, 8*/}, bitWidth);
   default:
     break;
   }
 
   return false;
+}
+
+void TargetInfo::localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
+                                       Operation *llLoadOp) const {
+  AMD::addLocalLoadNoAliasScope(localLoadOp, cast<LLVM::LoadOp>(llLoadOp));
 }
 
 } // namespace mlir::triton::AMD

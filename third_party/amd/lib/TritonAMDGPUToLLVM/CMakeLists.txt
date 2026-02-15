@@ -1,4 +1,5 @@
 add_triton_library(TritonAMDGPUToLLVM
+    AsyncUtility.cpp
     AtomicRMWOpsEmitter.cpp
     BufferOpsEmitter.cpp
     ConvertLayoutOpToLLVM/SharedToDotOperandHelper.cpp
@@ -23,12 +24,18 @@ add_triton_library(TritonAMDGPUToLLVM
     SPMDOpToLLVM.cpp
     SchedInstructions.cpp
     UpcastMXFPToLLVM.cpp
+    MembarUtility.cpp
+    ScalarizePackedFOps.cpp
 
     DEPENDS
     TritonAMDGPUConversionPassIncGen
+    LLVMIRIncGen
 
     LINK_LIBS PUBLIC
     TritonGPUToLLVM
     TritonAMDGPUIR
     TritonProtonToLLVM
+    LLVMCore
+    LLVMPasses
+    LLVMSupport
 )

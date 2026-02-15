@@ -1,10 +1,8 @@
 #include <algorithm>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <random>
 
 #include "mlir/AsmParser/AsmParser.h"
-#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/StrUtil.h"
@@ -208,7 +206,7 @@ void testReshape(RankedTensorType srcTy, RankedTensorType dstTy,
         << "got " << inferredSrcLinear.toString() << ".\n";
   }
 
-  // The funtional characterisation of resize is that, if we have a srcLayout
+  // The functional characterisation of resize is that, if we have a srcLayout
   // and a dstLayout, then the flattened layouts are views of the same data
   // when considered as C-contiguous.
   auto makeFlattenedCContig = [](ArrayRef<int64_t> shape, Attribute layout) {
@@ -425,8 +423,8 @@ TEST_F(JoinOpTest, JoinOpLayoutPropagation) {
       joinShape.push_back(2);
       assert(succeeded(result));
       Attribute transEnc;
-      result = inferLayout->inferTransOpEncoding(joinedEnc, joinShape,
-                                                 transPerm, transEnc);
+      result = inferLayout->inferTransOpEncoding(
+          joinedEnc, joinShape, transPerm, transEnc, /*loc=*/{});
       assert(succeeded(result));
       SmallVector<int64_t> transShape;
       for (auto i : transPerm) {

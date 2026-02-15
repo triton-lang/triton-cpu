@@ -48,7 +48,7 @@ tt.func private @convert_layout_blocked_blocked_vec(%arg0: tensor<16x16xi32, #bl
 
   // CHECK-DAG: [[X_MOD_2:%.*]] = and i32 [[TID]], 1
   // CHECK-DAG: [[X_2_4_LOWER:%.*]] = shl {{.*}} i32 [[IS_UPPER_HALF]], 1
-  // CHECK-DAG: [[X_2_4_UPPER0:%.*]] = shl i32 [[TID]], 1
+  // CHECK-DAG: [[X_2_4_UPPER0:%.*]] = shl {{.*}} i32 [[TID]], 1
   // CHECK-DAG: [[X_2_4_UPPER1:%.*]] = and i32 [[X_2_4_UPPER0]], 24
   // CHECK-DAG: [[X_GE_16:%.*]] = and i32 [[TID]], 16
   // CHECK-DAG: [[X_GE_16_2:%.*]] = lshr exact i32 [[X_GE_16]], 3
@@ -127,7 +127,7 @@ tt.func private @convert_layout_blocked_blocked(%arg0: tensor<16x16xi32, #blocke
   // to this, we choose to fall back to the shared memory implementation.
 
   // CHECK-NOT: shfl.sync.idx
-  // CHECK: st.shared
+  // CHECK: store
 
   %0 = ttg.convert_layout %arg0 : tensor<16x16xi32, #blocked0> -> tensor<16x16xi32, #blocked1>
   tt.return %0 : tensor<16x16xi32, #blocked1>

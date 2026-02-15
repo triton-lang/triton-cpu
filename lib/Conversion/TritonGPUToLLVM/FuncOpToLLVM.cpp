@@ -1,3 +1,4 @@
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -65,7 +66,15 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     // 1. Modify the function type to add the new arguments.
     auto funcTy = funcOp.getFunctionType();
     auto amendedInputTy = llvm::to_vector<4>(funcTy.getInputs());
-    bool isKernel = LLVM::isKernel(funcOp);
+    bool isKernel = triton::isKernel(funcOp);
+    if (isKernel) {
+      for (auto i : llvm::seq(amendedInputTy.size())) {
+        if (isa<TensorDescType>(amendedInputTy[i])) {
+          funcOp.setArgAttr(i, "tt.nv_tma_desc",
+                            mlir::IntegerAttr::get(i32_ty, 1));
+        }
+      }
+    }
     if (!isKernel) {
       amendedInputTy.push_back(sharedPtrTy);
     }
@@ -102,7 +111,7 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
   // Map the MLIR attribute `tt.nv_tma_desc` to the appropriate LLVM and NVVM
   // attributes.
   static void handleByvalTmaDescArgs(LLVM::LLVMFuncOp &llvmFuncOp) {
-    const bool isKernel = LLVM::isKernel(llvmFuncOp);
+    const bool isKernel = triton::isKernel(llvmFuncOp);
     for (unsigned i = 0; i < llvmFuncOp.getNumArguments(); ++i) {
       const auto attrs = llvmFuncOp.getArgAttrDict(i);
       if (!attrs) {
@@ -124,11 +133,11 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
               mlir::IntegerType::get(llvmFuncOp.getContext(), 8);
           const auto arrayType = mlir::LLVM::LLVMArrayType::get(
               llvmFuncOp.getContext(), byteType, 128);
-          llvmFuncOp.setArgAttr(i, "llvm.byval",
+          llvmFuncOp.setArgAttr(i, LLVM::LLVMDialect::getByValAttrName(),
                                 mlir::TypeAttr::get(arrayType));
-          llvmFuncOp.setArgAttr(i, "nvvm.grid_constant",
+          llvmFuncOp.setArgAttr(i, NVVM::NVVMDialect::getGridConstantAttrName(),
                                 mlir::UnitAttr::get(llvmFuncOp.getContext()));
-          llvmFuncOp.setArgAttr(i, "llvm.align",
+          llvmFuncOp.setArgAttr(i, LLVM::LLVMDialect::getAlignAttrName(),
                                 mlir::IntegerAttr::get(i32_type, 64));
         }
       }
@@ -152,9 +161,9 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
 
     auto ctx = funcOp->getContext();
 
-    if (LLVM::isKernel(funcOp)) {
+    if (triton::isKernel(funcOp)) {
       // Set an attribute to indicate this function is a kernel entry.
-      newFuncOp->setAttr("nvvm.kernel",
+      newFuncOp->setAttr(NVVM::NVVMDialect::getKernelFuncAttrName(),
                          rewriter.getIntegerAttr(type::u1Ty(ctx), 1));
       newFuncOp.setLinkage(LLVM::Linkage::External);
     } else {
@@ -165,13 +174,21 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
           ArrayAttr::get(ctx, rewriter.getStringAttr("noinline")));
       newFuncOp.setLinkage(LLVM::Linkage::Internal);
     }
-    // Set an attribute for reqntidx, it could be used in latter LLVM codegen
-    // for `nvvm.annotation` metadata.
+
+    // Determine the actual number of required warps.
     int numWarps = triton::gpu::lookupNumWarps(funcOp);
     if (auto totalNumWarps = funcOp.getParentOp()->getAttrOfType<IntegerAttr>(
             "ttg.total-num-warps"))
       numWarps = totalNumWarps.getInt();
-    newFuncOp->setAttr("nvvm.reqntid",
+
+    // Set `nvvm.maxnreg` if it was specified on the module.
+    if (Attribute maxnregAttr =
+            funcOp.getParentOp()->getAttr(triton::gpu::AttrMaxRegistersName))
+      newFuncOp->setAttr(NVVM::NVVMDialect::getMaxnregAttrName(), maxnregAttr);
+
+    // Set an attribute for reqntidx, it could be used in latter LLVM codegen
+    // for `nvvm.annotation` metadata.
+    newFuncOp->setAttr(NVVM::NVVMDialect::getReqntidAttrName(),
                        rewriter.getDenseI32ArrayAttr(32 * numWarps));
 
     rewriter.eraseOp(funcOp);

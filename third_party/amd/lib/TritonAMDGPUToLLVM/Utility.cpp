@@ -49,7 +49,7 @@ std::string mangleFunc(std::string name, Type type) {
 Value createVectorMaskFromPredicate(RewriterBase &rewriter, Location loc,
                                     Value pred, int64_t vecSize) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto vecMaskTy = LLVM::getFixedVectorType(rewriter.getI1Type(), vecSize);
+  auto vecMaskTy = LLVM::getVectorType(rewriter.getI1Type(), vecSize);
   Value maskVal = b.undef(vecMaskTy);
   for (size_t s = 0; s < vecSize; ++s) {
     Value indexVal =
@@ -70,7 +70,7 @@ int64_t getNumElements(Type ty) {
 Type castToVectorType(Type ty) {
   if (isa<VectorType>(ty))
     return ty;
-  return LLVM::getFixedVectorType(ty, 1);
+  return LLVM::getVectorType(ty, 1);
 }
 
 } // namespace
@@ -316,13 +316,15 @@ Value llLoad(RewriterBase &rewriter, Location loc, Value ptr, Type elemTy,
 }
 
 void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
-             Value pred, triton::CacheModifier cm) {
+             Value pred, triton::CacheModifier cm,
+             bool forceNoAliasAsyncLoads) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
 
   auto ctx = ptr.getContext();
   Type funcType = getFunctionType(void_ty(ctx), ValueRange({ptr, val, pred}));
   auto parent = ptr.getParentRegion()->getParentOfType<LLVM::LLVMFuncOp>();
-  auto getStoreNameRaw = [](triton::CacheModifier cm) {
+
+  auto getStoreNameWithCacheMod = [](triton::CacheModifier cm) {
     switch (cm) {
     case triton::CacheModifier::WT:
       return predicatedStoreWT;
@@ -336,9 +338,13 @@ void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
       return predicatedStore;
     }
   };
-  auto funcName = mangleFunc(getStoreNameRaw(cm), funcType);
+  std::string funcName = getStoreNameWithCacheMod(cm);
+  if (forceNoAliasAsyncLoads)
+    funcName += noAliasAsyncLoads;
+
+  auto mangledName = mangleFunc(funcName, funcType);
   LLVM::LLVMFuncOp funcOp =
-      appendOrGetExternFuncOp(rewriter, parent, funcName, funcType);
+      appendOrGetExternFuncOp(rewriter, parent, mangledName, funcType);
   LLVM::createLLVMCallOp(rewriter, loc, funcOp, ValueRange({ptr, val, pred}));
 }
 
@@ -496,28 +502,10 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
   }
 }
 
-Value cvtFp32ToFp16(Location loc, RewriterBase &rewriter, const Value &v,
-                    triton::RoundingMode rounding) {
-  if (rounding == triton::RoundingMode::RTNE) {
-    LLVM::RoundingMode rm = LLVM::RoundingMode::NearestTiesToEven;
-    return rewriter.create<LLVM::ConstrainedFPTruncIntr>(
-        loc, f16_ty, v, rm, LLVM::FPExceptionBehavior::Ignore);
-  }
-
-  // TODO: Figure out the test failure with RTZ LLVM::ConstrainedFPTruncIntr and
-  // switch to not use inline assembly too.
-  assert(rounding == triton::RoundingMode::RTZ);
-  GCNBuilder builder;
-
-  auto &cvt = *builder.create("v_cvt_f16_f32");
-  auto res = builder.newOperand("=v");
-  auto operand = builder.newOperand(v, "v");
-  auto &setRTZ = *builder.create("s_setreg_imm32_b32 0x1801, 0xc");
-  setRTZ();
-  cvt(res, operand);
-  auto &resetRTZ = *builder.create("s_setreg_imm32_b32 0x1801, 0x0");
-  resetRTZ();
-  return builder.launch(rewriter, loc, f16_ty, false);
+Value cvtFp32ToFp16RTNE_oneValue(Location loc, RewriterBase &rewriter,
+                                 const Value &v) {
+  LLVM::RoundingMode rm = LLVM::RoundingMode::NearestTiesToEven;
+  return rewriter.create<LLVM::FPTruncOp>(loc, f16_ty, v);
 }
 
 Type getPointerTypeWithShape(Value basePtr, Value offset) {
@@ -703,7 +691,7 @@ bool isChainDotTail(tt::DotOpInterface dotOp) {
   Operation *opA = dotOp.getA().getDefiningOp();
   if (!opA)
     return false;
-  getBackwardSlice(opA, &bwdSlices, bwdOpt);
+  (void)getBackwardSlice(opA, &bwdSlices, bwdOpt);
   if (llvm::find_if(bwdSlices, [](Operation *op) {
         return isa<tt::DotOpInterface>(op);
       }) != bwdSlices.end())

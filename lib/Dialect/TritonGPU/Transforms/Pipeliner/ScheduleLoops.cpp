@@ -1,6 +1,8 @@
 #include "mlir/IR/Dominance.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/MMAv5PipelineUtility.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -15,11 +17,12 @@ using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
-namespace mlir {
-namespace triton {
-namespace gpu {
-
+namespace mlir::triton::gpu {
 namespace {
+
+//===----------------------------------------------------------------------===//
+// scheduleLoops
+//===----------------------------------------------------------------------===//
 
 bool hasGpuBarriers(scf::ForOp forOp) {
   WalkResult result = forOp.walk(
@@ -27,28 +30,9 @@ bool hasGpuBarriers(scf::ForOp forOp) {
   return result.wasInterrupted();
 }
 
-bool mmav5DominatesTmemLoads(scf::ForOp forOp) {
-  DominanceInfo domInfo(forOp);
-  bool mmav5DominatesTmemLoads = true;
-  forOp.walk([&](ttng::MMAv5OpInterface mma) {
-    auto tmemAlloc = mma.getAccumulator().getDefiningOp<ttng::TMEMAllocOp>();
-    if (!tmemAlloc || !forOp.isDefinedOutsideOfLoop(tmemAlloc)) {
-      return WalkResult::interrupt();
-    }
-    for (auto user : tmemAlloc->getUsers()) {
-      if (isa<ttng::TMEMLoadOp>(user) && forOp->isAncestor(user) &&
-          !domInfo.properlyDominates(mma, user)) {
-        mmav5DominatesTmemLoads = false;
-        return WalkResult::interrupt();
-      }
-    }
-    return WalkResult::advance();
-  });
-  return mmav5DominatesTmemLoads;
-}
-
 // Return true if the preconditions for pipelining the loop are met.
-bool isSafeToPipeline(scf::ForOp forOp) {
+bool isSafeToPipeline(scf::ForOp forOp,
+                      const DenseMap<Operation *, int> &opLatency) {
   // Skip loop with distance > 1.
   if (loopHasDistGreaterThanOne(forOp))
     return false;
@@ -57,10 +41,6 @@ bool isSafeToPipeline(scf::ForOp forOp) {
     return false;
   // Skip loops with barriers.
   if (hasGpuBarriers(forOp))
-    return false;
-  // Lowering does not currently support cases where tmem_load happens
-  // before the mma in the loop
-  if (!mmav5DominatesTmemLoads(forOp))
     return false;
   return true;
 }
@@ -72,50 +52,6 @@ bool hasLatenciesAssigned(scf::ForOp forOp,
       return true;
   }
   return false;
-}
-
-Value getTmemOperand(Operation *op) {
-  if (auto mmav5Op = dyn_cast<ttng::MMAv5OpInterface>(op)) {
-    return mmav5Op.getAccumulator();
-  }
-  if (auto tmemStoreOp = dyn_cast<ttng::TMEMStoreOp>(op)) {
-    return tmemStoreOp.getDst();
-  }
-  if (auto tmemLoadOp = dyn_cast<ttng::TMEMLoadOp>(op)) {
-    return tmemLoadOp.getSrc();
-  }
-  return {};
-}
-
-SmallVector<Operation *> getDependentOps(Operation *op,
-                                         DominanceInfo &domInfo) {
-  if (isa<ttng::MMAv5OpInterface, ttng::TMEMStoreOp>(op)) {
-    SmallVector<Operation *> dependentOps;
-    Value acc = getTmemOperand(op);
-    for (Operation *user : acc.getUsers()) {
-      if (domInfo.properlyDominates(op, user)) {
-        dependentOps.push_back(user);
-      }
-    }
-    return dependentOps;
-  } else {
-    return {op->getUsers().begin(), op->getUsers().end()};
-  }
-}
-
-SmallVector<Operation *>
-getTmemBackwardDependentOps(Operation *op, PostDominanceInfo &domInfo) {
-  if (isa<ttng::MMAv5OpInterface, ttng::TMEMLoadOp>(op)) {
-    SmallVector<Operation *> dependentOps;
-    Value acc = getTmemOperand(op);
-    for (Operation *user : acc.getUsers()) {
-      if (domInfo.properlyPostDominates(op, user)) {
-        dependentOps.push_back(user);
-      }
-    }
-    return dependentOps;
-  }
-  return {};
 }
 
 CoarseSchedule scheduleKeyOps(scf::ForOp forOp,
@@ -143,7 +79,7 @@ CoarseSchedule scheduleKeyOps(scf::ForOp forOp,
       return it->second;
     // Compute max distance among all users that are inside the loop body
     int maxDist = -1;
-    for (Operation *user : getDependentOps(op, domInfo)) {
+    for (Operation *user : op->getUsers()) {
       // Only consider users inside the same block and not the terminator
       Operation *inBlockUser = forOp.getBody()->findAncestorOpInBlock(*user);
       if (!inBlockUser || inBlockUser == terminator)
@@ -215,6 +151,56 @@ CoarseSchedule scheduleKeyOps(scf::ForOp forOp,
   return schedule;
 }
 
+// Get an initial schedule for the loop. This is the base schedule from which
+// the rest of the pass will backward propagate dependencies.
+CoarseSchedule getInitialSchedule(scf::ForOp forOp,
+                                  const DenseMap<Operation *, int> &opLatency) {
+  if (!isSafeToPipeline(forOp, opLatency))
+    return CoarseSchedule(0);
+
+  // If the loop has assigned latencies, use them to determine the initial
+  // schedule.
+  if (hasLatenciesAssigned(forOp, opLatency))
+    return scheduleKeyOps(forOp, opLatency);
+
+  // If the loop has an existing schedule, use it as the base schedule.
+  CoarseSchedule schedule;
+  if (forOp->hasAttr(kWarpSpecializeAttrName) &&
+      succeeded(schedule.deSerialize(forOp))) {
+    // The loop was partitioned from a warp-specialized loop, meaning it can
+    // have a partial view of the original loop stages. Re-schedule the loop
+    // root at the stages of the latency ops to prune unnecessary stages.
+    auto isLatencyOp = [&](Operation &op) {
+      return opLatency.count(&op) ||
+             isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp, LocalStoreOp,
+                 LocalLoadOp, ttng::TMEMLoadOp, ttng::TMEMStoreOp,
+                 AsyncCopyGlobalToLocalOp, ttng::AsyncTMACopyGlobalToLocalOp,
+                 ttng::AsyncTMAGatherOp, ttng::MMAv5OpInterface,
+                 ttng::WaitBarrierOp, ttng::ArriveBarrierOp>(op);
+    };
+
+    // If there are no latency ops or all latency ops are in the same stage, we
+    // don't need to pipeline the loop. Return a new schedule with everything
+    // assigned to the same stage.
+    DenseSet<int> latencyStages;
+    auto ops = forOp.getBody()->without_terminator();
+    for (Operation &op : llvm::make_filter_range(ops, isLatencyOp))
+      latencyStages.insert(schedule[&op].first);
+    if (latencyStages.size() <= 1) {
+      CoarseSchedule normalized(/*numStages=*/1);
+      auto cluster = normalized.clusters.newAtFront();
+      for (Operation &op : ops)
+        normalized.insert(&op, 0, cluster);
+      return normalized;
+    }
+
+    schedule.shrinkToFit();
+    return schedule;
+  }
+
+  return CoarseSchedule(0);
+}
+
 // Find dependencies with distance of 1. They will go to the next stage,
 // but in the cluster before the current op.
 void scheduleDistanceOneDependencies(scf::ForOp forOp,
@@ -265,31 +251,6 @@ void scheduleDistanceOneDependencies(scf::ForOp forOp,
   }
 }
 
-void scheduleTmemDependencies(scf::ForOp forOp, CoarseSchedule &schedule) {
-  PostDominanceInfo postDomInfo(forOp);
-  int numStages = schedule.getNumStages();
-  SmallVector<std::tuple<Operation *, int, tt::CoarseSchedule::Cluster>>
-      opsInOrder = schedule.getOpsInOrder(forOp);
-  // Schedule dependencies stage by stage.
-  for (int stage = 0; stage < numStages; stage++) {
-    for (auto [op, stage_, cluster] : opsInOrder) {
-      if (stage_ != stage)
-        continue;
-      SmallVector<Operation *> tmemBackwardDependentOps =
-          getTmemBackwardDependentOps(op, postDomInfo);
-      for (Operation *tmemBackwardDependentOp : tmemBackwardDependentOps) {
-        bool inserted =
-            schedule.insertIfAbsent(tmemBackwardDependentOp, stage, cluster);
-        if (inserted) {
-          schedule.insertDepsOfOp(tmemBackwardDependentOp, stage, cluster,
-                                  /*includeArg=*/true,
-                                  /*insertIfEarlier=*/true);
-        }
-      }
-    }
-  }
-}
-
 // Schedule the prologue and epilogue `if` ops in the loop, pushing them as
 // close to the loop boundaries as possible. Return the cluster after the
 // prologue (or the beginning of the loop if there is no prologue).
@@ -310,7 +271,7 @@ CoarseSchedule::Cluster schedulePrologueAndEpilogue(scf::ForOp forOp,
       BackwardSliceOptions opt;
       opt.omitBlockArguments = true;
       opt.omitUsesFromAbove = false;
-      getBackwardSlice((Operation *)op, &backwardSlice, opt);
+      (void)getBackwardSlice((Operation *)op, &backwardSlice, opt);
 
       for (auto op : backwardSlice) {
         if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
@@ -383,10 +344,8 @@ void scheduleRemainingToLastStage(scf::ForOp forOp, CoarseSchedule &schedule,
 
 void scheduleLoop(scf::ForOp forOp,
                   const DenseMap<Operation *, int> &opLatency) {
-  if (!hasLatenciesAssigned(forOp, opLatency) || !isSafeToPipeline(forOp))
-    return;
   // Based on the latencies, schedule the key ops to the stages.
-  CoarseSchedule schedule = scheduleKeyOps(forOp, opLatency);
+  CoarseSchedule schedule = getInitialSchedule(forOp, opLatency);
   if (schedule.empty())
     return;
   LLVM_DEBUG({
@@ -401,7 +360,6 @@ void scheduleLoop(scf::ForOp forOp,
     DBGS() << "Coarse schedule with prologue and epilogue:\n" << forOp << "\n";
   });
   scheduleDependencies(forOp, schedule);
-  scheduleTmemDependencies(forOp, schedule);
   LLVM_DEBUG({
     schedule.serialize(forOp);
     DBGS() << "Coarse schedule with dependencies:\n" << forOp << "\n";
@@ -421,8 +379,7 @@ void scheduleLoop(scf::ForOp forOp,
   schedule.serialize(forOp);
 }
 
-} // namespace
-
+/// Schedule the loops based on the latencies assigned to the operations.
 void scheduleLoops(ModuleOp moduleOp) {
   DenseMap<Operation *, int> opLatency = deserializeLatencies(moduleOp);
   SmallVector<scf::ForOp> loops;
@@ -434,6 +391,19 @@ void scheduleLoops(ModuleOp moduleOp) {
   }
 }
 
-} // namespace gpu
-} // namespace triton
-} // namespace mlir
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// Pass Definition
+//===----------------------------------------------------------------------===//
+
+#define GEN_PASS_DEF_TRITONGPUSCHEDULELOOPS
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
+
+struct ScheduleLoops : public impl::TritonGPUScheduleLoopsBase<ScheduleLoops> {
+  using TritonGPUScheduleLoopsBase::TritonGPUScheduleLoopsBase;
+
+  void runOnOperation() override { scheduleLoops(getOperation()); }
+};
+
+} // namespace mlir::triton::gpu

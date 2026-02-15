@@ -1140,6 +1140,29 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 // -----
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @test_atomic_rmw_bf16(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %arg1: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) attributes {noinline = false} {
+    %true = arith.constant true
+    %0 = tt.get_program_id x : i32
+    %1 = tt.addptr %arg0, %0 : !tt.ptr<bf16>, i32
+    %2 = tt.load %1 : !tt.ptr<bf16>
+    %3 = tt.atomic_rmw fadd, acq_rel, gpu, %arg1, %2, %true : (!tt.ptr<bf16>, bf16, i1) -> bf16
+    tt.return
+  }
+}
+
+// CHECK-LABEL:   tt.func public @test_atomic_rmw_bf16(
+// CHECK-SAME:  %[[VAL_0:.*]]: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %[[VAL_1:.*]]: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) attributes {noinline = false} {
+// CHECK:           %[[VAL_2:.*]] = arith.constant true
+// CHECK:           %[[VAL_3:.*]] = tt.get_program_id x : i32
+// CHECK:           %[[VAL_4:.*]] = tt.addptr %[[VAL_0]], %[[VAL_3]] : !tt.ptr<bf16>, i32
+// CHECK:           %[[VAL_5:.*]] = tt.load %[[VAL_4]] : !tt.ptr<bf16>
+// CHECK:           %[[VAL_6:.*]] = tt.atomic_rmw fadd, acq_rel, gpu, %[[VAL_1]], %[[VAL_5]], %[[VAL_2]] : (!tt.ptr<bf16>, bf16, i1) -> bf16
+// CHECK:           tt.return
+// CHECK:         }
+
+// -----
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // expected-remark@+1 {{expected at least 1 use of unrealized_cast}}
   tt.func public @empty_kernel(%arg0: !tt.ptr<i8> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) attributes {noinline = false} {
     tt.return
@@ -1390,3 +1413,106 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 // CHECK:           tt.store %[[VAL_8]], %[[VAL_6]] : tensor<512x!tt.ptr<i8>>
 // CHECK:           tt.return
 // CHECK:         }
+
+// -----
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func public @_compute_indx(
+    %arg0: !tt.ptr<i16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
+    %arg1: !tt.ptr<i32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
+    %arg2: i32 {tt.divisibility = 16 : i32},
+    %arg3: i32 {tt.divisibility = 16 : i32}
+  ) -> tensor<256xi32> {
+    %c256_i32 = arith.constant 256 : i32
+    %0 = tt.get_program_id x : i32
+    %1 = arith.muli %0, %c256_i32 : i32
+    %2 = tt.make_range {end = 256 : i32, start = 0 : i32} : tensor<256xi32>
+    %3 = tt.splat %1 : i32 -> tensor<256xi32>
+    %4 = arith.addi %3, %2 : tensor<256xi32>
+    %5 = tt.splat %arg3 : i32 -> tensor<256xi32>
+    %6 = arith.cmpi slt, %4, %5 : tensor<256xi32>
+    %7 = tt.splat %arg0 : !tt.ptr<i16> -> tensor<256x!tt.ptr<i16>>
+    %8 = tt.addptr %7, %4 : tensor<256x!tt.ptr<i16>>, tensor<256xi32>
+    %9 = tt.load %8, %6 : tensor<256x!tt.ptr<i16>>
+    %10 = arith.muli %0, %arg2 : i32
+    %11 = tt.addptr %arg1, %10 : !tt.ptr<i32>, i32
+    %12 = tt.splat %11 : !tt.ptr<i32> -> tensor<256x!tt.ptr<i32>>
+    %13 = tt.addptr %12, %9 : tensor<256x!tt.ptr<i32>>, tensor<256xi16>
+    %14 = tt.load %13, %6 : tensor<256x!tt.ptr<i32>>
+    tt.return %14 : tensor<256xi32>
+  }
+}
+
+// CHECK-LABEL:   tt.func public @_compute_indx(
+// CHECK-SAME:                                  %[[VAL_0:.*]]: !tt.ptr<i16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
+// CHECK-SAME:                                  %[[VAL_1:.*]]: !tt.ptr<i32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32},
+// CHECK-SAME:                                  %[[VAL_2:.*]]: i32 {tt.divisibility = 16 : i32},
+// CHECK-SAME:                                  %[[VAL_3:.*]]: i32 {tt.divisibility = 16 : i32}) -> tensor<256xi32> {
+// CHECK:           %[[VAL_4:.*]] = arith.constant 256 : i32
+// CHECK:           %[[VAL_5:.*]] = tt.get_program_id x : i32
+// CHECK:           %[[VAL_6:.*]] = arith.muli %[[VAL_5]], %[[VAL_4]] : i32
+// CHECK:           %[[VAL_7:.*]] = tt.make_range {end = 256 : i32, start = 0 : i32} : tensor<256xi32>
+// CHECK:           %[[VAL_8:.*]] = tt.splat %[[VAL_6]] : i32 -> tensor<256xi32>
+// CHECK:           %[[VAL_9:.*]] = arith.addi %[[VAL_8]], %[[VAL_7]] : tensor<256xi32>
+// CHECK:           %[[VAL_10:.*]] = tt.splat %[[VAL_3]] : i32 -> tensor<256xi32>
+// CHECK:           %[[VAL_11:.*]] = arith.cmpi slt, %[[VAL_9]], %[[VAL_10]] : tensor<256xi32>
+// CHECK:           %[[VAL_12:.*]] = tt.addptr %[[VAL_0]], %[[VAL_6]] : !tt.ptr<i16>, i32
+// CHECK:           %[[VAL_13:.*]] = tt.splat %[[VAL_12]] : !tt.ptr<i16> -> tensor<256x!tt.ptr<i16>>
+// CHECK:           %[[VAL_14:.*]] = tt.addptr %[[VAL_13]], %[[VAL_7]] : tensor<256x!tt.ptr<i16>>, tensor<256xi32>
+// CHECK:           %[[VAL_15:.*]] = tt.load %[[VAL_14]], %[[VAL_11]] : tensor<256x!tt.ptr<i16>>
+// CHECK:           %[[VAL_16:.*]] = arith.muli %[[VAL_5]], %[[VAL_2]] : i32
+// CHECK:           %[[VAL_17:.*]] = tt.addptr %[[VAL_1]], %[[VAL_16]] : !tt.ptr<i32>, i32
+// CHECK:           %[[VAL_18:.*]] = arith.extsi %[[VAL_15]] : tensor<256xi16> to tensor<256xi32>
+// CHECK:           %[[VAL_19:.*]] = tt.splat %[[VAL_17]] : !tt.ptr<i32> -> tensor<256x!tt.ptr<i32>>
+// CHECK:           %[[VAL_20:.*]] = tt.addptr %[[VAL_19]], %[[VAL_18]] : tensor<256x!tt.ptr<i32>>, tensor<256xi32>
+// CHECK:           %[[VAL_21:.*]] = tt.load %[[VAL_20]], %[[VAL_11]] : tensor<256x!tt.ptr<i32>>
+// CHECK:           tt.return %[[VAL_21]] : tensor<256xi32>
+// CHECK:         }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 16], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.compute-capability" = 0 : i32, "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32}  {
+  tt.func @conversion_extract_slice(%arg0: !tt.ptr<f32>, %arg1: tensor<256x256xi32, #blocked>) -> tensor<128x256xf32, #blocked> {
+    %3 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<256x256x!tt.ptr<f32>, #blocked>
+    %4 = tt.addptr %3, %arg1 : tensor<256x256x!tt.ptr<f32>, #blocked>, tensor<256x256xi32, #blocked>
+    %5 = amdgpu.extract_slice %4 [0, 0] : tensor<256x256x!tt.ptr<f32>, #blocked> to tensor<128x256x!tt.ptr<f32>, #blocked>
+    %6 = tt.load %5 : tensor<128x256x!tt.ptr<f32>, #blocked>
+    tt.return %6 : tensor<128x256xf32, #blocked>
+  }
+}
+
+// CHECK-LABEL:   tt.func @conversion_extract_slice(
+// CHECK-SAME:        %[[ARG_0:.*]]: !tt.ptr<f32>, %[[ARG_1:.*]]: tensor<256x256xi32, #blocked>) -> tensor<128x256xf32, #blocked>  {
+// CHECK:        %[[VAR_0:.*]] = arith.extsi %[[ARG_1]] : tensor<256x256xi32, #blocked> to tensor<256x256xi64, #blocked>
+// CHECK:        %[[VAR_1:.*]] = amdgpu.extract_slice %[[VAR_0]] [0, 0] : tensor<256x256xi64, #blocked> to tensor<128x256xi64, #blocked>
+// CHECK:        %[[VAR_2:.*]] = arith.trunci %[[VAR_1]] : tensor<128x256xi64, #blocked> to tensor<128x256xi32, #blocked>
+// CHECK:        %[[VAR_3:.*]] = tt.splat %[[ARG_0]] : !tt.ptr<f32> -> tensor<128x256x!tt.ptr<f32>, #blocked>
+// CHECK:        %[[VAR_4:.*]] = tt.addptr %[[VAR_3]], %[[VAR_2]] : tensor<128x256x!tt.ptr<f32>, #blocked>, tensor<128x256xi32, #blocked>
+// CHECK:        %[[VAR_5:.*]] = tt.load %[[VAR_4]] : tensor<128x256x!tt.ptr<f32>, #blocked>
+// CHECK:        tt.return %[[VAR_5]] : tensor<128x256xf32, #blocked>
+// CHECK:         }
+
+// -----
+
+module attributes {"ttg.num-warps" = 4 : i32} {
+  tt.func @ifOpPoison(%arg0: !tt.ptr<f32>, %arg1: tensor<1024xf32>, %arg2: i1) -> tensor<1024xf32> {
+    %c1024_i32 = arith.constant 1024 : i32
+    // expected-remark@+1 {{skipping canonicalize-pointers due to ub.poison}}
+    %poison = ub.poison : tensor<1024x!tt.ptr<f32>>
+    %0 = tt.get_program_id x : i32
+    %1 = arith.muli %0, %c1024_i32 : i32
+    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32>
+    %3 = tt.splat %1 : i32 -> tensor<1024xi32>
+    %4 = arith.addi %3, %2 : tensor<1024xi32>
+    %5 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
+    %6 = scf.if %arg2 -> (tensor<1024x!tt.ptr<f32>>) {
+      %8 = tt.addptr %5, %4 : tensor<1024x!tt.ptr<f32>>, tensor<1024xi32>
+      scf.yield %8 : tensor<1024x!tt.ptr<f32>>
+    } else {
+      scf.yield %poison : tensor<1024x!tt.ptr<f32>>
+    }
+    %7 = tt.load %6 : tensor<1024x!tt.ptr<f32>>
+    tt.return %7 : tensor<1024xf32>
+  }
+}
