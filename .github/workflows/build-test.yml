@@ -82,7 +82,6 @@ jobs:
       - name: Install Triton
         run: |
           echo "PATH is '$PATH'"
-          cd python
           python3 -m pip install --no-build-isolation -vvv '.[tests]'
 
       - name: Run python unit tests for MacOS Arm64
@@ -152,7 +151,6 @@ jobs:
 
       - name: Run lit tests
         run: |
-          cd python
           LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
           if [ ! -d "${LIT_TEST_DIR}" ]; then
             echo "Could not find '${LIT_TEST_DIR}'" ; exit -1
@@ -207,7 +205,6 @@ jobs:
           echo "CMAKE_PREFIX_PATH is '$CMAKE_PREFIX_PATH'"
           echo "XSMM_INSTALL is '$XSMM_INSTALL'"
           echo "XSMM_INCLUDE_DIRS is '$XSMM_INCLUDE_DIRS'"
-          cd python
           python3 -m pip install --no-build-isolation -vvv '.[tests]'
 
       - name: AMX/FMA Run python unit tests on GNR
