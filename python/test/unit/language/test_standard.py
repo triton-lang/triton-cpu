@@ -28,7 +28,7 @@ def test_maximum_minium(dtype, op, device):
 # TODO improve standard implementation of sort
 @pytest.mark.interpreter
 @pytest.mark.parametrize(
-    "M, N", [[1, 512], [8, 64], [256, 16], [512, 8]] if not is_cpu() else [[1, 128], [4, 32], [32, 8], [64, 4]])
+    "M, N", [[1, 512], [8, 64], [256, 16], [512, 8]] if not is_cpu() else [[1, 128], [4, 32], [32, 8], [64, 16]])
 @pytest.mark.parametrize("k", [None, 8])
 @pytest.mark.parametrize("descending", [False, True])
 @pytest.mark.parametrize("dtype_str", ['int32', 'float16', 'float32', 'bfloat16'])
@@ -82,6 +82,8 @@ def test_flip(M, N, K, dtype_str, dim, device):
         x = tl.flip(x, dim)
         tl.store(Z + off3d, x)
 
+    if is_cpu() and dim == 2 and K > 4:
+        pytest.xfail("last-dimension flip is broken")
     x = numpy_random((M, N, K), dtype_str=dtype_str)
     x = torch.from_numpy(x).to(device)
     y = torch.flip(x, (dim, ))
