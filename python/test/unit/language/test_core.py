@@ -3520,6 +3520,7 @@ def _welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
 def _sum_combine(a, b):
     return a + b
 
+
 @pytest.mark.cpu
 @pytest.mark.interpreter
 def test_generic_reduction(device):
@@ -5321,6 +5322,7 @@ def test_tma_store_block_shape_err(device):
         kernel[(1, )](input)
 
     assert "Descriptor block shape must have at least 16 bytes" in str(e.value.__cause__)
+
 
 @pytest.mark.cpu
 def test_trans_reshape(device, with_allocator):
