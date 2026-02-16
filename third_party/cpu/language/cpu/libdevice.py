@@ -5,155 +5,155 @@ from triton import jit
 
 
 @core.extern
-def acos(arg0, _builder=None):
-    return core.tensor(_builder.create_acos(arg0.handle), arg0.type)
+def acos(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_acos(arg0.handle), arg0.type)
 
 
 @core.extern
-def acosh(arg0, _builder=None):
-    return core.tensor(_builder.create_acosh(arg0.handle), arg0.type)
+def acosh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_acosh(arg0.handle), arg0.type)
 
 
 @core.extern
-def asin(arg0, _builder=None):
-    return core.tensor(_builder.create_asin(arg0.handle), arg0.type)
+def asin(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_asin(arg0.handle), arg0.type)
 
 
 @core.extern
-def asinh(arg0, _builder=None):
-    return core.tensor(_builder.create_asinh(arg0.handle), arg0.type)
+def asinh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_asinh(arg0.handle), arg0.type)
 
 
 @core.extern
-def atan(arg0, _builder=None):
-    return core.tensor(_builder.create_atan(arg0.handle), arg0.type)
+def atan(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_atan(arg0.handle), arg0.type)
 
 
 @core.extern
-def atanh(arg0, _builder=None):
-    return core.tensor(_builder.create_atanh(arg0.handle), arg0.type)
+def atanh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_atanh(arg0.handle), arg0.type)
 
 
 @core.extern
-def cbrt(arg0, _builder=None):
-    return core.tensor(_builder.create_cbrt(arg0.handle), arg0.type)
+def cbrt(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_cbrt(arg0.handle), arg0.type)
 
 
 @core.extern
-def cos(arg0, _builder=None):
-    return core.tensor(_builder.create_cos(arg0.handle), arg0.type)
+def cos(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_cos(arg0.handle), arg0.type)
 
 
 @core.extern
-def cosh(arg0, _builder=None):
-    return core.tensor(_builder.create_cosh(arg0.handle), arg0.type)
+def cosh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_cosh(arg0.handle), arg0.type)
 
 
 @core.extern
-def erf(arg0, _builder=None):
-    return core.tensor(_builder.create_erf(arg0.handle), arg0.type)
+def erf(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_erf(arg0.handle), arg0.type)
 
 
 @core.extern
-def exp(arg0, _builder=None):
-    return core.tensor(_builder.create_exp(arg0.handle), arg0.type)
+def exp(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_exp(arg0.handle), arg0.type)
 
 
 @core.extern
-def exp2(arg0, _builder=None):
-    return core.tensor(_builder.create_exp2(arg0.handle), arg0.type)
+def exp2(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_exp2(arg0.handle), arg0.type)
 
 
 @core.extern
-def expm1(arg0, _builder=None):
-    return core.tensor(_builder.create_expm1(arg0.handle), arg0.type)
+def expm1(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_expm1(arg0.handle), arg0.type)
 
 
 @core.extern
-def floor(arg0, _builder=None):
-    return core.tensor(_builder.create_floor(arg0.handle), arg0.type)
+def floor(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_floor(arg0.handle), arg0.type)
 
 
 @core.extern
-def log(arg0, _builder=None):
-    return core.tensor(_builder.create_log(arg0.handle), arg0.type)
+def log(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_log(arg0.handle), arg0.type)
 
 
 @core.extern
-def log2(arg0, _builder=None):
-    return core.tensor(_builder.create_log2(arg0.handle), arg0.type)
+def log2(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_log2(arg0.handle), arg0.type)
 
 
 @core.extern
-def log10(arg0, _builder=None):
-    return core.tensor(_builder.create_log10(arg0.handle), arg0.type)
+def log10(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_log10(arg0.handle), arg0.type)
 
 
 @core.extern
-def log1p(arg0, _builder=None):
-    return core.tensor(_builder.create_log1p(arg0.handle), arg0.type)
+def log1p(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_log1p(arg0.handle), arg0.type)
 
 
 @core.extern
-def sin(arg0, _builder=None):
-    return core.tensor(_builder.create_sin(arg0.handle), arg0.type)
+def sin(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_sin(arg0.handle), arg0.type)
 
 
 @core.extern
-def rsqrt(arg0, _builder=None):
-    return core.tensor(_builder.create_rsqrt(arg0.handle), arg0.type)
+def rsqrt(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_rsqrt(arg0.handle), arg0.type)
 
 
 @core.extern
-def sqrt(arg0, _builder=None):
-    return core.tensor(_builder.create_sqrt(arg0.handle), arg0.type)
+def sqrt(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_sqrt(arg0.handle), arg0.type)
 
 
 @core.extern
-def sinh(arg0, _builder=None):
-    return core.tensor(_builder.create_sinh(arg0.handle), arg0.type)
+def sinh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_sinh(arg0.handle), arg0.type)
 
 
 @core.extern
-def tan(arg0, _builder=None):
-    return core.tensor(_builder.create_tan(arg0.handle), arg0.type)
+def tan(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_tan(arg0.handle), arg0.type)
 
 
 @core.extern
-def tanh(arg0, _builder=None):
-    return core.tensor(_builder.create_tanh(arg0.handle), arg0.type)
+def tanh(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_tanh(arg0.handle), arg0.type)
 
 
 @core.extern
-def trunc(arg0, _builder=None):
-    return core.tensor(_builder.create_trunc(arg0.handle), arg0.type)
+def trunc(arg0, _semantic=None):
+    return core.tensor(_semantic.builder.create_trunc(arg0.handle), arg0.type)
 
 
 @core.extern
-def ceil(arg0, _builder=None):
+def ceil(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("Sleef_ceilf%(numel)", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("Sleef_ceild%(numel)", core.dtype("fp64")),
-        }, is_pure=True, _builder=_builder)
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
-def pow(arg0, arg1, _builder=None):
+def pow(arg0, arg1, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("Sleef_powf%(numel)_u10", core.dtype("fp32")),
             (core.dtype("fp64"), core.dtype("fp64")): ("Sleef_powd%(numel)_u10", core.dtype("fp64")),
-        }, is_pure=True, _builder=_builder)
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
-def fmod(arg0, arg1, _builder=None):
+def fmod(arg0, arg1, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("Sleef_fmodf%(numel)", core.dtype("fp32")),
             (core.dtype("fp64"), core.dtype("fp64")): ("Sleef_fmodd%(numel)", core.dtype("fp64")),
-        }, is_pure=True, _builder=_builder)
+        }, is_pure=True, _semantic=_semantic)
 
 
 @jit
@@ -190,7 +190,7 @@ def _is_special_float(arg0, uint_dtype, kind: tl.constexpr):
 
 
 @builtin
-def isnan(arg0, _builder=None, _generator=None):
+def isnan(arg0, _semantic=None, _generator=None):
     if not arg0.dtype.is_floating():
         raise ValueError("isnan expects a floating point type")
     bitwidth = arg0.dtype.primitive_bitwidth
@@ -199,7 +199,7 @@ def isnan(arg0, _builder=None, _generator=None):
 
 
 @builtin
-def isinf(arg0, _builder=None, _generator=None):
+def isinf(arg0, _semantic=None, _generator=None):
     if not arg0.dtype.is_floating():
         raise ValueError("isinf expects a floating point type")
     bitwidth = arg0.dtype.primitive_bitwidth
@@ -214,7 +214,7 @@ def _signbit(arg0, uint_dtype: tl.constexpr):
 
 
 @builtin
-def signbit(arg0, _builder=None, _generator=None):
+def signbit(arg0, _semantic=None, _generator=None):
     if not arg0.dtype.is_floating():
         raise ValueError("signbit expects a floating point type")
     bitwidth = arg0.dtype.primitive_bitwidth

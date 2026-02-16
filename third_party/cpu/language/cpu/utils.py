@@ -12,7 +12,7 @@ def _vnni_decode(arg0):
 
 
 @builtin
-def vnni_decode(arg0, _builder=None, _generator=None):
+def vnni_decode(arg0, _semantic=None, _generator=None):
     bitwidth = arg0.dtype.primitive_bitwidth
     if bitwidth > 16:
         raise ValueError("Expected 8-bit or 16-bit values for vnni_decode")
