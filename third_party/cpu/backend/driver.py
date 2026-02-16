@@ -424,13 +424,13 @@ class CPUDeviceInterface:
         self.kernel_times = []
         self.last_start = 0
         self.use_hooks = False
-        triton.compiler.CompiledKernel.launch_enter_hook = None
-        triton.compiler.CompiledKernel.launch_exit_hook = None
+        triton.knobs.runtime.launch_enter_hook = None
+        triton.knobs.runtime.launch_exit_hook = None
 
     def enable_hook_timing(self):
         self.use_hooks = True
-        triton.compiler.CompiledKernel.launch_enter_hook = lambda arg: self._enter_hook()
-        triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
+        triton.knobs.runtime.launch_enter_hook = lambda arg: self._enter_hook()
+        triton.knobs.runtime.launch_exit_hook = lambda arg: self._exit_hook()
 
     def synchronize(self):
         pass
