@@ -5,6 +5,8 @@ import triton.language as tl
 import pytest
 import numpy as np
 
+from test_core import is_cpu
+
 
 def annotated_function(return_type=None, **arg_types):
     """A decorator to add annotations to a function."""
@@ -60,6 +62,8 @@ def test_unknown_annotation(device):
      for test_val in [0.0, 42.0, float("inf"), float("nan")]],
 )
 def test_float_annotation(device, dtype, test_val):
+    if is_cpu():
+        pytest.xfail("NYI in CPU backend")
 
     @triton.jit
     @annotated_function(val=dtype)

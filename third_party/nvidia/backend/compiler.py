@@ -123,6 +123,8 @@ class CUDAOptions:
     default_dot_input_precision: str = "tf32"
     allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee", 'bf16x3', 'bf16x6')
     max_num_imprecise_acc_default: bool = None
+    # FIXME: Ugly, this is only used by CPU
+    num_cpu_threads: int = 0
     extern_libs: dict = None
     debug: bool = False
     backend_name: str = 'cuda'

@@ -4,6 +4,8 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -26,6 +28,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
@@ -123,17 +126,44 @@ public:
   ScopedLLVMOption &operator=(const ScopedLLVMOption &) = delete;
 };
 
+std::string getDefaultTargerOrProcessTriple() {
+  // Return process triple iff the default target triple is empty.
+  std::string triple = llvm::sys::getDefaultTargetTriple();
+  if (triple.empty()) {
+    // host
+    triple = llvm::sys::getProcessTriple();
+  }
+  return triple;
+}
+
 std::unique_ptr<TargetMachine>
 createTargetMachine(llvm::Module *module, std::string proc,
-                    bool enable_fp_fusion, const std::string &features) {
+                    bool enable_fp_fusion, const std::string &features,
+                    bool enable_fast_math = false) {
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module->getTargetTriple(), error);
+  if (!target) {
+    // Try to get the default target triple.
+    auto triple = getDefaultTargerOrProcessTriple();
+    target = llvm::TargetRegistry::lookupTarget(Triple{triple}, error);
+    if (!target) {
+      throw std::runtime_error("target lookup error: " + error);
+    }
+    module->setTargetTriple(Triple(triple));
+  }
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
   if (enable_fp_fusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
   opt.NoNaNsFPMath = true;
+
+  if (enable_fast_math) {
+    opt.NoNaNsFPMath = true;
+    opt.NoTrappingFPMath = true;
+    opt.NoSignedZerosFPMath = true;
+  }
+
   opt.TrapUnreachable = true;
   opt.MCOptions.AsmVerbose = true;
   opt.MCOptions.PreserveAsmComments = true;
@@ -323,12 +353,10 @@ translateLLVMIRToMIR(llvm::Module &module, const std::string &triple,
   return result;
 }
 
-std::string translateLLVMIRToASM(llvm::Module &module,
-                                 const std::string &triple,
-                                 const std::string &proc,
-                                 const std::string &features,
-                                 const std::vector<std::string> &flags,
-                                 bool enable_fp_fusion, bool isObject) {
+std::string translateLLVMIRToASM(
+    llvm::Module &module, const std::string &triple, const std::string &proc,
+    const std::string &features, const std::vector<std::string> &flags,
+    bool enable_fp_fusion, bool isObject, bool enable_fast_math = false) {
   using namespace mlir;
 
   // Apply flags
@@ -381,7 +409,8 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 
   // create machine
   module.setTargetTriple(Triple(triple));
-  auto machine = createTargetMachine(&module, proc, enable_fp_fusion, features);
+  auto machine = createTargetMachine(&module, proc, enable_fp_fusion, features,
+                                     enable_fast_math);
   // set data layout
   module.setDataLayout(machine->createDataLayout());
   // emit machine code
@@ -758,6 +787,76 @@ void init_triton_llvm(py::module &&m) {
       py::arg("enable_fp_fusion") = false,
       py::call_guard<py::gil_scoped_release>());
 
+  m.def("set_host_target", [](llvm::Module *mod) {
+    auto triple = getDefaultTargerOrProcessTriple();
+    mod->setTargetTriple(Triple(triple));
+    std::string error;
+    auto target =
+        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple(), error);
+    if (!target) {
+      throw std::runtime_error("target lookup error: " + error);
+    }
+    std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
+        mod->getTargetTriple(), llvm::sys::getHostCPUName(), "", {},
+        llvm::Reloc::PIC_)};
+    mod->setDataLayout(machine->createDataLayout());
+  });
+
+  m.def(
+      "translate_to_host_asm",
+      [](std::string llvmIR, bool enable_fp_fusion,
+         bool enable_fast_math) -> py::object {
+        std::string res;
+        {
+          // when allow_threads goes out of scope, gil will be released
+          py::gil_scoped_release allow_threads;
+          // create LLVM module from C++
+          llvm::LLVMContext context;
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> module =
+              llvm::parseIR(buffer->getMemBufferRef(), error, context);
+          if (!module) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          auto triple = getDefaultTargerOrProcessTriple();
+          res = translateLLVMIRToASM(*module, triple,
+                                     llvm::sys::getHostCPUName().str(), "", {},
+                                     enable_fp_fusion, false, enable_fast_math);
+        }
+        return py::str(res);
+      },
+      ret::take_ownership);
+
+  m.def(
+      "translate_to_bc",
+      [](const std::string llvmIR) -> py::object {
+        py::gil_scoped_release allow_threads;
+        // create LLVM module
+        llvm::LLVMContext context;
+        std::unique_ptr<llvm::MemoryBuffer> buffer =
+            llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
+        llvm::SMDiagnostic error;
+        std::unique_ptr<llvm::Module> module =
+            llvm::parseIR(buffer->getMemBufferRef(), error, context);
+        if (!module) {
+          llvm::report_fatal_error(
+              "failed to parse IR: " + error.getMessage() +
+              "lineno: " + std::to_string(error.getLineNo()));
+        }
+        // Write bitcode to a buffer.
+        llvm::SmallVector<char, 0> buf;
+        llvm::BitcodeWriter writer(buf);
+        writer.writeModule(*module);
+        writer.writeStrtab();
+        std::string bitcode(buf.begin(), buf.end());
+        return py::bytes(bitcode);
+      },
+      ret::take_ownership);
+
   m.def(
       "translate_to_asm",
       [](std::string llvmIR, std::string triple, std::string proc,
@@ -908,6 +1007,39 @@ void init_triton_llvm(py::module &&m) {
         }
       }
     }
+  });
+
+  m.def("get_cpu_tripple", []() { return llvm::sys::getProcessTriple(); });
+
+  m.def("get_cpu_name", []() { return llvm::sys::getHostCPUName().str(); });
+
+  m.def("get_cpu_features", []() {
+    auto features = llvm::sys::getHostCPUFeatures();
+
+    std::set<std::string> res;
+    for (auto &f : features) {
+      if (f.second)
+        res.insert(f.first().str());
+    }
+
+    // Likely something went wrong with the LLVM feature detection.
+    if (!res.size()) {
+      std::string triple = llvm::sys::getProcessTriple();
+      // e.g. arm64-apple-darwin24.1.0
+      //      ^^^^^
+      std::size_t pos = triple.find('-');
+      if (pos == std::string::npos) {
+        return res;
+      }
+
+      std::string arch = triple.substr(0, pos);
+      if (arch == "aarch64" || arch == "arm64") {
+        // Safe because NEON is a mandatory feature for aarch64.
+        res.insert("neon"); // For math tests
+      }
+    }
+
+    return res;
   });
 }
 

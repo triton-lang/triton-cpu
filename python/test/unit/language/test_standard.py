@@ -3,7 +3,7 @@ import pytest
 import torch
 import triton.language as tl
 
-from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy_random
+from test_core import _test_binary, int_dtypes, uint_dtypes, float_dtypes, numpy_random, is_cpu
 
 # ---------------
 # test maximum/minimum ops
@@ -69,6 +69,10 @@ def test_sort(M, N, k, descending, dtype_str, device):
 @pytest.mark.parametrize("dtype_str", ['int32', 'float16', 'float32', 'bfloat16'])
 @pytest.mark.parametrize("dim", [0, 1, 2, -2])
 def test_flip(M, N, K, dtype_str, dim, device):
+    if is_cpu() and (M != 1 and N != 1):
+        pytest.skip("Flip does not work correctly on CPU if both dimensions are not 1")
+    if is_cpu() and dim == 2 and K > 4:
+        pytest.xfail("last-dimension flip is broken")
 
     @triton.jit
     def flip_kernel(X, Z, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, dim: tl.constexpr):
