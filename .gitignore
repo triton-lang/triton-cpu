@@ -95,3 +95,5 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+
+AGENTS.override.md

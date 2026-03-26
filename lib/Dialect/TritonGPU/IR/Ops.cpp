@@ -881,6 +881,9 @@ LogicalResult MemDescIndexOp::verify() {
   if (srcTy.getElementType() != dstTy.getElementType()) {
     return emitError("result element type must match desc element type");
   }
+  if (srcTy.getEncoding() != dstTy.getEncoding()) {
+    return emitError("src and result must have the same encoding");
+  }
   // memdesc_index reduces rank by 1 and preserves the trailing shape.
   bool correctRank = srcTy.getRank() == dstTy.getRank() + 1;
   if (!correctRank) {
@@ -955,6 +958,9 @@ LogicalResult MemDescSubsliceOp::verify() {
   if (srcTy.getElementType() != dstTy.getElementType()) {
     return emitError("result element type must match desc element type");
   }
+  if (srcTy.getEncoding() != dstTy.getEncoding()) {
+    return emitError("src and result must have the same encoding");
+  }
   if (getOffsets().size() != srcTy.getRank()) {
     return emitError("offsets must have the same rank as input");
   }
@@ -992,6 +998,9 @@ LogicalResult MemDescSubsliceOp::verify() {
     } else {
       if (offset & (dstTy.getDimSize(dim) - 1)) {
         return emitError("The split offset may not touch the tile");
+      }
+      if (offset >= srcTy.getDimSize(dim)) {
+        return emitError("The split offset may not exceed the source shape");
       }
     }
   }
@@ -1343,7 +1352,7 @@ LogicalResult WarpYieldOp::verify() {
 
 // Get the size of a scalar type when stored in shared memory.
 // TODO: Generalize this as needed.
-static size_t getSharedMemorySize(Type type) {
+size_t getSharedMemorySize(Type type) {
   if (isa<IntegerType, FloatType>(type))
     return llvm::divideCeil(type.getIntOrFloatBitWidth(), 8);
   if (isa<PointerType, TensorDescInterface>(type))
@@ -1358,14 +1367,18 @@ static size_t getSharedMemorySize(Type type) {
       mlir::debugString(type));
 }
 
-std::pair<uint64_t, uint64_t> WarpSpecializeOp::getCaptureSizeAlign() {
+uint64_t WarpSpecializeOp::getCaptureSize() {
   uint64_t captureSize = 0;
   // Tightly pack the captures in memory.
   for (Type type : getPartitionOp().getOperandTypes()) {
     captureSize += getSharedMemorySize(type);
   }
+  return captureSize;
+}
+
+uint64_t WarpSpecializeOp::getCaptureAlign() {
   // Align the captures to 8 bytes.
-  return {captureSize, 8};
+  return 8;
 }
 
 unsigned WarpSpecializeOp::getTotalPartitionWarps() {

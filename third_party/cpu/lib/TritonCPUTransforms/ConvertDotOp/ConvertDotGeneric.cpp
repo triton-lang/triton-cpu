@@ -2,7 +2,6 @@
 
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 
-#include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"

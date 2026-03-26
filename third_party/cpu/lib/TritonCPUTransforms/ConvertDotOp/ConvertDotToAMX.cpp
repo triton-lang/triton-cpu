@@ -2,10 +2,10 @@
 
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 
-#include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/X86/X86Dialect.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -27,6 +27,8 @@ namespace cpu {
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::cpu;
+
+namespace amx = mlir::x86::amx;
 
 namespace {
 

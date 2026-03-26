@@ -120,7 +120,7 @@ def ConvertDotToAMX : Pass<"triton-cpu-convert-dot-to-amx", "mlir::ModuleOp"> {
 
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::vector::VectorDialect",
-                             "mlir::amx::AMXDialect",
+                             "mlir::x86::X86Dialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::cpu::TritonCPUDialect"];
 }

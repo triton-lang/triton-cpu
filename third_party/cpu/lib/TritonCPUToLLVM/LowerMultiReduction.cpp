@@ -38,8 +38,12 @@ struct LowerMultiReduction
     // The default lowering option is InnerParallel
     vector::VectorMultiReductionLowering options =
         vector::VectorMultiReductionLowering::InnerReduction;
-    vector::populateVectorMultiReductionLoweringPatterns(loweringPatterns,
-                                                         options);
+    vector::populateVectorMultiReductionReorderPatterns(loweringPatterns,
+                                                        options);
+    vector::populateVectorMultiReductionFlatteningPatterns(loweringPatterns,
+                                                           options);
+    vector::populateVectorMultiReductionUnrollingPatterns(loweringPatterns,
+                                                          options);
 
     if (failed(applyPatternsGreedily(op, std::move(loweringPatterns))))
       signalPassFailure();

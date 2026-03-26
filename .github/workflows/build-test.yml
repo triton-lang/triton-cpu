@@ -72,12 +72,13 @@ jobs:
         run: |
           echo "RUNNER_TARGET_OS: ${RUNNER_TARGET_OS}"
           python3 -m pip install --upgrade pip
-          python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit pybind11 expecttest
+          python3 -m pip install -r python/requirements.txt
+          python3 -m pip install -r python/test-requirements.txt
           if [[ "${RUNNER_TARGET_OS}" == "ubuntu" ]]; then
             sudo apt-get update
             sudo apt-get install -y zlib1g-dev g++
           fi
-          pip install torch==2.5.1
+          pip install torch matplotlib
 
       - name: Install Triton
         run: |
@@ -176,10 +177,11 @@ jobs:
         run: |
           echo "RUNNER_TARGET_OS: ${RUNNER_TARGET_OS}"
           python3 -m pip install --upgrade pip
-          python3 -m pip install wheel cmake==3.24 ninja pytest-xdist lit pybind11 matplotlib pandas expecttest
+          python3 -m pip install -r python/requirements.txt
+          python3 -m pip install -r python/test-requirements.txt
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev g++
-          pip install torch==2.5.1
+          pip install torch matplotlib
 
       - name: Install Ukernel XSMM
         id: ukernels-xsmm

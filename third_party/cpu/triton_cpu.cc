@@ -182,10 +182,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
           mlir::ConvertVectorToLLVMPassOptions opts;
           opts.reassociateFPReductions = reassoc_fp_reduction;
           // opts.force32BitVectorIndices = true;
-          opts.amx = true;
           // opts.armNeon = false;
           // opts.armSVE = false;
-          opts.x86Vector = true;
+          opts.x86 = true;
           // opts.vectorTransformsOptions();
           // TODO: Check whether we need these parameters.
           // Somehow it helps arm.
