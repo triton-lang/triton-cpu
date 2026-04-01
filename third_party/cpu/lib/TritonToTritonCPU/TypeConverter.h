@@ -12,8 +12,6 @@ public:
   using TypeConverter::convertType;
 
   TritonToTritonCPUTypeConverter();
-
-  Type convertTritonPointerType(triton::PointerType type);
 };
 
 #endif

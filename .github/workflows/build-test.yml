@@ -128,7 +128,9 @@ jobs:
       - name: Run python unit tests for Intel
         if: matrix.config.target-os == 'ubuntu'
         run: |
-          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu -m cpu \
+            python/test/unit/language/test_core.py \
+            python/test/unit/language/test_tensor_descriptor.py
           python -m pytest -s -n 32 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \

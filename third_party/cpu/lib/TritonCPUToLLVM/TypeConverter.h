@@ -18,6 +18,7 @@ public:
 
   Type convertTritonPointerType(triton::PointerType type);
   Type convertTritonTensorType(RankedTensorType type);
+  Type convertTritonTensorDescType(TensorDescType type);
 };
 
 #endif

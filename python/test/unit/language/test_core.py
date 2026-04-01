@@ -3247,7 +3247,6 @@ def test_trans_2d(dtype_str, shape, perm, device):
     np.testing.assert_equal(to_numpy(expected), to_numpy(actual))
 
 
-@pytest.mark.xfail(run=False, reason="tensor descriptors NYI")
 @pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", ["int32", "int8"])
