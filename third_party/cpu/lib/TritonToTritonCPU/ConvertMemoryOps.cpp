@@ -1,6 +1,5 @@
 #include "TypeConverter.h"
 
-#include "cpu/include/Analysis/TensorPtrShapeInfo.h"
 #include "cpu/include/TritonToTritonCPU/Passes.h"
 
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -45,11 +44,10 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
   using OpConversionPattern<OpT>::getTypeConverter;
 
   MemoryOpConversion(ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                     ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
                      TypeConverter &typeConverter, MLIRContext *context,
                      bool useGatherScatter)
       : OpConversionPattern<OpT>(typeConverter, context),
-        axisAnalysis(axisInfoAnalysis), shapeAnalysis(shapeInfoAnalysis) {
+        axisAnalysis(axisInfoAnalysis) {
     this->useGatherScatter = useGatherScatter;
   }
 
@@ -70,25 +68,6 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
     auto ptrTy = dyn_cast<RankedTensorType>(ptrs.getType()).getElementType();
     ptr = IntToPtrOp::create(rewriter, loc, ptrTy, ptr);
     return ptr;
-  }
-
-  Value extractMemRef(Location loc, Value ptr,
-                      ConversionPatternRewriter &rewriter) const {
-    auto tensorTy = dyn_cast<RankedTensorType>(
-        dyn_cast<PointerType>(ptr.getType()).getPointeeType());
-    auto elemTy = tensorTy.getElementType();
-    auto shapeInfo = shapeAnalysis.getPtrShapeInfo(ptr);
-    Type memRefTy;
-    if (shapeInfo && shapeInfo->getRank() > 0) {
-      auto layout =
-          StridedLayoutAttr::get(getContext(), 0, shapeInfo->getStrides());
-      memRefTy = MemRefType::get(shapeInfo->getShape(), elemTy, layout);
-    } else {
-      SmallVector<int64_t> dynVals(tensorTy.getRank(), ShapedType::kDynamic);
-      auto layout = StridedLayoutAttr::get(getContext(), 0, dynVals);
-      memRefTy = MemRefType::get(dynVals, elemTy, layout);
-    }
-    return ExtractMemRefOp::create(rewriter, loc, memRefTy, ptr);
   }
 
   Value convertOtherVal(triton::LoadOp loadOp,
@@ -160,93 +139,34 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
     llvm::transform(makeDescOp.getStrides(), std::back_inserter(strides),
                     getConstOrDynamic);
 
-    // Ignore signedness information in tensor descriptors for now.
-    auto elemTy = makeDescOp.getType().getBlockType().getElementType();
-    if (elemTy.isInteger() && !elemTy.isSignlessInteger())
-      elemTy = rewriter.getIntegerType(elemTy.getIntOrFloatBitWidth());
     auto memRefTy = MemRefType::get(
-        shape, elemTy,
+        shape, makeDescOp.getType().getSignlessBlockType().getElementType(),
         StridedLayoutAttr::get(getContext(), /*offset=*/0, strides));
 
-    // No need for an explicit extract operation, because tensor descriptors are
-    // immutable, and the tt.tensordesc type will be lowered to the same LLVM
-    // representation as the MemRef type.
-    return UnrealizedConversionCastOp::create(
-               rewriter, makeDescOp.getLoc(), memRefTy,
-               rewriter.getRemappedValue(makeDescOp))
-        .getResult(0);
+    return ExtractMemRefOp::create(rewriter, makeDescOp.getLoc(), memRefTy,
+                                   rewriter.getRemappedValue(makeDescOp));
   }
 
 protected:
   ModuleAxisInfoAnalysis &axisAnalysis;
-  ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis;
   bool useGatherScatter;
 };
 
 struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
   using MemoryOpConversion::MemoryOpConversion;
 
-  static Value
-  getPaddingValue(Location loc, Type type,
-                  const std::optional<triton::PaddingOption> &padding,
-                  ConversionPatternRewriter &rewriter) {
-    auto padding_option = padding.value_or(PaddingOption::PAD_ZERO);
-
-    TypedAttr attr;
-    switch (padding_option) {
-    case PaddingOption::PAD_ZERO:
-      attr = rewriter.getZeroAttr(type);
-      break;
-    case PaddingOption::PAD_NAN:
-      assert(!type.isIntOrIndex());
-      auto apNaN =
-          llvm::APFloat::getNaN(cast<FloatType>(type).getFloatSemantics());
-      attr = FloatAttr::get(type, apNaN);
-      break;
-    }
-
-    return arith::ConstantOp::create(rewriter, loc, attr);
-  }
-
   LogicalResult
   matchAndRewrite(triton::LoadOp loadOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = loadOp.getLoc();
-    auto mask = loadOp.getMask();
     auto ptr = loadOp.getPtr();
-    auto boundaryChecks = loadOp.getBoundaryCheck();
-
-    if (!triton::isTensorPointerType(ptr.getType())) {
-      auto axisInfo = axisAnalysis.getAxisInfo(ptr);
-      if (isContiguousRowMajorAccess(axisInfo, loadOp)) {
-        return lowerToContiguousRowMajor(loadOp, rewriter);
-      }
-      if (useGatherScatter && succeeded(lowerToGather(loadOp, rewriter))) {
-        return success();
-      }
-      return lowerToScalarLoads(loadOp, rewriter);
+    auto axisInfo = axisAnalysis.getAxisInfo(ptr);
+    if (isContiguousRowMajorAccess(axisInfo, loadOp)) {
+      return lowerToContiguousRowMajor(loadOp, rewriter);
     }
-
-    // TODO: support masks.
-    if (mask) {
-      llvm_unreachable("unsupported load op");
+    if (useGatherScatter && succeeded(lowerToGather(loadOp, rewriter))) {
+      return success();
     }
-
-    auto memRef = extractMemRef(loc, ptr, rewriter);
-    auto rank = dyn_cast<MemRefType>(memRef.getType()).getRank();
-    auto resTy = dyn_cast<VectorType>(
-        getTypeConverter()->convertType(loadOp.getResult().getType()));
-    auto indices = ExtractIndicesOp::create(rewriter, loc, ptr).getResults();
-    SmallVector<bool, 4> inBounds(rank, true);
-    for (auto dim : boundaryChecks) {
-      inBounds[dim] = false;
-    }
-    Value padding = getPaddingValue(loc, resTy.getElementType(),
-                                    loadOp.getPadding(), rewriter);
-    auto vecRead = vector::TransferReadOp::create(rewriter, loc, resTy, memRef,
-                                                  indices, padding, inBounds);
-    rewriter.replaceOp(loadOp, vecRead);
-    return success();
+    return lowerToScalarLoads(loadOp, rewriter);
   }
 
   LogicalResult
@@ -344,8 +264,7 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
 
   LogicalResult lowerToScalarLoads(triton::LoadOp loadOp,
                                    ConversionPatternRewriter &rewriter) const {
-    // Scalar loads and boundary checks are not expected.
-    assert(loadOp.getBoundaryCheck().empty());
+    // Scalar loads are not expected.
     assert(isa<RankedTensorType>(loadOp.getType()));
 
     auto loc = loadOp.getLoc();
@@ -404,39 +323,15 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
   LogicalResult
   matchAndRewrite(triton::StoreOp storeOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = storeOp.getLoc();
-    auto mask = storeOp.getMask();
     auto ptr = storeOp.getPtr();
-    auto boundaryChecks = storeOp.getBoundaryCheck();
-
-    if (!triton::isTensorPointerType(ptr.getType())) {
-      auto axisInfo = axisAnalysis.getAxisInfo(ptr);
-      if (isContiguousRowMajorAccess(axisInfo, storeOp)) {
-        return lowerToContiguousRowMajor(storeOp, rewriter);
-      }
-      if (useGatherScatter && succeeded(lowerToScatter(storeOp, rewriter))) {
-        return success();
-      }
-      return lowerToScalarStores(storeOp, rewriter);
+    auto axisInfo = axisAnalysis.getAxisInfo(ptr);
+    if (isContiguousRowMajorAccess(axisInfo, storeOp)) {
+      return lowerToContiguousRowMajor(storeOp, rewriter);
     }
-
-    // TODO: support masks.
-    if (mask) {
-      llvm_unreachable("unsupported store op");
+    if (useGatherScatter && succeeded(lowerToScatter(storeOp, rewriter))) {
+      return success();
     }
-
-    auto value = rewriter.getRemappedValue(storeOp.getValue());
-    auto memRef = extractMemRef(loc, ptr, rewriter);
-    auto rank = dyn_cast<MemRefType>(memRef.getType()).getRank();
-    auto indices = ExtractIndicesOp::create(rewriter, loc, ptr).getResults();
-    SmallVector<bool, 4> inBounds(rank, true);
-    for (auto dim : boundaryChecks) {
-      inBounds[dim] = false;
-    }
-    auto vecWrite = vector::TransferWriteOp::create(rewriter, loc, value,
-                                                    memRef, indices, inBounds);
-    rewriter.replaceOp(storeOp, vecWrite);
-    return success();
+    return lowerToScalarStores(storeOp, rewriter);
   }
 
   LogicalResult
@@ -537,8 +432,7 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
 
   LogicalResult lowerToScalarStores(triton::StoreOp storeOp,
                                     ConversionPatternRewriter &rewriter) const {
-    // Scalar stores and boundary checks are not expected.
-    assert(storeOp.getBoundaryCheck().empty());
+    // Scalar stores are not expected.
     assert(isa<RankedTensorType>(storeOp.getValue().getType()));
 
     auto loc = storeOp.getLoc();
@@ -735,15 +629,13 @@ struct ConvertMemoryOps
     ModuleOp mod = getOperation();
 
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
-    ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
     MemoryOpConversionTarget convTarget(*context);
     TritonToTritonCPUTypeConverter pointerConverter;
     RewritePatternSet patterns(context);
     patterns.add<LoadOpConversion, StoreOpConversion, CpuStoreOpConversion,
                  CpuLoadOpConversion, DescriptorLoadOpConversion,
                  DescriptorStoreOpConversion>(
-        axisInfoAnalysis, shapeInfoAnalysis, pointerConverter, context,
-        useGatherScatter);
+        axisInfoAnalysis, pointerConverter, context, useGatherScatter);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

@@ -133,10 +133,6 @@ struct ScalarizeOpConversion : public OpRewritePattern<OpTy> {
   bool shouldScalarizeOpGeneric(OpTy scalarizeOp) const {
 
     auto ptr = scalarizeOp.getPtr();
-    if (triton::isTensorPointerType(ptr.getType())) {
-      return false;
-    }
-
     auto axisInfo = axisAnalysis.getAxisInfo(ptr);
     if (isContiguousRowMajorAccess(axisInfo, scalarizeOp)) {
       return false;
@@ -144,11 +140,6 @@ struct ScalarizeOpConversion : public OpRewritePattern<OpTy> {
 
     auto [basePtr, offset] = getMemoryBaseOffset(scalarizeOp);
     if (skipGatherScatter && basePtr && offset) {
-      return false;
-    }
-
-    // Scalar memory ops and boundary checks are not expected.
-    if (!scalarizeOp.getBoundaryCheck().empty()) {
       return false;
     }
 

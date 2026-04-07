@@ -152,56 +152,34 @@ MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
     return buf;
   }
 
-  auto extractMemRef = buf.memRef.getDefiningOp<ExtractMemRefOp>();
-  if (!extractMemRef) {
-    LDBG("  Skip steps. No ExtractMemRefOp.");
-    return buf;
-  }
-
-  ExtractIndicesOp extractIndices;
+  SmallVector<Value> step;
   for (auto index : buf.indices) {
-    auto def = index.getDefiningOp<ExtractIndicesOp>();
-    if (!def || (extractIndices && def != extractIndices)) {
-      LDBG("  Skip steps. No ExtractIndicesOp.");
-      return buf;
+    // The Triton kernel won't be using the `index` type, so if there is a cast,
+    // look through it.
+    if (auto cast =
+            dyn_cast_if_present<arith::IndexCastOp>(index.getDefiningOp()))
+      index = cast.getIn();
+
+    // Represent loop-invariant values and constants as a null `Value`.
+    if (forOp.isDefinedOutsideOfLoop(index) ||
+        getConstantIntValue(index).has_value()) {
+      step.emplace_back();
+      continue;
     }
-    extractIndices = def;
-  }
 
-  if (extractMemRef.getSrc() != extractIndices.getSrc()) {
-    LDBG("  Skip steps. Mismatched ExtractMemRefOp and ExtractIndicesOp.");
+    // If the index is the induction var, then use the loop's step.
+    // TODO: Make this more sophisticated.
+    if (index == forOp.getInductionVar()) {
+      step.push_back(forOp.getStep());
+      continue;
+    }
+    LDBG("  Skip steps. Relation to induction variable not understood.");
     return buf;
   }
-
-  BlockArgument blockPtrArg = dyn_cast<BlockArgument>(extractMemRef.getSrc());
-  if (!blockPtrArg) {
-    LDBG("  Skip steps. No block pointer arg.");
-    return buf;
-  }
-
-  OpOperand *yieldOp = forOp.getTiedLoopYieldedValue(blockPtrArg);
-  if (!yieldOp) {
-    LDBG("  Skip steps. No block pointer in yield.");
-    return buf;
-  }
-
-  auto advance = yieldOp->get().getDefiningOp<AdvanceOp>();
-  if (!advance) {
-    LDBG("  Skip steps. No AdvanceOp.");
-    return buf;
-  }
-
-  if (advance.getPtr() != blockPtrArg) {
-    LDBG("  Skip steps. AdvanceOp doesn't use block pointer arg.");
-    return buf;
-  }
-
-  buf.step = advance.getOffsets();
-  LLVM_DEBUG(DBGS() << "  Step: ";
+  buf.step = step;
+  LLVM_DEBUG(DBGS() << "  step: ";
              llvm::interleaveComma(buf.step, llvm::dbgs());
              llvm::dbgs() << "\n");
-  buf.origBlockPtr = forOp.getTiedLoopInit(blockPtrArg)->get();
-
   return buf;
 }
 

@@ -2,7 +2,6 @@
 
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 
-#include "cpu/include/Analysis/TensorPtrShapeInfo.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -86,17 +85,6 @@ struct DotOpCandidate {
   MemBuffer lhsBuf;
   MemBuffer rhsBuf;
 };
-
-bool isLoopInvariant(SmallVector<Value> vals, LoopLikeOpInterface loopLike) {
-  for (Value val : vals) {
-    LDBG("Checking value for invariance: " << val);
-    if (!loopLike.isDefinedOutsideOfLoop(val)) {
-      LDBG("  Not invariant");
-      return false;
-    }
-  }
-  return true;
-}
 
 bool checkElemTypesOneDNN(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
                           Type resElemTy) {
@@ -245,15 +233,11 @@ bool isUkernelsCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
                                      /*allowVnni*/ allowVnni);
 
   // Check if we can fuse dot op loop into a single brgemm call.
-  if (candidate.isAccLoopCarried && !candidate.lhsBuf.step.empty() &&
-      !candidate.rhsBuf.step.empty()) {
-    SmallVector<Value> valsToCheckInvariance;
-    valsToCheckInvariance.append(candidate.lhsBuf.step);
-    valsToCheckInvariance.append(candidate.rhsBuf.step);
-
-    auto forOp = dyn_cast<scf::ForOp>(op->getParentOp());
-    candidate.canFuseLoop = isLoopInvariant(valsToCheckInvariance, forOp);
-  }
+  // `MemBuffer::step` is empty if not all offsets are provably loop-invariant,
+  // cf. `triton::cpu::findInputBuffer`.
+  candidate.canFuseLoop = candidate.isAccLoopCarried &&
+                          !candidate.lhsBuf.step.empty() &&
+                          !candidate.rhsBuf.step.empty();
   return true;
 }
 
@@ -287,36 +271,6 @@ Value addMemrefSubView(PatternRewriter &rewriter, Location loc,
   return memRef_view;
 }
 
-std::pair<Value, SmallVector<Value>>
-extractBufferFromBlockPtr(Value blockPtr, triton::cpu::DotOp &dotOp,
-                          ModuleTensorPtrShapeInfoAnalysis &shapeAnalysis,
-                          PatternRewriter &rewriter) {
-  Location loc = dotOp.getLoc();
-  MLIRContext *ctx = dotOp.getContext();
-
-  auto extractMemref = [&](Value ptr) {
-    auto tensorTy = dyn_cast<RankedTensorType>(
-        dyn_cast<PointerType>(ptr.getType()).getPointeeType());
-    auto elemTy = tensorTy.getElementType();
-    auto shapeInfo = shapeAnalysis.getPtrShapeInfo(ptr);
-    Type memRefTy;
-    if (shapeInfo && shapeInfo->getRank() > 0) {
-      auto layout = StridedLayoutAttr::get(ctx, 0, shapeInfo->getStrides());
-      memRefTy = MemRefType::get(shapeInfo->getShape(), elemTy, layout);
-    } else {
-      SmallVector<int64_t> dynVals(tensorTy.getRank(), ShapedType::kDynamic);
-      auto layout = StridedLayoutAttr::get(ctx, 0, dynVals);
-      memRefTy = MemRefType::get(dynVals, elemTy, layout);
-    }
-    return ExtractMemRefOp::create(rewriter, loc, memRefTy, ptr);
-  };
-
-  auto memRef = extractMemref(blockPtr);
-  auto indices = ExtractIndicesOp::create(rewriter, loc, blockPtr).getResults();
-
-  return {memRef, indices};
-}
-
 Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
                          ArrayRef<Value> steps, PatternRewriter &rewriter) {
   Value res = index_cst(0);
@@ -329,6 +283,8 @@ Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
                             << "\n\tstep: " << steps[i]);
     Value stride = strides[i];
     Value step = steps[i];
+    if (!step)
+      step = arith::ConstantIndexOp::create(rewriter, loc, 0);
     if (!step.getType().isIndex())
       step = op_index_cast(rewriter.getIndexType(), step);
     Value mul = op_muli(step, stride);
@@ -369,10 +325,8 @@ Value computeStepInBytes(Location loc, memref::ExtractStridedMetadataOp meta,
 //   with loaded acc
 //   - The original dot op is removed
 
-LogicalResult
-convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
-                 ModuleTensorPtrShapeInfoAnalysis &shapeInfoAnalysis,
-                 PatternRewriter &rewriter) {
+LogicalResult convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
+                               PatternRewriter &rewriter) {
   triton::cpu::DotOp op = candidate.op;
   Location loc = op.getLoc();
   VectorType resTy = cast<VectorType>(op.getResult().getType());
@@ -388,17 +342,46 @@ convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
     // add loop carried-dependencies for accumulator tiles and accInitTiles
     // will be used as initializers for them.
     rewriter.setInsertionPoint(forOp);
-    auto memrefsFromBlockPtr =
-        extractBufferFromBlockPtr(candidate.lhsBuf.origBlockPtr, candidate.op,
-                                  shapeInfoAnalysis, rewriter);
-    candidate.lhsBuf.memRef = memrefsFromBlockPtr.first;
-    candidate.lhsBuf.indices = memrefsFromBlockPtr.second;
 
-    memrefsFromBlockPtr =
-        extractBufferFromBlockPtr(candidate.rhsBuf.origBlockPtr, candidate.op,
-                                  shapeInfoAnalysis, rewriter);
-    candidate.rhsBuf.memRef = memrefsFromBlockPtr.first;
-    candidate.rhsBuf.indices = memrefsFromBlockPtr.second;
+    auto setInitialIndices = [&](MemBuffer &buf) -> LogicalResult {
+      if (!forOp.isDefinedOutsideOfLoop(buf.memRef)) {
+        LDBG("MemRef defined inside of loop; expected LICM to run before.");
+        return failure();
+      }
+
+      SmallVector<Value> initialIndices;
+      for (Value idx : buf.indices) {
+        // Use index as-is if it's already loop-invariant.
+        if (forOp.isDefinedOutsideOfLoop(idx)) {
+          initialIndices.push_back(idx);
+          continue;
+        }
+
+        // Otherwise, check if the index is the (optionally cast) induction
+        // variable; then the initial value is the loop's lower bound.
+        // TODO: make this more sophisticated
+        if (auto cast =
+                dyn_cast_if_present<arith::IndexCastOp>(idx.getDefiningOp()))
+          idx = cast.getIn();
+        if (idx == forOp.getInductionVar()) {
+          Value initIdx = forOp.getLowerBound();
+          if (!initIdx.getType().isIndex())
+            initIdx = arith::IndexCastOp::create(
+                rewriter, loc, rewriter.getIndexType(), initIdx);
+          initialIndices.push_back(initIdx);
+          continue;
+        }
+
+        LDBG("Don't understand relation between index and induction variable.");
+        return failure();
+      }
+      buf.indices = initialIndices;
+      return success();
+    };
+
+    if (failed(setInitialIndices(candidate.lhsBuf)) ||
+        failed(setInitialIndices(candidate.rhsBuf)))
+      return failure();
 
     LDBG("Loading accumulator to tiles before the loop.");
 
@@ -495,13 +478,11 @@ convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
        << candidate.lhsBuf.memRef << "\n "
        << "           indices " << candidate.lhsBuf.indices.size() << "\n"
        << "              step " << candidate.lhsBuf.step.size() << "\n"
-       << "          blockptr " << candidate.lhsBuf.origBlockPtr << "\n"
        << "        transposed " << candidate.lhsBuf.transposed << "\n} \n");
   LDBG("rhsBuf: {   memref "
        << candidate.rhsBuf.memRef << "\n "
        << "           indices " << candidate.rhsBuf.indices.size() << "\n"
        << "              step " << candidate.rhsBuf.step.size() << "\n"
-       << "          blockptr " << candidate.rhsBuf.origBlockPtr << "\n"
        << "        transposed " << candidate.rhsBuf.transposed << "\n} \n");
 
   triton::cpu::BrgemmExecute::create(rewriter, loc, brgemm, lhsSubView,
@@ -520,19 +501,8 @@ convertCandidate(DotOpCandidate &candidate, Ukernels ukernels,
     // We might need to cast back to the original type.
     newVal = maybeCast(loc, newVal, resElemTy, rewriter);
 
-    // Determine the order of loop-carried values.
-    const auto &forInits = forOp.getInits();
-    auto lhsBlockPtrIt = llvm::find(forInits, candidate.lhsBuf.origBlockPtr);
-    auto rhsBlockPtrIt = llvm::find(forInits, candidate.rhsBuf.origBlockPtr);
-    assert(lhsBlockPtrIt != forInits.end() && rhsBlockPtrIt != forInits.end());
-
-    SmallVector<Value> forResults{3, newVal};
-    forResults[std::distance(forInits.begin(), lhsBlockPtrIt)] =
-        candidate.lhsBuf.memRef;
-    forResults[std::distance(forInits.begin(), rhsBlockPtrIt)] =
-        candidate.rhsBuf.memRef;
-
-    rewriter.replaceAllOpUsesWith(forOp, forResults);
+    // We don't expect any further loop-carried values.
+    rewriter.replaceAllOpUsesWith(forOp, newVal);
     return success();
   }
 
@@ -572,8 +542,6 @@ struct ConvertDotOpToUkernelOps
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
-    ModuleTensorPtrShapeInfoAnalysis shapeInfoAnalysis(mod);
-
     SmallVector<DotOpCandidate, 2> candidates;
     mod->walk([&candidates, this](triton::cpu::DotOp op) {
       DotOpCandidate candidate;
@@ -596,8 +564,7 @@ struct ConvertDotOpToUkernelOps
       LDBG("Starting conversion of candidate: " << candidate.op);
       PatternRewriter rewriter(context);
       rewriter.setInsertionPoint(candidate.op);
-      if (succeeded(convertCandidate(candidate, ukernels, shapeInfoAnalysis,
-                                     rewriter))) {
+      if (succeeded(convertCandidate(candidate, ukernels, rewriter))) {
         LDBG("Conversion succeeded!");
       } else {
         LDBG("Conversion failed!");

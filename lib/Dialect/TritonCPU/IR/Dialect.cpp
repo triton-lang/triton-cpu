@@ -24,12 +24,6 @@ using namespace mlir::triton::cpu;
 #define GET_ATTRDEF_CLASSES
 #include "triton/Dialect/TritonCPU/IR/TritonCPUAttrDefs.cpp.inc"
 
-void ExtractMemRefOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                                  MLIRContext *context) {}
-
-void ExtractIndicesOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                                   MLIRContext *context) {}
-
 /// Parse an attribute registered to this dialect.
 ::mlir::Attribute
 TritonCPUDialect::parseAttribute(::mlir::DialectAsmParser &parser,
@@ -41,16 +35,6 @@ TritonCPUDialect::parseAttribute(::mlir::DialectAsmParser &parser,
 void TritonCPUDialect::printAttribute(::mlir::Attribute attr,
                                       ::mlir::DialectAsmPrinter &os) const {
   llvm_unreachable("print stub called");
-}
-
-void ExtractIndicesOp::build(::mlir::OpBuilder &builder,
-                             ::mlir::OperationState &state, Value src) {
-  assert(triton::isTensorPointerType(src.getType()) &&
-         "Unexecpeted source type");
-  auto tensorTy = dyn_cast<RankedTensorType>(
-      dyn_cast<PointerType>(src.getType()).getPointeeType());
-  SmallVector<Type> resTypes(tensorTy.getRank(), builder.getIndexType());
-  build(builder, state, resTypes, src);
 }
 
 void TritonCPUDialect::initialize() {

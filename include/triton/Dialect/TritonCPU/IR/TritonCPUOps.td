@@ -40,45 +40,20 @@ def TTC_ExternElementwiseOp : TTC_Op<"extern_elementwise", [Elementwise,
     let assemblyFormat = "operands attr-dict `:` functional-type(operands, $result)";
 }
 
-def TTC_ExtractMemRefOp : TTC_Op<"extract_memref", [NoMemoryEffect]> {
-  let summary = "Extract base memref from a block pointer";
+def TTC_ExtractMemRefOp : TTC_Op<"extract_memref", [Pure]> {
+  let summary = "Extract base memref from a tensor descriptor";
 
   let description = [{
-    Extract base memref from a block pointer. It covers whole base tensor memory,
-    not only the block referenced. Base pointer, shape, and strides are used
-    in the resulting memref. Offsets and block shape are ignored.
-
+    Extract base memref from a tensor descriptor. It covers whole base tensor
+    memory, not only the block referenced. Base pointer, shape, and strides are
+    used in the resulting memref; block shape is ignored.
   }];
 
-  let arguments = (ins TT_TensorPtr:$src);
+  let arguments = (ins TT_TensorDescType:$desc);
 
   let results = (outs AnyRankedOrUnrankedMemRef:$result);
 
-  let hasCanonicalizer = 1;
-
-  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
-}
-
-def TTC_ExtractIndicesOp : TTC_Op<"extract_indices", [NoMemoryEffect]> {
-  let summary = "Extract indices from a block pointer.";
-
-  let description = [{
-    Extract indices that can be used to access the block using its base memref.
-    Indices are supposed to be used for vector loads/stores with the base
-    memref extracted from the same block pointer.
-  }];
-
-  let arguments = (ins TT_TensorPtr:$src);
-
-  let results = (outs Variadic<Index>:$result);
-
-  let builders = [
-    OpBuilder<(ins "Value":$src)>
-  ];
-
-  let hasCanonicalizer = 1;
-
-  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+  let assemblyFormat = "$desc attr-dict `:` type($desc) `->` type($result)";
 }
 
 def TTC_PtrToMemRefOp : TTC_Op<"ptr_to_memref", [NoMemoryEffect]> {

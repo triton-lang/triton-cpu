@@ -105,7 +105,7 @@ Value convertMemRefToI16(Value memRef, PatternRewriter &rewriter) {
                                 castOp.getSrc());
   } else if (auto extractOp = memRef.getDefiningOp<ExtractMemRefOp>()) {
     res = ExtractMemRefOp::create(rewriter, memRef.getLoc(), newMemRefTy,
-                                  extractOp.getSrc());
+                                  extractOp.getDesc());
   } else {
     auto allocaOp = memRef.getDefiningOp<memref::AllocaOp>();
     assert(allocaOp && "Unexpected memref producer");

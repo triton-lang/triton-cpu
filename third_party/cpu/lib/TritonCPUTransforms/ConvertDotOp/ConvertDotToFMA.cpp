@@ -197,30 +197,21 @@ SmallVector<Value> computePrefetchIndices(Location loc, const MemBuffer &buf,
                                           int64_t iters,
                                           PatternRewriter &rewriter) {
   SmallVector<Value> scaledStep;
-  Value itersVal;
+  Value itersVal = arith::ConstantIndexOp::create(rewriter, loc, iters);
   for (auto step : buf.step) {
-    if (iters == 1)
-      scaledStep.push_back(arith::IndexCastOp::create(
-          rewriter, loc, rewriter.getIndexType(), step));
-    else if (auto cstOp = dyn_cast<arith::ConstantOp>(step.getDefiningOp())) {
-      int64_t oldVal = cast<IntegerAttr>(cstOp.getValue()).getInt();
-      scaledStep.push_back(
-          arith::ConstantIndexOp::create(rewriter, loc, oldVal * iters));
-    } else {
-      if (!itersVal)
-        itersVal =
-            arith::ConstantIntOp::create(rewriter, loc, step.getType(), iters);
-      scaledStep.push_back(arith::IndexCastOp::create(
-          rewriter, loc, rewriter.getIndexType(),
-          arith::MulIOp::create(rewriter, loc, step.getType(), step,
-                                itersVal)));
-    }
+    if (!step)
+      // Index is loop-invariant.
+      step = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    else if (!step.getType().isIndex())
+      step = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
+                                        step);
+    scaledStep.push_back(
+        rewriter.createOrFold<arith::MulIOp>(loc, step, itersVal));
   }
 
   SmallVector<Value> res;
-  for (int64_t i = 0; i < scaledStep.size(); ++i)
-    res.push_back(arith::AddIOp::create(rewriter, loc, buf.indices[i].getType(),
-                                        buf.indices[i], scaledStep[i]));
+  for (auto [index, step] : llvm::zip(buf.indices, scaledStep))
+    res.push_back(rewriter.createOrFold<arith::AddIOp>(loc, index, step));
   return res;
 }
 

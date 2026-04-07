@@ -14,7 +14,6 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-import logging
 from pathlib import Path
 
 from types import ModuleType

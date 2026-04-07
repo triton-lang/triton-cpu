@@ -43,74 +43,6 @@ public:
   }
 };
 
-// TODO: use enums to access struct fields.
-struct ExtractMemRefOpConversion : public OpConversionPattern<ExtractMemRefOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(ExtractMemRefOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-    Value tensorPtrStruct = rewriter.getRemappedValue(op.getSrc());
-    auto memRefTy = cast<MemRefType>(op.getType());
-    auto rank = memRefTy.getRank();
-    auto memRefStructTy = getTypeConverter()->convertType(op.getType());
-    auto memRefStructFields =
-        cast<LLVM::LLVMStructType>(memRefStructTy).getBody();
-    auto i64Ty = IntegerType::get(getContext(), 64);
-
-    auto copyValue = [&](Value to, int64_t idxFrom, int64_t idxTo) {
-      auto valueTy = memRefStructFields[idxTo];
-      Value val = LLVM::ExtractValueOp::create(rewriter, loc, valueTy,
-                                               tensorPtrStruct, idxFrom);
-      return LLVM::InsertValueOp::create(rewriter, loc, memRefStructTy, to, val,
-                                         idxTo);
-    };
-
-    Value res = b.undef(memRefStructTy);
-    // Copy base.
-    res = copyValue(res, 0, 1);
-    // Use 0 offset.
-    res = LLVM::InsertValueOp::create(rewriter, loc, memRefStructTy, res,
-                                      b.i64_val(0), 2);
-    // Copy shape.
-    res = copyValue(res, 2, 3);
-    // Copy strides.
-    res = copyValue(res, 3, 4);
-
-    rewriter.replaceOp(op, res);
-
-    return success();
-  }
-};
-
-struct ExtractIndicesOpConversion
-    : public OpConversionPattern<ExtractIndicesOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(ExtractIndicesOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    auto loc = op.getLoc();
-    Value tensorPtrStruct = rewriter.getRemappedValue(op.getSrc());
-    auto rank = op.getNumResults();
-    auto i64Ty = IntegerType::get(getContext(), 64);
-    SmallVector<Value> indices;
-
-    for (int64_t i = 0; i < rank; i++) {
-      indices.push_back(
-          LLVM::ExtractValueOp::create(rewriter, loc, i64Ty, tensorPtrStruct,
-                                       SmallVector<int64_t, 2>{1, i}));
-    }
-
-    rewriter.replaceOp(op, indices);
-
-    return success();
-  }
-};
-
 struct PtrToMemRefOpConversion : public OpConversionPattern<PtrToMemRefOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -125,75 +57,6 @@ struct PtrToMemRefOpConversion : public OpConversionPattern<PtrToMemRefOp> {
     Value res = b.undef(memRefStructTy);
     res =
         LLVM::InsertValueOp::create(rewriter, loc, memRefStructTy, res, ptr, 1);
-    rewriter.replaceOp(op, res);
-
-    return success();
-  }
-};
-
-struct MakeTensorPtrOpConversion : public OpConversionPattern<MakeTensorPtrOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(MakeTensorPtrOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-    auto structTy = getTypeConverter()->convertType(op.getType());
-    auto i64Ty = IntegerType::get(getContext(), 64);
-
-    auto insertArray = [&](Value structVal, auto values, int64_t idx,
-                           Type zextTo = nullptr) {
-      for (int64_t i = 0; i < static_cast<int64_t>(values.size()); ++i) {
-        Value val = values[i];
-        if (zextTo)
-          val = LLVM::ZExtOp::create(rewriter, loc, zextTo, val);
-        structVal =
-            LLVM::InsertValueOp::create(rewriter, loc, structTy, structVal, val,
-                                        SmallVector<int64_t, 2>{idx, i});
-      }
-      return structVal;
-    };
-
-    Value res = b.undef(structTy);
-    // 0 - base pointer.
-    auto base = rewriter.getRemappedValue(op.getBase());
-    res = LLVM::InsertValueOp::create(rewriter, loc, structTy, res, base,
-                                      ArrayRef<int64_t>{0});
-    // 1 - array<rank> for offsets. Promote values to i64.
-    res = insertArray(res, op.getOffsets(), 1, i64Ty);
-    // 2 - array<rank> for shape.
-    res = insertArray(res, op.getShape(), 2);
-    // 3 - array<rank> for strides.
-    res = insertArray(res, op.getStrides(), 3);
-
-    rewriter.replaceOp(op, res);
-
-    return success();
-  }
-};
-
-struct AdvanceOpConversion : public OpConversionPattern<AdvanceOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(AdvanceOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto i64Ty = IntegerType::get(getContext(), 64);
-    Value res = rewriter.getRemappedValue(op.getPtr());
-    Type structTy = res.getType();
-    auto offsets = op.getOffsets();
-
-    for (int64_t i = 0; i < offsets.size(); ++i) {
-      auto oldOffset = LLVM::ExtractValueOp::create(
-          rewriter, loc, i64Ty, res, SmallVector<int64_t, 2>{1, i});
-      auto step = LLVM::SExtOp::create(rewriter, loc, i64Ty, offsets[i]);
-      auto newOffset = LLVM::AddOp::create(rewriter, loc, oldOffset, step);
-      res = LLVM::InsertValueOp::create(rewriter, loc, structTy, res, newOffset,
-                                        SmallVector<int64_t, 2>{1, i});
-    }
-
     rewriter.replaceOp(op, res);
 
     return success();
@@ -335,6 +198,17 @@ struct MakeTensorDescOpConversion
   }
 };
 
+struct ExtractMemRefOpConversion : public OpConversionPattern<ExtractMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ExtractMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getDesc());
+    return success();
+  }
+};
+
 struct MemoryOpToLLVM
     : public triton::impl::MemoryOpToLLVMBase<MemoryOpToLLVM> {
   using MemoryOpToLLVMBase::MemoryOpToLLVMBase;
@@ -350,10 +224,6 @@ struct MemoryOpToLLVM
     TritonLLVMConversionTarget convTarget(*context);
 
     RewritePatternSet patterns(context);
-    patterns.add<ExtractMemRefOpConversion>(typeConverter, context);
-    patterns.add<MakeTensorPtrOpConversion>(typeConverter, context);
-    patterns.add<AdvanceOpConversion>(typeConverter, context);
-    patterns.add<ExtractIndicesOpConversion>(typeConverter, context);
     patterns.add<LoadOpConversion>(typeConverter, context);
     patterns.add<StoreOpConversion>(typeConverter, context);
     patterns.add<PtrToIntOpConversion>(typeConverter, context);
@@ -363,6 +233,7 @@ struct MemoryOpToLLVM
     patterns.add<PtrBitcastConversion>(typeConverter, context);
     patterns.add<PtrSelectConversion>(typeConverter, context);
     patterns.add<MakeTensorDescOpConversion>(typeConverter, context);
+    patterns.add<ExtractMemRefOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

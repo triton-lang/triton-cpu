@@ -19,12 +19,11 @@ struct MemBuffer {
   Value memRef;
   SmallVector<Value> indices;
   // If buffer is accessed in a loop and indices are advanced
-  // on each iteration, then step can hold those index offsets.
-  // Empty step doesn't mean indices are loop invariant.
+  // on each iteration, then `step` can hold those index offsets.
+  // A null `Value` means the corresponding index is loop invariant.
+  // If `step` is empty, we couldn't determine whether the offset is
+  // loop-invariant or not for at least one index.
   SmallVector<Value> step;
-  // When step is known, this field holds the initial block
-  // pointer value used in the first iteration.
-  Value origBlockPtr = nullptr;
   // True if buffer holds transposed value.
   bool transposed = false;
   // Ttue if buffer holds value in VNNI (interleaved to groups of 32bit)

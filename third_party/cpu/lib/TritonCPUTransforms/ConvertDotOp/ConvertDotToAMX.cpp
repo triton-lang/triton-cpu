@@ -320,9 +320,14 @@ Value loadWithPrefetch(Location loc, VectorType ty, Value memRef,
   if (!step.empty()) {
     SmallVector<Value> prefetchIndices;
     for (int64_t i = 0; i < indices.size(); ++i) {
-      prefetchIndices.push_back(op_addi(
-          indices[i], arith::IndexCastOp::create(
-                          rewriter, loc, rewriter.getIndexType(), step[i])));
+      Value s = step[i];
+      if (!s)
+        // Index is loop-invariant.
+        s = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      else if (!step[i].getType().isIndex())
+        s = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
+                                       s);
+      prefetchIndices.push_back(op_addi(indices[i], s));
     }
     memref::PrefetchOp::create(rewriter, loc, memRef, prefetchIndices, false, 1,
                                true);

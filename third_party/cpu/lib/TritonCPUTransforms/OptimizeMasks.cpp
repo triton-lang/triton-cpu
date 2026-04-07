@@ -236,7 +236,7 @@ AffineExpr buildMinOrMaxExpr(Value val, bool isSigned, bool isMax,
     auto attr = def.getValueAttr();
     if (auto intAttr = dyn_cast<IntegerAttr>(attr))
       return getAffineConstantExpr(intAttr.getInt(), val.getContext());
-    if (auto denseAttr = dyn_cast<DenseIntOrFPElementsAttr>(attr)) {
+    if (auto denseAttr = dyn_cast<DenseTypedElementsAttr>(attr)) {
       auto valueBegin = denseAttr.value_begin<APInt>();
       auto valueEnd = denseAttr.value_end<APInt>();
       auto cmpVals = [isSigned](const APInt &lhs, const APInt &rhs) {
