@@ -75,8 +75,8 @@ def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZ
         A_OUT_STRIDE_BLOCK_K: tl.constexpr = BLOCK_SIZE_M * BLOCK_SIZE_K
         for in_block_k in tl.range(in_block_n, A_OUT_BLOCKS_K, N // BLOCK_SIZE_N):
             a_out_block_k = in_block_k
-            a_in_desc = tl.make_tensor_descriptor(
-                base=in_a, shape=(M, K), strides=(K, 1), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K))
+            a_in_desc = tl.make_tensor_descriptor(base=in_a, shape=(M, K), strides=(K, 1),
+                                                  block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K))
             a_out_desc = tl.make_tensor_descriptor(
                 base=out_a, shape=(A_OUT_BLOCKS_M, A_OUT_BLOCKS_K, A_OUT_BLOCK_SIZE_M, A_OUT_BLOCK_SIZE_K),
                 strides=(A_OUT_STRIDE_BLOCK_M, A_OUT_STRIDE_BLOCK_K, A_OUT_STRIDE_M, 1),
@@ -98,8 +98,8 @@ def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZ
         for in_block_k in tl.range(in_block_m, K // BLOCK_SIZE_K, M // BLOCK_SIZE_M):
             b_out_block_k = in_block_n if TRANSPOSED_B else in_block_k
             b_out_block_n = in_block_k if TRANSPOSED_B else in_block_n
-            b_in_desc = tl.make_tensor_descriptor(
-                base=in_b, shape=(K, N), strides=(N, 1), block_shape=(1, BLOCK_SIZE_N))
+            b_in_desc = tl.make_tensor_descriptor(base=in_b, shape=(K, N), strides=(N, 1),
+                                                  block_shape=(1, BLOCK_SIZE_N))
             b_out_desc = tl.make_tensor_descriptor(
                 base=out_b, shape=(B_OUT_BLOCKS_K, B_OUT_BLOCKS_N, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N),
                 strides=(B_OUT_STRIDE_BLOCK_K, B_OUT_STRIDE_BLOCK_N, PACKED_BLOCK_SIZE_N, 1),
@@ -109,17 +109,19 @@ def block_transpose_combined_kernel(in_a, out_a, in_b, out_b, M, N, K, BLOCK_SIZ
                     (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM, in_block_n * BLOCK_SIZE_N)).reshape((BLOCK_SIZE_N, ))
                 if B_PACKED_NUM > 1:
                     row2 = b_in_desc.load(
-                        (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 1, in_block_n * BLOCK_SIZE_N)).reshape((BLOCK_SIZE_N, ))
+                        (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 1, in_block_n * BLOCK_SIZE_N)).reshape(
+                            (BLOCK_SIZE_N, ))
                     if B_PACKED_NUM > 2:
                         row3 = b_in_desc.load(
-                            (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 2, in_block_n * BLOCK_SIZE_N)).reshape((BLOCK_SIZE_N, ))
+                            (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 2, in_block_n * BLOCK_SIZE_N)).reshape(
+                                (BLOCK_SIZE_N, ))
                         row4 = b_in_desc.load(
-                            (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 3, in_block_n * BLOCK_SIZE_N)).reshape((BLOCK_SIZE_N, ))
+                            (in_block_k * BLOCK_SIZE_K + i * B_PACKED_NUM + 3, in_block_n * BLOCK_SIZE_N)).reshape(
+                                (BLOCK_SIZE_N, ))
                         row1 = tl.ravel(tl.join(row1, row3))
                         row2 = tl.ravel(tl.join(row2, row4))
                     row1 = tl.ravel(tl.join(row1, row2))
-                b_out_desc.store(
-                    (b_out_block_k, b_out_block_n, i, 0), row1.reshape((1, 1, 1, PACKED_BLOCK_SIZE_N)))
+                b_out_desc.store((b_out_block_k, b_out_block_n, i, 0), row1.reshape((1, 1, 1, PACKED_BLOCK_SIZE_N)))
 
 
 # Matmul kernel that computes a single output block [BLOCK_SIZE_M, BLOCK_SIZE_N]. LHS can be in the
@@ -183,11 +185,12 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, BLOCK_SIZE_M: tl.constexpr, BLOC
     a_desc = tl.make_tensor_descriptor(base=a_ptr, shape=(A_BLOCKS_M, A_BLOCKS_K, A_BLOCK_SIZE_M, A_BLOCK_SIZE_K),
                                        strides=(a_stride_block_m, a_stride_block_k, a_stride_m, a_stride_k),
                                        block_shape=(1, 1, A_BLOCK_SIZE_M, A_BLOCK_SIZE_K))
-    b_desc = tl.make_tensor_descriptor(base=b_ptr,
-                                       shape=(K // BLOCK_SIZE_K, N // BLOCK_SIZE_N, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N),
-                                       strides=(b_stride_block_k, b_stride_block_n, b_stride_k, b_stride_n),
-                                       block_shape=(1, 1, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N))
-    c_desc = tl.make_tensor_descriptor(base=c_ptr, shape=(M, N), strides=(N, 1), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N))
+    b_desc = tl.make_tensor_descriptor(
+        base=b_ptr, shape=(K // BLOCK_SIZE_K, N // BLOCK_SIZE_N, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N),
+        strides=(b_stride_block_k, b_stride_block_n, b_stride_k, b_stride_n),
+        block_shape=(1, 1, PACKED_BLOCK_SIZE_K, PACKED_BLOCK_SIZE_N))
+    c_desc = tl.make_tensor_descriptor(base=c_ptr, shape=(M, N), strides=(N, 1),
+                                       block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N))
 
     c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=OUT_DTYPE)
     for block_k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):

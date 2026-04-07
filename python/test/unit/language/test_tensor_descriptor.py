@@ -11,6 +11,7 @@ from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_cpu
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton import CompilationError
 
+
 @pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
@@ -212,6 +213,7 @@ def test_tensor_descriptor_load3d(dtype_str, K_BLOCK, device):
     actual = unwrap_tensor(out)
     expect = unwrap_tensor(inp)
     torch.testing.assert_close(expect, actual)
+
 
 @pytest.mark.cpu
 @pytest.mark.interpreter
