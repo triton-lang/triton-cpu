@@ -137,9 +137,10 @@ void init_triton_nvidia_passes_ttgpuir(py::module &&m) {
               capability, ptxVersion));
         });
   m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, int32_t capability, int32_t ptxVersion) {
+        [](mlir::PassManager &pm, int32_t capability, int32_t ptxVersion,
+           bool enableConcurrencySanitizer) {
           pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPass(
-              capability, ptxVersion));
+              capability, ptxVersion, enableConcurrencySanitizer));
         });
 }
 
@@ -185,6 +186,7 @@ void init_triton_nvidia_passes_ttnvgpuir(py::module &&m) {
                      ttng::createTritonNvidiaGPUOptimizeTMemLayoutsPass);
   ADD_PASS_WRAPPER_0("add_interleave_tmem",
                      ttng::createTritonNvidiaGPUInterleaveTMemPass);
+  ttng::registerConSanNVIDIAHooks();
 }
 
 void init_triton_nvidia_passes_nvws(py::module &&m) {
