@@ -140,21 +140,15 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
 
   void castToIndex(ValueRange values, SmallVectorImpl<Value> &indexValues,
                    ConversionPatternRewriter &rewriter, Location loc) const {
+    Type indexTy = rewriter.getIndexType();
     for (Value v : values)
-      indexValues.push_back(arith::IndexCastOp::create(
-          rewriter, loc, rewriter.getIndexType(), v));
-  }
-
-  Type getSignlessElementTy(RankedTensorType tensorTy) const {
-    auto elemTy = tensorTy.getElementType();
-    if (elemTy.isInteger() && !elemTy.isSignlessInteger())
-      elemTy =
-          IntegerType::get(elemTy.getContext(), elemTy.getIntOrFloatBitWidth());
-    return elemTy;
+      indexValues.push_back(
+          arith::IndexCastOp::create(rewriter, loc, indexTy, v));
   }
 
   Value extractMemRef(MakeTensorDescOp makeDescOp,
                       ConversionPatternRewriter &rewriter) const {
+    // TODO: Extend shape analysis to handle tensor descriptors?
     auto getConstOrDynamic = [&](Value v) {
       if (auto maybeConst = getConstantIntValue(rewriter.getRemappedValue(v)))
         return *maybeConst;
@@ -166,8 +160,12 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
     llvm::transform(makeDescOp.getStrides(), std::back_inserter(strides),
                     getConstOrDynamic);
 
+    // Ignore signedness information in tensor descriptors for now.
+    auto elemTy = makeDescOp.getType().getBlockType().getElementType();
+    if (elemTy.isInteger() && !elemTy.isSignlessInteger())
+      elemTy = rewriter.getIntegerType(elemTy.getIntOrFloatBitWidth());
     auto memRefTy = MemRefType::get(
-        shape, getSignlessElementTy(makeDescOp.getType().getBlockType()),
+        shape, elemTy,
         StridedLayoutAttr::get(getContext(), /*offset=*/0, strides));
 
     // No need for an explicit extract operation, because tensor descriptors are
@@ -649,17 +647,16 @@ struct DescriptorLoadOpConversion
 
     auto loc = descLoadOp.getLoc();
 
-    auto blockTy = makeDescOp.getType().getBlockType();
-    auto elemTy = getSignlessElementTy(blockTy);
-    auto vectorTy = VectorType::get(blockTy.getShape(), elemTy);
+    auto vectorTy =
+        cast<VectorType>(getTypeConverter()->convertType(descLoadOp.getType()));
 
     Value memRef = extractMemRef(makeDescOp, rewriter);
 
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
 
-    auto paddingVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getZeroAttr(elemTy));
+    auto paddingVal = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
 
     // TODO: The descriptor-load op doesn't give any in-bounds guarantees
     // (instead expects hardware support), so the transfer_read op needs to do
