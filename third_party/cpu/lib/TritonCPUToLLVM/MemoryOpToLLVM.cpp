@@ -4,6 +4,7 @@
 
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
@@ -308,6 +309,32 @@ struct PtrSelectConversion : public OpConversionPattern<arith::SelectOp> {
   }
 };
 
+struct MakeTensorDescOpConversion
+    : public OpConversionPattern<MakeTensorDescOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(MakeTensorDescOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto structTy = getTypeConverter()->convertType(op.getType());
+    auto i64Ty = IntegerType::get(getContext(), 64);
+
+    auto d = MemRefDescriptor::poison(rewriter, loc, structTy);
+    d.setAlignedPtr(rewriter, loc, adaptor.getBase());
+    d.setConstantOffset(rewriter, loc, 0);
+    for (auto [i, v] : llvm::enumerate(op.getShape()))
+      d.setSize(rewriter, loc, i,
+                LLVM::ZExtOp::create(rewriter, loc, i64Ty, v));
+    for (auto [i, v] : llvm::enumerate(op.getStrides()))
+      d.setStride(rewriter, loc, i, v);
+
+    rewriter.replaceOp(op, static_cast<Value>(d));
+
+    return success();
+  }
+};
+
 struct MemoryOpToLLVM
     : public triton::impl::MemoryOpToLLVMBase<MemoryOpToLLVM> {
   using MemoryOpToLLVMBase::MemoryOpToLLVMBase;
@@ -335,6 +362,7 @@ struct MemoryOpToLLVM
     patterns.add<AddPtrOpConversion>(typeConverter, context);
     patterns.add<PtrBitcastConversion>(typeConverter, context);
     patterns.add<PtrSelectConversion>(typeConverter, context);
+    patterns.add<MakeTensorDescOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();

@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Index/IR/IndexOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -135,6 +136,45 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
     vector::TransferWriteOp::create(rewriter, vals.getLoc(), vec, memRef,
                                     indices);
     return memRef;
+  }
+
+  void castToIndex(ValueRange values, SmallVectorImpl<Value> &indexValues,
+                   ConversionPatternRewriter &rewriter, Location loc) const {
+    Type indexTy = rewriter.getIndexType();
+    for (Value v : values)
+      indexValues.push_back(
+          arith::IndexCastOp::create(rewriter, loc, indexTy, v));
+  }
+
+  Value extractMemRef(MakeTensorDescOp makeDescOp,
+                      ConversionPatternRewriter &rewriter) const {
+    // TODO: Extend shape analysis to handle tensor descriptors?
+    auto getConstOrDynamic = [&](Value v) {
+      if (auto maybeConst = getConstantIntValue(rewriter.getRemappedValue(v)))
+        return *maybeConst;
+      return ShapedType::kDynamic;
+    };
+    SmallVector<int64_t> shape, strides;
+    llvm::transform(makeDescOp.getShape(), std::back_inserter(shape),
+                    getConstOrDynamic);
+    llvm::transform(makeDescOp.getStrides(), std::back_inserter(strides),
+                    getConstOrDynamic);
+
+    // Ignore signedness information in tensor descriptors for now.
+    auto elemTy = makeDescOp.getType().getBlockType().getElementType();
+    if (elemTy.isInteger() && !elemTy.isSignlessInteger())
+      elemTy = rewriter.getIntegerType(elemTy.getIntOrFloatBitWidth());
+    auto memRefTy = MemRefType::get(
+        shape, elemTy,
+        StridedLayoutAttr::get(getContext(), /*offset=*/0, strides));
+
+    // No need for an explicit extract operation, because tensor descriptors are
+    // immutable, and the tt.tensordesc type will be lowered to the same LLVM
+    // representation as the MemRef type.
+    return UnrealizedConversionCastOp::create(
+               rewriter, makeDescOp.getLoc(), memRefTy,
+               rewriter.getRemappedValue(makeDescOp))
+        .getResult(0);
   }
 
 protected:
@@ -583,6 +623,80 @@ struct CpuLoadOpConversion : public MemoryOpConversion<triton::cpu::LoadOp> {
   }
 };
 
+struct DescriptorLoadOpConversion
+    : public MemoryOpConversion<DescriptorLoadOp> {
+  using MemoryOpConversion::MemoryOpConversion;
+
+  LogicalResult
+  matchAndRewrite(DescriptorLoadOp descLoadOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (descLoadOp.getCache() != CacheModifier::NONE)
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Non-default cache modifier not yet supported");
+    if (descLoadOp.getEvict() != EvictionPolicy::NORMAL)
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Non-default eviction policy not yet supported");
+
+    auto makeDescOp = descLoadOp.getDesc().getDefiningOp<MakeTensorDescOp>();
+    if (!makeDescOp)
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Host-side tensor descriptors are unsupported");
+    if (makeDescOp.getPadding() != PaddingOption::PAD_ZERO)
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Non-default padding mode not yet supported");
+
+    auto loc = descLoadOp.getLoc();
+
+    auto vectorTy =
+        cast<VectorType>(getTypeConverter()->convertType(descLoadOp.getType()));
+
+    Value memRef = extractMemRef(makeDescOp, rewriter);
+
+    SmallVector<Value> indices;
+    castToIndex(adaptor.getIndices(), indices, rewriter, loc);
+
+    auto paddingVal = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
+
+    // TODO: The descriptor-load op doesn't give any in-bounds guarantees
+    // (instead expects hardware support), so the transfer_read op needs to do
+    // bounds checking.
+    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
+        descLoadOp, vectorTy, memRef, indices, paddingVal);
+
+    return success();
+  }
+};
+
+struct DescriptorStoreOpConversion
+    : public MemoryOpConversion<DescriptorStoreOp> {
+  using MemoryOpConversion::MemoryOpConversion;
+
+  LogicalResult
+  matchAndRewrite(DescriptorStoreOp descStoreOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto makeDescOp = descStoreOp.getDesc().getDefiningOp<MakeTensorDescOp>();
+    if (!makeDescOp)
+      return rewriter.notifyMatchFailure(
+          descStoreOp, "Host-side tensor descriptors are unsupported");
+
+    auto loc = descStoreOp.getLoc();
+
+    Value memRef = extractMemRef(makeDescOp, rewriter);
+
+    SmallVector<Value> indices;
+    castToIndex(adaptor.getIndices(), indices, rewriter, loc);
+
+    // TODO: The descriptor-store op doesn't give any in-bounds guarantees
+    // (instead expects hardware support), so the transfer_write op needs to do
+    // bounds checking.
+    rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
+        descStoreOp, adaptor.getSrc(), memRef, indices);
+
+    return success();
+  }
+};
+
 class MemoryOpConversionTarget : public ConversionTarget {
 public:
   explicit MemoryOpConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
@@ -594,7 +708,9 @@ public:
     addLegalDialect<TritonCPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
-    addIllegalOp<mlir::triton::cpu::StoreOp, mlir::triton::cpu::LoadOp>();
+    addIllegalOp<mlir::triton::cpu::StoreOp, mlir::triton::cpu::LoadOp,
+                 mlir::triton::DescriptorLoadOp,
+                 mlir::triton::DescriptorStoreOp>();
 
     // Allow only scalar loads and stores.
     addDynamicallyLegalOp<triton::LoadOp>([](triton::LoadOp loadOp) {
@@ -624,9 +740,10 @@ struct ConvertMemoryOps
     TritonToTritonCPUTypeConverter pointerConverter;
     RewritePatternSet patterns(context);
     patterns.add<LoadOpConversion, StoreOpConversion, CpuStoreOpConversion,
-                 CpuLoadOpConversion>(axisInfoAnalysis, shapeInfoAnalysis,
-                                      pointerConverter, context,
-                                      useGatherScatter);
+                 CpuLoadOpConversion, DescriptorLoadOpConversion,
+                 DescriptorStoreOpConversion>(
+        axisInfoAnalysis, shapeInfoAnalysis, pointerConverter, context,
+        useGatherScatter);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
