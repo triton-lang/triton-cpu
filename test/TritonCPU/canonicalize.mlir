@@ -16,12 +16,12 @@ module {
     %c16_i64 = arith.constant 16 : i64
     %c256_i64 = arith.constant 256 : i64
     %c512_i64 = arith.constant 512 : i64
-    %in_p = tt.make_tensor_descriptor %arg0, [%c2_i32, %c2_i32, %c16_i32, %c16_i32], [%c512_i64, %c256_i64, %c16_i64, %c1_i64] : <bf16>, <tensor<1x1x16x16xbf16>>
-    %out_p = tt.make_tensor_descriptor %arg1, [%c16_i32, %c16_i32], [%c16_i64, %c1_i64] : <bf16>, <tensor<16x16xbf16>>
-    %memref1 = triton_cpu.extract_memref %in_p : <tensor<1x1x16x16xbf16>> -> memref<2x2x16x16xbf16, strided<[512, 256, 16, 1]>>
+    %in_p = tt.make_tensor_descriptor %arg0, [%c2_i32, %c2_i32, %c16_i32, %c16_i32], [%c512_i64, %c256_i64, %c16_i64, %c1_i64] : <bf16>, <1x1x16x16xbf16>
+    %out_p = tt.make_tensor_descriptor %arg1, [%c16_i32, %c16_i32], [%c16_i64, %c1_i64] : <bf16>, <16x16xbf16>
+    %memref1 = triton_cpu.extract_memref %in_p : <1x1x16x16xbf16> -> memref<2x2x16x16xbf16, strided<[512, 256, 16, 1]>>
     %val1 = vector.transfer_read %memref1[%c0, %c0, %c0, %c0], %cst {in_bounds = [true, true, true, true]} : memref<2x2x16x16xbf16, strided<[512, 256, 16, 1]>>, vector<1x1x16x16xbf16>
     %val2 = vector.shape_cast %val1 : vector<1x1x16x16xbf16> to vector<16x16xbf16>
-    %memref2 = triton_cpu.extract_memref %out_p : <tensor<16x16xbf16>> -> memref<16x16xbf16, strided<[16, 1]>>
+    %memref2 = triton_cpu.extract_memref %out_p : <16x16xbf16> -> memref<16x16xbf16, strided<[16, 1]>>
     vector.transfer_write %val2, %memref2[%c0, %c0] {in_bounds = [true, true]} : vector<16x16xbf16>, memref<16x16xbf16, strided<[16, 1]>>
     tt.return
   }

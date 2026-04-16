@@ -4,8 +4,8 @@
 // Replacement of a triton_cpu.dot operation with triton_cpu.brgemm_execute
 
 // CHECK-LABEL: @test_two_tiles_four_mulf
-// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <tensor<16x64xbf16>> -> memref<16x64xbf16, strided<[64, 1]>>
-// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %1 : <tensor<64x32xbf16>> -> memref<64x32xbf16, strided<[32, 1]>>
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <16x64xbf16> -> memref<16x64xbf16, strided<[64, 1]>>
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %1 : <64x32xbf16> -> memref<64x32xbf16, strided<[32, 1]>>
 // CHECK:       %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x32xf32>
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_MEMREF]] : memref<16x64xbf16, strided<[64, 1]>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_MEMREF]] : memref<64x32xbf16, strided<[32, 1]>> -> memref<bf16>, index, index, index, index, index
@@ -31,15 +31,15 @@ module {
     %c32_i32 = arith.constant 32 : i32 loc(#loc)
     %c64_i32 = arith.constant 64 : i32 loc(#loc)
     %c0 = arith.constant 0 : index loc(#loc)
-    %0 = tt.make_tensor_descriptor %arg0, [%c16_i32, %c64_i32], [%c64_i64, %c1_i64] : <bf16>, <tensor<16x64xbf16>> loc(#loc)
-    %1 = tt.make_tensor_descriptor %arg1, [%c64_i32, %c32_i32], [%c32_i64, %c1_i64] : <bf16>, <tensor<64x32xbf16>> loc(#loc)
-    %2 = tt.make_tensor_descriptor %arg2, [%c16_i32, %c32_i32], [%c32_i64, %c1_i64] : <f32>, <tensor<16x32xf32>> loc(#loc)
-    %3 = triton_cpu.extract_memref %0 : <tensor<16x64xbf16>> -> memref<16x64xbf16, strided<[64, 1]>> loc(#loc)
+    %0 = tt.make_tensor_descriptor %arg0, [%c16_i32, %c64_i32], [%c64_i64, %c1_i64] : <bf16>, <16x64xbf16> loc(#loc)
+    %1 = tt.make_tensor_descriptor %arg1, [%c64_i32, %c32_i32], [%c32_i64, %c1_i64] : <bf16>, <64x32xbf16> loc(#loc)
+    %2 = tt.make_tensor_descriptor %arg2, [%c16_i32, %c32_i32], [%c32_i64, %c1_i64] : <f32>, <16x32xf32> loc(#loc)
+    %3 = triton_cpu.extract_memref %0 : <16x64xbf16> -> memref<16x64xbf16, strided<[64, 1]>> loc(#loc)
     %5 = vector.transfer_read %3[%c0, %c0], %cst {in_bounds = [true, true]} : memref<16x64xbf16, strided<[64, 1]>>, vector<16x64xbf16> loc(#loc)
-    %6 = triton_cpu.extract_memref %1 : <tensor<64x32xbf16>> -> memref<64x32xbf16, strided<[32, 1]>> loc(#loc)
+    %6 = triton_cpu.extract_memref %1 : <64x32xbf16> -> memref<64x32xbf16, strided<[32, 1]>> loc(#loc)
     %8 = vector.transfer_read %6[%c0, %c0], %cst {in_bounds = [true, true]} : memref<64x32xbf16, strided<[32, 1]>>, vector<64x32xbf16> loc(#loc)
     %9 = triton_cpu.dot %5, %8, %cst_0, inputPrecision = ieee : vector<16x64xbf16> * vector<64x32xbf16> -> vector<16x32xf32> loc(#loc)
-    %10 = triton_cpu.extract_memref %2 : <tensor<16x32xf32>> -> memref<16x32xf32, strided<[32, 1]>> loc(#loc)
+    %10 = triton_cpu.extract_memref %2 : <16x32xf32> -> memref<16x32xf32, strided<[32, 1]>> loc(#loc)
     vector.transfer_write %9, %10[%c0, %c0] {in_bounds = [true, true]} : vector<16x32xf32>, memref<16x32xf32, strided<[32, 1]>> loc(#loc)
     tt.return loc(#loc)
   } loc(#loc)
@@ -50,8 +50,8 @@ module {
 // More complicated case with a loop that can be replaced with single triton_cpu.brgemm_execute.
 
 // CHECK-LABEL: @test_loop_acc_two_blocks
-// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <tensor<64x64xbf16>> -> memref<64x128xbf16, strided<[128, 1]>>
-// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %1 : <tensor<64x32xbf16>> -> memref<128x32xbf16, strided<[32, 1]>>
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <64x64xbf16> -> memref<64x128xbf16, strided<[128, 1]>>
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %1 : <64x32xbf16> -> memref<128x32xbf16, strided<[32, 1]>>
 // CHECK:       %[[IDX_0:.+]] = arith.index_cast %c0_i32 : i32 to index
 // CHECK:       %[[LOOP_LENGTH:.+]] = arith.subi %c128{{.*}}, %c0{{.*}} : i32
 // CHECK:       %[[NUM_BATCHES_INT:.+]] = arith.divui %[[LOOP_LENGTH]], %c64{{.*}} : i32
@@ -94,11 +94,11 @@ module {
     %c32_i32 = arith.constant 32 : i32 loc(#loc)
     %c128_i32 = arith.constant 128 : i32 loc(#loc)
     %c0 = arith.constant 0 : index loc(#loc)
-    %0 = tt.make_tensor_descriptor %arg0, [%c64_i32, %c128_i32], [%c128_i64, %c1_i64] : <bf16>, <tensor<64x64xbf16>> loc(#loc)
-    %1 = tt.make_tensor_descriptor %arg1, [%c128_i32, %c32_i32], [%c32_i64, %c1_i64] : <bf16>, <tensor<64x32xbf16>> loc(#loc)
-    %2 = tt.make_tensor_descriptor %arg2, [%c64_i32, %c32_i32], [%c32_i64, %c1_i64] : <f32>, <tensor<64x32xf32>> loc(#loc)
-    %a_ref = triton_cpu.extract_memref %0 : <tensor<64x64xbf16>> -> memref<64x128xbf16, strided<[128, 1]>> loc(#loc)
-    %b_ref = triton_cpu.extract_memref %1 : <tensor<64x32xbf16>> -> memref<128x32xbf16, strided<[32, 1]>> loc(#loc)
+    %0 = tt.make_tensor_descriptor %arg0, [%c64_i32, %c128_i32], [%c128_i64, %c1_i64] : <bf16>, <64x64xbf16> loc(#loc)
+    %1 = tt.make_tensor_descriptor %arg1, [%c128_i32, %c32_i32], [%c32_i64, %c1_i64] : <bf16>, <64x32xbf16> loc(#loc)
+    %2 = tt.make_tensor_descriptor %arg2, [%c64_i32, %c32_i32], [%c32_i64, %c1_i64] : <f32>, <64x32xf32> loc(#loc)
+    %a_ref = triton_cpu.extract_memref %0 : <64x64xbf16> -> memref<64x128xbf16, strided<[128, 1]>> loc(#loc)
+    %b_ref = triton_cpu.extract_memref %1 : <64x32xbf16> -> memref<128x32xbf16, strided<[32, 1]>> loc(#loc)
     %3 = scf.for %arg3 = %c0_i32 to %c128_i32 step %c64_i32 iter_args(%arg4 = %cst_0) -> (vector<64x32xf32>)  : i32 {
       %k = arith.index_cast %arg3 : i32 to index loc(#loc)
       %8 = vector.transfer_read %a_ref[%c0, %k], %cst {in_bounds = [true, true]} : memref<64x128xbf16, strided<[128, 1]>>, vector<64x64xbf16> loc(#loc)
@@ -106,7 +106,7 @@ module {
       %12 = triton_cpu.dot %8, %11, %arg4, inputPrecision = ieee : vector<64x64xbf16> * vector<64x32xbf16> -> vector<64x32xf32> loc(#loc)
       scf.yield %12 : vector<64x32xf32> loc(#loc)
     } loc(#loc)
-    %c_ref = triton_cpu.extract_memref %2 : <tensor<64x32xf32>> -> memref<64x32xf32, strided<[32, 1]>> loc(#loc)
+    %c_ref = triton_cpu.extract_memref %2 : <64x32xf32> -> memref<64x32xf32, strided<[32, 1]>> loc(#loc)
     vector.transfer_write %3, %c_ref[%c0, %c0] {in_bounds = [true, true]} : vector<64x32xf32>, memref<64x32xf32, strided<[32, 1]>> loc(#loc)
     tt.return loc(#loc)
   } loc(#loc)
@@ -119,8 +119,8 @@ module {
 // injected in it's body.
 
 // CHECK-LABEL: @test_loop_with_transpose
-// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <tensor<1x1x32x32xbf16>> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
-// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <tensor<1x1x16x64xbf16>> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>>
+// CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
+// CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <1x1x16x64xbf16> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>>
 // CHECK:       %[[LHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
 // CHECK:       %[[RHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
 // CHECK:       %[[RES_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xf32>
@@ -186,17 +186,17 @@ module {
     %17 = arith.extsi %14 : i32 to i64 loc(#loc)
     %18 = arith.extsi %15 : i32 to i64 loc(#loc)
     %19 = arith.extsi %16 : i32 to i64 loc(#loc)
-    %20 = tt.make_tensor_descriptor %arg0, [%14, %15, %c32_i32, %c32_i32], [%19, %c1024_i64, %c32_i64, %c1_i64] : <bf16>, <tensor<1x1x32x32xbf16>> loc(#loc)
-    %a_ref = triton_cpu.extract_memref %20 : <tensor<1x1x32x32xbf16>> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>> loc(#loc)
+    %20 = tt.make_tensor_descriptor %arg0, [%14, %15, %c32_i32, %c32_i32], [%19, %c1024_i64, %c32_i64, %c1_i64] : <bf16>, <1x1x32x32xbf16> loc(#loc)
+    %a_ref = triton_cpu.extract_memref %20 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>> loc(#loc)
     %21 = arith.divsi %arg4, %c32_i32 : i32 loc(#loc)
     %22 = arith.extsi %21 : i32 to i64 loc(#loc)
-    %23 = tt.make_tensor_descriptor %arg1, [%15, %21, %c16_i32, %c64_i32], [%c1024_i64, %19, %c64_i64, %c1_i64] : <bf16>, <tensor<1x1x16x64xbf16>> loc(#loc)
-    %b_ref = triton_cpu.extract_memref %23 : <tensor<1x1x16x64xbf16>> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>> loc(#loc)
+    %23 = tt.make_tensor_descriptor %arg1, [%15, %21, %c16_i32, %c64_i32], [%c1024_i64, %19, %c64_i64, %c1_i64] : <bf16>, <1x1x16x64xbf16> loc(#loc)
+    %b_ref = triton_cpu.extract_memref %23 : <1x1x16x64xbf16> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>> loc(#loc)
     %24 = arith.muli %11, %c32_i32 : i32 loc(#loc)
     %25 = arith.muli %13, %c32_i32 : i32 loc(#loc)
     %26 = arith.extsi %arg3 : i32 to i64 loc(#loc)
     %27 = arith.extsi %arg4 : i32 to i64 loc(#loc)
-    %28 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%27, %c1_i64] : <f32>, <tensor<32x32xf32>> loc(#loc)
+    %28 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%27, %c1_i64] : <f32>, <32x32xf32> loc(#loc)
     %29 = arith.addi %arg5, %c31_i32 : i32 loc(#loc)
     %30 = arith.divsi %29, %c32_i32 : i32 loc(#loc)
     %31 = scf.for %arg6 = %c0_i32 to %30 step %c1_i32 iter_args(%arg7 = %cst_0) -> (vector<32x32xf32>)  : i32 {
@@ -214,7 +214,7 @@ module {
       %45 = triton_cpu.dot %40, %44, %arg7, inputPrecision = tf32 : vector<32x32xbf16> * vector<32x32xbf16> -> vector<32x32xf32> loc(#loc)
       scf.yield %45 : vector<32x32xf32> loc(#loc)
     } loc(#loc)
-    %c_ref = triton_cpu.extract_memref %28 : <tensor<32x32xf32>> -> memref<?x?xf32, strided<[?, 1]>> loc(#loc)
+    %c_ref = triton_cpu.extract_memref %28 : <32x32xf32> -> memref<?x?xf32, strided<[?, 1]>> loc(#loc)
     %idx_m = arith.index_cast %24 : i32 to index loc(#loc)
     %idx_n = arith.index_cast %25 : i32 to index loc(#loc)
     vector.transfer_write %31, %c_ref[%idx_m, %idx_n] {in_bounds = [true, true]} : vector<32x32xf32>, memref<?x?xf32, strided<[?, 1]>> loc(#loc)

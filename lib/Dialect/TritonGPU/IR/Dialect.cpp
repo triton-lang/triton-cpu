@@ -409,16 +409,27 @@ SmallVector<unsigned> orderPerDimImpl(const LinearLayout &ll,
   return order.takeVector();
 }
 
-bool isExpensiveCat(CatOp cat, Attribute targetEncoding) {
-  // If the new elements per thread is less than the old one, we will need to
-  // do convert encoding that goes through shared memory anyway. So we
-  // consider it as expensive.
-  RankedTensorType tensorTy = cat.getType();
-  auto totalElemsPerThread = gpu::getTotalElemsPerThread(tensorTy);
-  auto shape = tensorTy.getShape();
-  auto newTotalElemsPerThread =
-      gpu::getTotalElemsPerThread(targetEncoding, shape);
-  return newTotalElemsPerThread < totalElemsPerThread;
+static int64_t getNumNonBroadcastRegisters(ArrayRef<int64_t> shape,
+                                           Attribute encoding) {
+  auto kReg = StringAttr::get(encoding.getContext(), "register");
+  auto strippedLayout =
+      toLinearLayout(shape, encoding).removeZeroBasesAlongDim(kReg);
+  return strippedLayout.getInDimSize(kReg);
+}
+
+static int64_t getNumNonBroadcastRegisters(RankedTensorType tensorType) {
+  return getNumNonBroadcastRegisters(tensorType.getShape(),
+                                     tensorType.getEncoding());
+}
+
+bool isLegalCatEncoding(CatOp cat, Attribute targetEncoding) {
+  // Cat lowering concatenates the operands' unique register values. So the
+  // number of unique register values in the result must be equal to those in
+  // the operands.
+  int64_t operandRegs = getNumNonBroadcastRegisters(cat.getLhs().getType()) * 2;
+  int64_t resultRegs =
+      getNumNonBroadcastRegisters(cat.getType().getShape(), targetEncoding);
+  return resultRegs == operandRegs;
 }
 
 static LogicalResult
@@ -1408,7 +1419,6 @@ void AMDMfmaEncodingAttr::print(AsmPrinter &printer) const {
 
   maybePrintCGALayout(printer, getCGALayout());
 
-  auto tilesPerWarp = getTilesPerWarp();
   if (!hasUnitTilesPerWarp())
     printer << ", tilesPerWarp = [" << getTilesPerWarp() << "]";
 
@@ -3018,6 +3028,20 @@ struct TritonGPUInferLayoutInterface
     return success();
   }
 
+  LogicalResult verifyCatOpEncodingCompatibility(Operation *op) const override {
+    auto cat = cast<CatOp>(op);
+    int64_t operandRegs =
+        getNumNonBroadcastRegisters(cat.getLhs().getType()) * 2;
+    int64_t resultRegs = getNumNonBroadcastRegisters(cat.getType());
+    if (resultRegs != operandRegs) {
+      return op->emitError("tt.cat result encoding requires ")
+             << resultRegs
+             << " non-broadcast register values, but operands provide "
+             << operandRegs;
+    }
+    return success();
+  }
+
   // Given a src shape + encoding and a dst shape, our goal is to compute a dst
   // encoding that makes the reshape a "nop".  That is, if GPU thread [x,y,z]
   // contains elements [a,b,c,d] before the reshape, it contains those same
@@ -4246,12 +4270,10 @@ bool triton::gpu::areLayoutsEquivalent(ArrayRef<int64_t> shape,
 }
 
 bool triton::gpu::isInnermostContiguous(MemDescType type, unsigned numElems) {
-  ArrayRef<int64_t> shape = type.getShape();
   Attribute enc = type.getEncoding();
   MLIRContext *ctx = enc.getContext();
 
   LinearLayout actual = toLinearLayout(type);
-  StringAttr fastestIn = *actual.getInDimNames().begin();
 
   // Flatten actual outs in reverse order to produce a row-major flattening
   // of the layout
@@ -4444,6 +4466,8 @@ std::optional<int> triton::gpu::getWarpSpecializeTag(Operation *op) {
 }
 
 PaddedSharedEncodingAttr triton::gpu::getPaddedEncoding(Attribute encoding) {
+  if (!encoding)
+    return nullptr;
   if (auto padded = dyn_cast<PaddedSharedEncodingAttr>(encoding))
     return padded;
   if (auto partitioned = dyn_cast<PartitionedSharedEncodingAttr>(encoding))

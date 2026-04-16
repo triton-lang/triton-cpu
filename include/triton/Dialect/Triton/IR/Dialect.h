@@ -26,6 +26,7 @@ namespace triton {
 
 struct GlobalMemory : public SideEffects::Resource::Base<GlobalMemory> {
   StringRef getName() const final { return "<GlobalMemory>"; }
+  SideEffects::Resource *getParent() const override { return nullptr; }
 };
 
 class DialectInferLayoutInterface
@@ -89,6 +90,11 @@ public:
   virtual LogicalResult
   verifyDotOpEncodingCompatibility(Operation *op, Attribute operandEncodingA,
                                    Attribute operandEncodingB) const = 0;
+
+  // Verify that the encodings are compatible to be used together in a cat
+  // operation.
+  virtual LogicalResult
+  verifyCatOpEncodingCompatibility(Operation *op) const = 0;
 
   virtual LogicalResult
   inferFp4ToFpOpEncoding(ArrayRef<int64_t> shape, int axis, Attribute inEnc,

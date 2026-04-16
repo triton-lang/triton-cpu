@@ -600,26 +600,10 @@ bool isExpensiveLoadOrStore(Operation *op) {
   return true;
 }
 
-bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
-  if (!op)
-    return true;
-  if (isa<triton::LoadOp, triton::StoreOp>(op))
-    return isExpensiveLoadOrStore(op);
-  if (isa<triton::CatOp>(op))
-    return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
-  if (isa<triton::gpu::AsyncCopyGlobalToLocalOp, triton::AtomicRMWOp,
-          triton::AtomicCASOp, triton::DotOp>(op))
-    return true;
-  if (isa<scf::YieldOp, scf::ForOp, scf::IfOp, scf::WhileOp, scf::ConditionOp>(
-          op))
-    return true;
-  return false;
-}
-
 bool canUseResultEncoding(Operation *op, Attribute targetEncoding) {
   if (isa<triton::CatOp>(op))
-    return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
-                                        targetEncoding);
+    return triton::gpu::isLegalCatEncoding(cast<triton::CatOp>(op),
+                                           targetEncoding);
   if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
     if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr>(targetEncoding)) {
       auto srcEncoding = convert.getSrc().getType().getEncoding();
@@ -864,7 +848,6 @@ LogicalResult getConvertBackwardSlice(
 
   auto updateLayout = [&](Value value, Attribute encoding) {
     assert((isa<RankedTensorType>(value.getType())));
-    slice.insert(value);
     Attribute &existing = layout[value];
     if (existing && existing != encoding)
       return failure();
@@ -876,7 +859,8 @@ LogicalResult getConvertBackwardSlice(
     auto [currentValueUse, encoding] = queue.back();
     Value currentValue = currentValueUse->get();
     queue.pop_back();
-    if (!isa<RankedTensorType>(currentValue.getType()))
+    auto currentValueType = dyn_cast<RankedTensorType>(currentValue.getType());
+    if (!currentValueType)
       continue;
     // Skip propagating through for op/while op/ws op results for now.
     // TODO: enable this based on needs.
@@ -885,6 +869,11 @@ LogicalResult getConvertBackwardSlice(
       return failure();
     if (failed(updateLayout(currentValue, encoding)))
       return failure();
+    // If the value already has the desired encoding, we can stop here without
+    // adding it to the slice.
+    if (currentValueType.getEncoding() == encoding)
+      continue;
+    slice.insert(currentValue);
 
     // If there is already an existing conversion to the target layout, we don't
     // need to propagate to the operands.
@@ -915,6 +904,7 @@ LogicalResult getConvertBackwardSlice(
           continue;
         if (failed(updateLayout(result, encoding)))
           return failure();
+        slice.insert(result);
       }
       if (isFreeConvert(definingOp)) {
         enqueue(definingOp->getOpOperand(0), encoding);
@@ -945,13 +935,6 @@ LogicalResult getConvertBackwardSlice(
         }
         if (!srcEncoding)
           return failure();
-        // If the infered layout matches the original one we don't need to keep
-        // propagating.
-        if (auto operandType =
-                dyn_cast<RankedTensorType>(operand.get().getType())) {
-          if (srcEncoding == operandType.getEncoding())
-            continue;
-        }
         enqueue(operand, srcEncoding);
       }
       continue;
@@ -1544,7 +1527,7 @@ bool comesFromLoadOrBlockArg(Value v) {
   // If this is problematic we can totally drop them
   return isa<BlockArgument>(v) ||
          (v.getDefiningOp() &&
-          isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()));
+          isa<LoadOp, DescriptorLoadLikeOpInterface>(v.getDefiningOp()));
 }
 
 SmallVector<Value> getTiedArgs(Operation *op, int resultIdx) {

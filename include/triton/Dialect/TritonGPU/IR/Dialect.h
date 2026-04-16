@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 // TritonGPU depends on Triton
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -102,6 +103,7 @@ using LinearEncodingCache = Cache<CacheKey, LinearEncodingAttr>;
 namespace mlir::triton::gpu {
 struct SharedMemory : public SideEffects::Resource::Base<SharedMemory> {
   StringRef getName() const final { return "<SharedMemory>"; }
+  SideEffects::Resource *getParent() const override { return nullptr; }
 };
 
 // Convert a distributed layout to a linear encoding
@@ -260,7 +262,8 @@ SmallVector<unsigned> getMatrixOrder(unsigned rank, bool rowMajor);
 SmallVector<unsigned> getOrderForDotOperand(unsigned opIdx, unsigned rank,
                                             bool kContig);
 
-bool isExpensiveCat(CatOp cat, Attribute targetEncoding);
+// Return true if \p cat would be valid with result encoding \p targetEncoding.
+bool isLegalCatEncoding(CatOp cat, Attribute targetEncoding);
 
 // Return true if a view between the two types cannot be implemented as a no-op.
 bool isExpensiveView(ArrayRef<int64_t> srcShape, Attribute srcEncoding,
