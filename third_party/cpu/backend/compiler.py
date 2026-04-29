@@ -198,6 +198,8 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
+        if 'amx-tile' in self.cpu_features:
+            cpu.passes.ttcpuir.add_convert_dot_to_nanokernel(pm)
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification
             cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
@@ -315,7 +317,7 @@ class CPUBackend(BaseBackend):
     def make_so(src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
-            Path(asm_path).write_text(src)
+            Path(asm_path).write_text(src.replace('	.prefalign	4, .Lfunc_end0, nop', ''))
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
             ccflags = []

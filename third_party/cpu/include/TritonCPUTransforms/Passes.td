@@ -174,6 +174,30 @@ def ConvertDotGeneric : Pass<"triton-cpu-convert-dot-generic", "mlir::ModuleOp">
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir::ModuleOp"> {
+    let summary = "Convert dot product op to vector contraction and apply upstream patterns.";
+    let description = [{
+        TODO
+    }];
+
+    let options = [
+        Option<"target", "target",
+               "mlir::triton::cpu::InstructionSet", /*default*/"mlir::triton::cpu::InstructionSet::AVX2",
+               "Target instruction set for the nanokernel conversion.",
+               [{::llvm::cl::values(
+               clEnumValN(mlir::triton::cpu::InstructionSet::AVX2, "avx2",
+                "Use AVX2 as the target instruction set"),
+               clEnumValN(mlir::triton::cpu::InstructionSet::AMX, "amx",
+                "Use AMX as the target instruction set")
+              )}]>,
+    ];
+
+    let constructor = "mlir::triton::cpu::createConvertDotToNanokernel()";
+
+    let dependentDialects = ["mlir::vector::VectorDialect",
+                             "mlir::x86::X86Dialect"];
+}
+
 def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
     let summary = "Canonicalization pass.";
     let description = [{
