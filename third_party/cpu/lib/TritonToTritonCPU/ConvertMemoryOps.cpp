@@ -552,11 +552,12 @@ struct DescriptorLoadOpConversion
     auto paddingVal = arith::ConstantOp::create(
         rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
 
-    // TODO: The descriptor-load op doesn't give any in-bounds guarantees
-    // (instead expects hardware support), so the transfer_read op needs to do
-    // bounds checking.
+    // FIXME: Align tensor descriptor bounds-checking-semantics with vector
+    // transfer ops.
+    SmallVector<bool> inBounds(vectorTy.getRank(), true);
+
     rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
-        descLoadOp, vectorTy, memRef, indices, paddingVal);
+        descLoadOp, vectorTy, memRef, indices, paddingVal, inBounds);
 
     return success();
   }
@@ -581,11 +582,13 @@ struct DescriptorStoreOpConversion
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
 
-    // TODO: The descriptor-store op doesn't give any in-bounds guarantees
-    // (instead expects hardware support), so the transfer_write op needs to do
-    // bounds checking.
+    // FIXME: Align tensor descriptor bounds-checking-semantics with vector
+    // transfer ops.
+    SmallVector<bool> inBounds(
+        cast<VectorType>(adaptor.getSrc().getType()).getRank(), true);
+
     rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-        descStoreOp, adaptor.getSrc(), memRef, indices);
+        descStoreOp, adaptor.getSrc(), memRef, indices, inBounds);
 
     return success();
   }

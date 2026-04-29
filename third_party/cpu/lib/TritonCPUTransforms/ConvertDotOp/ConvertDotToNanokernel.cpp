@@ -147,13 +147,22 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   }
 
   auto checkTransferOp = [&](auto transferOp) {
-    if (!transferOp.getPermutationMap().isMinorIdentity()) {
-      LDBG("  Drop candidate. Transfer op has non-minor-identity permutation "
-           "map: "
+    bool hasNonIdentityPermutation =
+        !transferOp.getPermutationMap().isMinorIdentity();
+    bool hasMask = transferOp.getMask() != nullptr;
+
+    ArrayAttr inBounds = transferOp.getInBounds();
+    bool hasBoundsCheck =
+        std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
+          return !cast<mlir::BoolAttr>(attr).getValue();
+        });
+
+    if (hasNonIdentityPermutation || hasMask || hasBoundsCheck) {
+      LDBG("  Drop candidate. Transfer op has a permutation map, mask or needs "
+           "bounds checking: "
            << transferOp);
       return false;
     }
-    // TODO: Check in_bounds attribute as well.
     return true;
   };
 
@@ -488,7 +497,7 @@ struct ConvertDotToNanokernel
           LDBG("  blockK: " << candidate.blockK);
           LDBG("  LHS read: " << candidate.lhsRead);
           LDBG("  RHS read: " << candidate.rhsRead);
-          LDBG("  Acc read:" << candidate.accRead);
+          LDBG("  Acc read: " << candidate.accRead);
           LDBG("  Acc write: " << candidate.accWrite);
         });
         candidates.push_back(candidate);
