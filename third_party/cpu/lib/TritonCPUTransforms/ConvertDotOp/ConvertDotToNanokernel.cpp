@@ -64,7 +64,8 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   }
 
   if (target == InstructionSet::AMX)
-    return lhsElemTy.isBF16() && accElemTy.isF32();
+    return (lhsElemTy.isBF16() && accElemTy.isF32()) ||
+           (lhsElemTy.isInteger(8) && accElemTy.isInteger(32));
 
   LDBG("  Drop candidate. Unsupported type combination");
   return false;
@@ -76,10 +77,15 @@ bool checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
 
-  if (target == InstructionSet::AMX)
+  if (target == InstructionSet::AMX) {
     // Optimal configuration with 2x2 accumulator tiles.
-    return candidate.blockM == 32 && candidate.blockN == 32 &&
-           candidate.blockK == 32;
+    if (lhsTy.getElementType().isInteger(8))
+      return candidate.blockM == 32 && candidate.blockN == 32 &&
+             candidate.blockK == 64;
+    if (lhsTy.getElementType().isBF16())
+      return candidate.blockM == 32 && candidate.blockN == 32 &&
+             candidate.blockK == 32;
+  }
 
   LDBG("  Drop candidate. Unsupported shapes");
   return false;
@@ -255,9 +261,12 @@ void performRegisterTiling(DotOpCandidate &candidate, InstructionSet target,
   llvm::SmallDenseMap<Operation *, SmallVector<int64_t>> regTileSizes;
 
   assert(target == InstructionSet::AMX);
-  regTileSizes[candidate.contract] = {16, 16, 32};
-  regTileSizes[candidate.lhsRead] = {16, 32};
-  regTileSizes[candidate.rhsRead] = {32, 16};
+  int vnniFactor =
+      candidate.contract.getLhs().getType().getElementType().isInteger(8) ? 4
+                                                                          : 2;
+  regTileSizes[candidate.contract] = {16, 16, 16 * vnniFactor};
+  regTileSizes[candidate.lhsRead] = {16, 16 * vnniFactor};
+  regTileSizes[candidate.rhsRead] = {16 * vnniFactor, 16};
   regTileSizes[candidate.accRead] = {16, 16};
   regTileSizes[candidate.accWrite] = {16, 16};
 
