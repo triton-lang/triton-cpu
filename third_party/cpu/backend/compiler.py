@@ -16,7 +16,7 @@ import triton.backends.cpu.driver as cpu_driver
 
 def min_dot_size(target: GPUTarget):
     # Other architectures will only support 16,16,16
-    return lambda lhsType, rhsType: (4, 4, 4)
+    return lambda lhsType, rhsType: (1, 1, 1)
 
 
 VecLib = cpu.passes.ttcpuir.VecLib
@@ -198,8 +198,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
-        if 'amx-tile' in self.cpu_features:
-            cpu.passes.ttcpuir.add_convert_dot_to_nanokernel(pm)
+        cpu.passes.ttcpuir.add_convert_dot_to_nanokernel(pm, ",".join(self.cpu_features))
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification
             cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)

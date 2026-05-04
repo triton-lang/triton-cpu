@@ -27,9 +27,33 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+enum ISAExt {
+  AVX512 = 1 << 0,
+  AMX = 1 << 1,
+};
+
+const char *stringifyISAExt(ISAExt isaExt) {
+  if (isaExt == AVX512)
+    return "AVX512";
+  if (isaExt == AMX)
+    return "AMX";
+  return "Unknown";
+}
+
+int parseCPUFeatures(const std::string &cpuFeatures) {
+  int mask = 0;
+  if (cpuFeatures.find("avx512f") != std::string::npos)
+    mask |= AVX512;
+  if (cpuFeatures.find("amx-tile") != std::string::npos)
+    mask |= AMX;
+  return mask;
+}
+
 // This structure is used to hold candidates for application of a nanokernel
 // pattern.
 struct DotOpCandidate {
+  ISAExt target;
+
   // Operation to convert (and intermediate contraction op).
   triton::cpu::DotOp dot;
   vector::ContractionOp contract;
@@ -50,53 +74,52 @@ struct DotOpCandidate {
   vector::TransferWriteOp accWrite;
 };
 
-bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                    Type resElemTy, InstructionSet target) {
+int checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                   Type resElemTy, int mask) {
   if (accElemTy != resElemTy) {
     // Constrain the two for simplicity.
     LDBG("  Drop candidate. Expect same accumulation and result type.");
-    return false;
+    return 0;
   }
 
   if (lhsElemTy != rhsElemTy) {
     LDBG("  Drop candidate. Mixed type input is not supported");
-    return false;
+    return 0;
   }
 
-  if (target == InstructionSet::AMX)
-    return (lhsElemTy.isBF16() && accElemTy.isF32()) ||
-           (lhsElemTy.isInteger(8) && accElemTy.isInteger(32));
+  if (lhsElemTy.isBF16() && accElemTy.isF32())
+    return mask & (AVX512 | AMX);
+
+  if (lhsElemTy.isInteger(8) && accElemTy.isInteger(32))
+    return mask & AMX;
 
   LDBG("  Drop candidate. Unsupported type combination");
-  return false;
+  return 0;
 }
 
-bool checkInputShapes(VectorType lhsTy, VectorType resTy,
-                      DotOpCandidate &candidate, InstructionSet target) {
+int checkInputShapes(VectorType lhsTy, VectorType resTy,
+                     DotOpCandidate &candidate, int mask) {
   candidate.blockM = resTy.getDimSize(0);
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
 
-  if (target == InstructionSet::AMX) {
-    // Optimal configuration with 2x2 accumulator tiles.
-    if (lhsTy.getElementType().isInteger(8))
-      return candidate.blockM == 32 && candidate.blockN == 32 &&
-             candidate.blockK == 64;
-    if (lhsTy.getElementType().isBF16())
-      return candidate.blockM == 32 && candidate.blockN == 32 &&
-             candidate.blockK == 32;
-  }
+  if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 2)
+    return mask & AVX512;
+
+  if (candidate.blockM == 32 && candidate.blockN == 32 &&
+      (candidate.blockK == 32 || candidate.blockK == 64))
+    return mask & AMX;
 
   LDBG("  Drop candidate. Unsupported shapes");
-  return false;
+  return 0;
 }
 
 // Check if specified DotOp can be lowered to a vector contraction on which the
-// nanokernel patterns for the given target instruction set apply.
+// nanokernel patterns for the given CPU features apply.
 // If conversion is possible, then true is returned and candidate structure is
 // filled with detailed transformation info.
 bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
-                           InstructionSet target) {
+                           const std::string &cpuFeatures) {
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
   VectorType accTy = cast<VectorType>(op.getC().getType());
@@ -109,12 +132,15 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
-  if (!checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
-                      accTy.getElementType(), resTy.getElementType(), target))
+  int mask = parseCPUFeatures(cpuFeatures);
+  mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
+                        accTy.getElementType(), resTy.getElementType(), mask);
+  mask = checkInputShapes(lhsTy, resTy, candidate, mask);
+  if (!mask) {
+    LDBG("  Drop candidate. No matching ISA extension for the op's types and "
+         "shapes.");
     return false;
-
-  if (!checkInputShapes(lhsTy, resTy, candidate, target))
-    return false;
+  }
 
   if (!isLoopCarriedAcc(op.getC())) {
     LDBG("  Drop candidate. Only loop-carried accumulator case is supported.");
@@ -176,6 +202,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
       !checkTransferOp(accRead) || !checkTransferOp(accWrite))
     return false;
 
+  candidate.target = mask & AMX ? AMX : AVX512;
   candidate.dot = op;
   candidate.accLoop = accLoop;
   candidate.lhsRead = lhsRead;
@@ -255,27 +282,53 @@ void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   candidate.dot = {};
 }
 
-void performRegisterTiling(DotOpCandidate &candidate, InstructionSet target,
+void performRegisterTiling(DotOpCandidate &candidate,
                            PatternRewriter &rewriter) {
 
-  llvm::SmallDenseMap<Operation *, SmallVector<int64_t>> regTileSizes;
-
-  assert(target == InstructionSet::AMX);
   int vnniFactor =
-      candidate.contract.getLhs().getType().getElementType().isInteger(8) ? 4
-                                                                          : 2;
-  regTileSizes[candidate.contract] = {16, 16, 16 * vnniFactor};
-  regTileSizes[candidate.lhsRead] = {16, 16 * vnniFactor};
-  regTileSizes[candidate.rhsRead] = {16 * vnniFactor, 16};
-  regTileSizes[candidate.accRead] = {16, 16};
-  regTileSizes[candidate.accWrite] = {16, 16};
+      32 / candidate.contract.getLhs().getType().getElementTypeBitWidth();
+
+  static constexpr auto *unrollShapeAttrName = "unroll_shape";
+
+  if (candidate.target == AVX512) {
+    candidate.contract->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({1, 16, vnniFactor}));
+    candidate.lhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({1, vnniFactor}));
+    candidate.rhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({vnniFactor, 16}));
+    candidate.accRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({1, 16}));
+    candidate.accWrite->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({1, 16}));
+  } else if (candidate.target == AMX) {
+    candidate.contract->setAttr(
+        unrollShapeAttrName,
+        rewriter.getI64ArrayAttr({16, 16, 16 * vnniFactor}));
+    candidate.lhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({16, 16 * vnniFactor}));
+    candidate.rhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({16 * vnniFactor, 16}));
+    candidate.accRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({16, 16}));
+    candidate.accWrite->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({16, 16}));
+  } else {
+    llvm_unreachable("Unsupported ISA extension for register tiling");
+  }
 
   vector::UnrollVectorOptions unrollOptions;
   unrollOptions.setFilterConstraint(
-      [&](Operation *op) { return success(regTileSizes.contains(op)); });
+      [&](Operation *op) { return success(op->hasAttr(unrollShapeAttrName)); });
   unrollOptions.setNativeShapeFn(
       [&](Operation *op) -> std::optional<SmallVector<int64_t>> {
-        return regTileSizes.lookup(op);
+        assert(op->hasAttr(unrollShapeAttrName));
+        auto vals = op->getAttrOfType<ArrayAttr>(unrollShapeAttrName)
+                        .getAsValueRange<IntegerAttr>();
+        SmallVector<int64_t> shape = llvm::to_vector(llvm::map_range(
+            vals, [](const APInt &v) { return v.getSExtValue(); }));
+
+        return shape;
       });
 
   RewritePatternSet patterns(candidate.contract.getContext());
@@ -350,8 +403,8 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
   Value oldInit = oldFor.getTiedLoopInit(iterArg)->get();
   for (ArrayAttr offset : offsets) {
     auto oldExtractOp = extractOps[offset];
-    auto newExtractOp = vector::ExtractStridedSliceOp::create(
-        rewriter, oldExtractOp.getLoc(), oldExtractOp.getType(), oldInit,
+    auto newExtractOp = rewriter.createOrFold<vector::ExtractStridedSliceOp>(
+        oldExtractOp.getLoc(), oldExtractOp.getType(), oldInit,
         oldExtractOp.getOffsets(), oldExtractOp.getSizes(),
         oldExtractOp.getStrides());
     newInits.push_back(newExtractOp);
@@ -444,17 +497,22 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
 }
 
 LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
-                                      InstructionSet target,
                                       PatternRewriter &rewriter) {
-  assert(target == InstructionSet::AMX);
   RewritePatternSet patterns(candidate.contract.getContext());
-  x86::populateVectorContractToAMXDotProductPatterns(patterns);
+  if (candidate.target == AVX512)
+    x86::populateVectorContractToPackedTypeDotProductPatterns(patterns);
+  else if (candidate.target == AMX)
+    x86::populateVectorContractToAMXDotProductPatterns(patterns);
+  else
+    llvm_unreachable(
+        "Unsupported target ISA extension for nanokernel patterns");
+
   return applyPatternsGreedily(
       candidate.contract->getParentOfType<triton::FuncOp>(),
       std::move(patterns));
 }
 
-LogicalResult convertCandidate(DotOpCandidate &candidate, InstructionSet target,
+LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
   // Insert memref.subview ops to ensure all transfer ops have zero indices.
   moveIndicesToSubview(candidate, rewriter);
@@ -464,7 +522,7 @@ LogicalResult convertCandidate(DotOpCandidate &candidate, InstructionSet target,
 
   // Apply target-specific register tiling via upstream vector-dialect unroll
   // patterns.
-  performRegisterTiling(candidate, target, rewriter);
+  performRegisterTiling(candidate, rewriter);
 
   // Splice the accumulation loop and convert it to use an index induction
   // variable instead.
@@ -475,31 +533,32 @@ LogicalResult convertCandidate(DotOpCandidate &candidate, InstructionSet target,
   moveLoopInvariantCode(candidate.splicedAccLoop);
 
   // Finally, apply the upstream patterns.
-  return applyNanokernelPatterns(candidate, target, rewriter);
+  return applyNanokernelPatterns(candidate, rewriter);
 }
 
 struct ConvertDotToNanokernel
     : public triton::cpu::impl::ConvertDotToNanokernelBase<
           ConvertDotToNanokernel> {
-  ConvertDotToNanokernel(InstructionSet target) { this->target = target; }
+  ConvertDotToNanokernel(std::string cpuFeatures) {
+    this->cpuFeatures = cpuFeatures;
+  }
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
-    mod.dump();
-
-    if (this->target != InstructionSet::AMX) {
-      LDBG("Currently only AMX target is supported. Skipping pass.");
+    if (cpuFeatures.empty()) {
+      LDBG("No CPU features specified. Skipping pass.");
       return;
     }
 
     SmallVector<DotOpCandidate, 2> candidates;
-    mod->walk([&candidates, this](triton::cpu::DotOp op) {
+    mod->walk([&](triton::cpu::DotOp op) {
       DotOpCandidate candidate;
-      if (isNanokernelCandidate(op, candidate, this->target)) {
+      if (isNanokernelCandidate(op, candidate, cpuFeatures)) {
         LLVM_DEBUG({
           LDBG("Found nanokernel candidate");
+          LDBG("  Target: " << stringifyISAExt(candidate.target));
           LDBG("  Op: " << candidate.dot);
           LDBG("  blockM: " << candidate.blockM);
           LDBG("  blockN: " << candidate.blockN);
@@ -516,13 +575,14 @@ struct ConvertDotToNanokernel
     for (auto &candidate : candidates) {
       LDBG("Starting conversion of candidate: " << candidate.dot);
       PatternRewriter rewriter(context);
-      if (succeeded(convertCandidate(candidate, target, rewriter))) {
+      if (succeeded(convertCandidate(candidate, rewriter))) {
         LDBG("Conversion succeeded!");
       } else {
         LDBG("Conversion failed!");
         return signalPassFailure();
       }
     }
+    LDBG("Resulting module:\n" << mod);
   }
 };
 
@@ -531,8 +591,8 @@ struct ConvertDotToNanokernel
 namespace mlir::triton::cpu {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotToNanokernel(InstructionSet target) {
-  return std::make_unique<ConvertDotToNanokernel>(target);
+createConvertDotToNanokernel(std::string cpuFeatures) {
+  return std::make_unique<ConvertDotToNanokernel>(cpuFeatures);
 }
 
 } // namespace mlir::triton::cpu

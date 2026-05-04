@@ -181,15 +181,9 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
     }];
 
     let options = [
-        Option<"target", "target",
-               "mlir::triton::cpu::InstructionSet", /*default*/"mlir::triton::cpu::InstructionSet::AVX2",
-               "Target instruction set for the nanokernel conversion.",
-               [{::llvm::cl::values(
-               clEnumValN(mlir::triton::cpu::InstructionSet::AVX2, "avx2",
-                "Use AVX2 as the target instruction set"),
-               clEnumValN(mlir::triton::cpu::InstructionSet::AMX, "amx",
-                "Use AMX as the target instruction set")
-              )}]>,
+        Option<"cpuFeatures", "cpu-features",
+               "std::string", /*default*/"",
+               "Comma-separated list of CPU features available for lowering of dot op.">
     ];
 
     let constructor = "mlir::triton::cpu::createConvertDotToNanokernel()";

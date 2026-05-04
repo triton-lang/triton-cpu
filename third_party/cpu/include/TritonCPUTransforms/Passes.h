@@ -20,11 +20,6 @@ enum class Ukernels {
   XSMM,
 };
 
-enum class InstructionSet {
-  AVX2,
-  AMX,
-};
-
 #define GEN_PASS_DECL
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 
@@ -49,7 +44,7 @@ createConvertDotToAMX(bool convertInt8, bool convertFp16, bool convertBf16);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotToNanokernel(InstructionSet target = InstructionSet::AVX2);
+createConvertDotToNanokernel(std::string cpuFeatures = "");
 
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
