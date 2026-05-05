@@ -27,25 +27,35 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
-enum ISAExt {
+enum ISAExt : unsigned {
   AVX512 = 1 << 0,
-  AMX = 1 << 1,
+  AVX10_2 = 1 << 1,
+  AMX_BF16 = 1 << 2,
+  AMX_INT8 = 1 << 3,
 };
 
 const char *stringifyISAExt(ISAExt isaExt) {
   if (isaExt == AVX512)
     return "AVX512";
-  if (isaExt == AMX)
-    return "AMX";
+  if (isaExt == AVX10_2)
+    return "AVX10.2";
+  if (isaExt == AMX_BF16)
+    return "AMX_BF16";
+  if (isaExt == AMX_INT8)
+    return "AMX_INT8";
   return "Unknown";
 }
 
-int parseCPUFeatures(const std::string &cpuFeatures) {
-  int mask = 0;
+unsigned parseCPUFeatures(const std::string &cpuFeatures) {
+  unsigned mask = 0;
   if (cpuFeatures.find("avx512f") != std::string::npos)
     mask |= AVX512;
-  if (cpuFeatures.find("amx-tile") != std::string::npos)
-    mask |= AMX;
+  if (cpuFeatures.find("avx10.2") != std::string::npos)
+    mask |= AVX10_2;
+  if (cpuFeatures.find("amx-bf16") != std::string::npos)
+    mask |= AMX_BF16;
+  if (cpuFeatures.find("amx-int8") != std::string::npos)
+    mask |= AMX_INT8;
   return mask;
 }
 
@@ -74,8 +84,8 @@ struct DotOpCandidate {
   vector::TransferWriteOp accWrite;
 };
 
-int checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
-                   Type resElemTy, int mask) {
+unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
+                        Type resElemTy, unsigned mask) {
   if (accElemTy != resElemTy) {
     // Constrain the two for simplicity.
     LDBG("  Drop candidate. Expect same accumulation and result type.");
@@ -88,17 +98,17 @@ int checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   }
 
   if (lhsElemTy.isBF16() && accElemTy.isF32())
-    return mask & (AVX512 | AMX);
+    return mask & (AVX512 | AMX_BF16);
 
   if (lhsElemTy.isInteger(8) && accElemTy.isInteger(32))
-    return mask & AMX;
+    return mask & (AVX10_2 | AMX_INT8);
 
   LDBG("  Drop candidate. Unsupported type combination");
   return 0;
 }
 
-int checkInputShapes(VectorType lhsTy, VectorType resTy,
-                     DotOpCandidate &candidate, int mask) {
+unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
+                          DotOpCandidate &candidate, unsigned mask) {
   candidate.blockM = resTy.getDimSize(0);
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
@@ -106,9 +116,16 @@ int checkInputShapes(VectorType lhsTy, VectorType resTy,
   if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 2)
     return mask & AVX512;
 
+  if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 4)
+    return mask & AVX10_2;
+
   if (candidate.blockM == 32 && candidate.blockN == 32 &&
-      (candidate.blockK == 32 || candidate.blockK == 64))
-    return mask & AMX;
+      candidate.blockK == 32)
+    return mask & AMX_BF16;
+
+  if (candidate.blockM == 32 && candidate.blockN == 32 &&
+      candidate.blockK == 64)
+    return mask & AMX_INT8;
 
   LDBG("  Drop candidate. Unsupported shapes");
   return 0;
@@ -132,13 +149,13 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
-  int mask = parseCPUFeatures(cpuFeatures);
+  unsigned mask = parseCPUFeatures(cpuFeatures);
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
   mask = checkInputShapes(lhsTy, resTy, candidate, mask);
-  if (!mask) {
-    LDBG("  Drop candidate. No matching ISA extension for the op's types and "
-         "shapes.");
+  if (llvm::isPowerOf2_32(mask) != 1) {
+    LDBG("  Drop candidate. No uniquely matching ISA extension for the op's "
+         "types and shapes.");
     return false;
   }
 
@@ -202,7 +219,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
       !checkTransferOp(accRead) || !checkTransferOp(accWrite))
     return false;
 
-  candidate.target = mask & AMX ? AMX : AVX512;
+  candidate.target = static_cast<ISAExt>(mask);
   candidate.dot = op;
   candidate.accLoop = accLoop;
   candidate.lhsRead = lhsRead;
@@ -290,7 +307,7 @@ void performRegisterTiling(DotOpCandidate &candidate,
 
   static constexpr auto *unrollShapeAttrName = "unroll_shape";
 
-  if (candidate.target == AVX512) {
+  if (candidate.target & (AVX512 | AVX10_2)) {
     candidate.contract->setAttr(unrollShapeAttrName,
                                 rewriter.getI64ArrayAttr({1, 16, vnniFactor}));
     candidate.lhsRead->setAttr(unrollShapeAttrName,
@@ -301,7 +318,7 @@ void performRegisterTiling(DotOpCandidate &candidate,
                                rewriter.getI64ArrayAttr({1, 16}));
     candidate.accWrite->setAttr(unrollShapeAttrName,
                                 rewriter.getI64ArrayAttr({1, 16}));
-  } else if (candidate.target == AMX) {
+  } else if (candidate.target & (AMX_BF16 | AMX_INT8)) {
     candidate.contract->setAttr(
         unrollShapeAttrName,
         rewriter.getI64ArrayAttr({16, 16, 16 * vnniFactor}));
@@ -499,9 +516,9 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
 LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
                                       PatternRewriter &rewriter) {
   RewritePatternSet patterns(candidate.contract.getContext());
-  if (candidate.target == AVX512)
+  if (candidate.target & (AVX512 | AVX10_2))
     x86::populateVectorContractToPackedTypeDotProductPatterns(patterns);
-  else if (candidate.target == AMX)
+  else if (candidate.target & (AMX_BF16 | AMX_INT8))
     x86::populateVectorContractToAMXDotProductPatterns(patterns);
   else
     llvm_unreachable(

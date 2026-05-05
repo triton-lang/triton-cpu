@@ -1,5 +1,6 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=amx-tile -cse  | FileCheck %s --check-prefixes=AMX,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=amx-bf16,amx-int8 -cse  | FileCheck %s --check-prefixes=AMX,ALL
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512f -cse  | FileCheck %s --check-prefixes=AVX512,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx10.2 -cse  | FileCheck %s --check-prefixes=AVX10_2,ALL
 
 // AMX bf16 flat/online-packing vector.contract inside of an accumulator loop
 
@@ -172,5 +173,57 @@ tt.func public @gemm_avx512_bf16(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %ar
     scf.yield %19 : vector<4x64xf32>
   }
   vector.transfer_write %13, %9[%10, %11] {in_bounds = [true, true], acc_write} : vector<4x64xf32>, memref<?x?xf32, strided<[?, 1]>>
+  tt.return
+}
+
+// -----
+
+// AVX10.2 int8 flat/online-packing vector.contract inside of an accumulator loop
+
+// ALL-LABEL: @gemm_avx10_2_int8
+
+// Shuffle accumulator init values
+// AVX10_2-COUNT-16:  vector.shuffle
+
+// Main loop (using 16 accumulators (1x16xi32))
+// AVX10_2:           %{{.+}}:16 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c4 
+
+// AVX10_2-COUNT-4:     vector.shuffle
+// AVX10_2-COUNT-16:    x86.avx10.dot.i8
+
+// AVX10_2:             scf.yield
+
+// Shuffle back before storing to memory
+// AVX10_2-COUNT-16: vector.shuffle
+
+tt.func public @gemm_avx10_2_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt.ptr<i32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+  %c0_i8 = arith.constant 0 : i8
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i64 = arith.constant 1 : i64
+  %c64_i32 = arith.constant 64 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %0 = tt.get_program_id x : i32
+  %1 = arith.muli %0, %c4_i32 : i32
+  %2 = tt.get_program_id y : i32
+  %3 = arith.muli %2, %c64_i32 : i32
+  %4 = arith.extsi %arg5 : i32 to i64
+  %5 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%4, %c1_i64] : <i8>, <4x4xsi8>
+  %6 = arith.extsi %arg4 : i32 to i64
+  %7 = tt.make_tensor_descriptor %arg1, [%arg5, %arg4], [%6, %c1_i64] : <i8>, <4x64xsi8>
+  %8 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%6, %c1_i64] : <i32>, <4x64xsi32>
+  %9 = triton_cpu.extract_memref %8 : <4x64xsi32> -> memref<?x?xi32, strided<[?, 1]>>
+  %10 = arith.index_cast %1 : i32 to index
+  %11 = arith.index_cast %3 : i32 to index
+  %12 = vector.transfer_read %9[%10, %11], %c0_i32 {in_bounds = [true, true]} : memref<?x?xi32, strided<[?, 1]>>, vector<4x64xi32>
+  %13 = scf.for %arg6 = %c0_i32 to %arg5 step %c4_i32 iter_args(%arg7 = %12) -> (vector<4x64xi32>)  : i32 {
+    %14 = triton_cpu.extract_memref %5 : <4x4xsi8> -> memref<?x?xi8, strided<[?, 1]>>
+    %15 = arith.index_cast %arg6 : i32 to index
+    %16 = vector.transfer_read %14[%10, %15], %c0_i8 {in_bounds = [true, true]} : memref<?x?xi8, strided<[?, 1]>>, vector<4x4xi8>
+    %17 = triton_cpu.extract_memref %7 : <4x64xsi8> -> memref<?x?xi8, strided<[?, 1]>>
+    %18 = vector.transfer_read %17[%15, %11], %c0_i8 {in_bounds = [true, true]} : memref<?x?xi8, strided<[?, 1]>>, vector<4x64xi8>
+    %19 = triton_cpu.dot %16, %18, %arg7, inputPrecision = tf32 : vector<4x4xi8> * vector<4x64xi8> -> vector<4x64xi32>
+    scf.yield %19 : vector<4x64xi32>
+  }
+  vector.transfer_write %13, %9[%10, %11] {in_bounds = [true, true]} : vector<4x64xi32>, memref<?x?xi32, strided<[?, 1]>>
   tt.return
 }
