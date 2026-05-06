@@ -119,21 +119,31 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
 
-  if (candidate.blockM == 2 && candidate.blockN == 32 && candidate.blockK == 1)
+  auto shapeUnrollsTo = [&candidate](int64_t m, int64_t n, int64_t k,
+                                     int64_t numRegs) {
+    return candidate.blockM % m == 0 && candidate.blockN % n == 0 &&
+           candidate.blockK == k &&
+           (candidate.blockM / m) * (candidate.blockN / n) <= numRegs;
+  };
+  auto shapeEquals = [&candidate](int64_t m, int64_t n, int64_t k) {
+    return candidate.blockM == m && candidate.blockN == n &&
+           candidate.blockK == k;
+  };
+
+  if (shapeUnrollsTo(1, 8, 1, 12))
     return mask & AVX_NE_CONVERT;
 
-  if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 2)
+  if (shapeUnrollsTo(1, 16, 2, 24))
     return mask & AVX512_BF16;
 
-  if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 4)
+  if (shapeUnrollsTo(1, 16, 4, 24))
     return mask & AVX10_2;
 
-  if (candidate.blockM == 32 && candidate.blockN == 32 &&
-      candidate.blockK == 32)
+  // AMX lowering currently matches only the 2x2 register tiling.
+  if (shapeEquals(32, 32, 32))
     return mask & AMX_BF16;
 
-  if (candidate.blockM == 32 && candidate.blockN == 32 &&
-      candidate.blockK == 64)
+  if (shapeEquals(32, 32, 64))
     return mask & AMX_INT8;
 
   LDBG("  Drop candidate. Unsupported shapes");
@@ -617,7 +627,6 @@ struct ConvertDotToNanokernel
       PatternRewriter rewriter(context);
       if (succeeded(convertCandidate(candidate, rewriter))) {
         LDBG("Conversion succeeded!");
-        LDBG("Resulting module:\n" << mod);
       } else {
         LDBG("Conversion failed!");
         return signalPassFailure();
