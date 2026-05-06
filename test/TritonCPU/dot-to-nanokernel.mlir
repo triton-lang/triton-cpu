@@ -1,6 +1,7 @@
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=amx-bf16,amx-int8 -cse  | FileCheck %s --check-prefixes=AMX,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512f -cse  | FileCheck %s --check-prefixes=AVX512,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx10.2 -cse  | FileCheck %s --check-prefixes=AVX10_2,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
 
 // AMX bf16 flat/online-packing vector.contract inside of an accumulator loop
 
@@ -225,5 +226,63 @@ tt.func public @gemm_avx10_2_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2:
     scf.yield %19 : vector<4x64xi32>
   }
   vector.transfer_write %13, %9[%10, %11] {in_bounds = [true, true]} : vector<4x64xi32>, memref<?x?xi32, strided<[?, 1]>>
+  tt.return
+}
+
+// -----
+
+// AVX_NE_CONVERT bf16 flat/online-packing vector.contract inside of an accumulator loop
+
+// ALL-LABEL: @gemm_avxneconvert_bf16
+
+// Shuffle accumulator init values
+// AVX_NE_CONVERT-COUNT-8:  vector.shuffle
+
+// Main loop (using 8 accumulators (1x8xf32))
+// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c1 
+
+// Code sequence of interest
+// AVX_NE_CONVERT:             x86.avx.bcst_to_f32.packed
+// AVX_NE_CONVERT:             x86.avx.cvt.packed.even.indexed_to_f32
+// AVX_NE_CONVERT:             vector.fma
+// AVX_NE_CONVERT:             x86.avx.cvt.packed.odd.indexed_to_f32
+// AVX_NE_CONVERT:             vector.fma
+
+// AVX_NE_CONVERT:             scf.yield
+
+// Shuffle back before storing to memory
+// AVX_NE_CONVERT-COUNT-8: vector.shuffle
+
+tt.func public @gemm_avxneconvert_bf16(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %cst_0 = arith.constant 0.000000e+00 : f32
+  %c1_i32 = arith.constant 1 : i32
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i64 = arith.constant 1 : i64
+  %c32_i32 = arith.constant 32 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %0 = tt.get_program_id x : i32
+  %1 = arith.muli %0, %c2_i32 : i32
+  %2 = tt.get_program_id y : i32
+  %3 = arith.muli %2, %c32_i32 : i32
+  %4 = arith.extsi %arg5 : i32 to i64
+  %5 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%4, %c1_i64] : <bf16>, <2x1xbf16>
+  %6 = arith.extsi %arg4 : i32 to i64
+  %7 = tt.make_tensor_descriptor %arg1, [%arg5, %arg4], [%6, %c1_i64] : <bf16>, <1x32xbf16>
+  %8 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%6, %c1_i64] : <f32>, <2x32xf32>
+  %9 = triton_cpu.extract_memref %8 : <2x32xf32> -> memref<?x?xf32, strided<[?, 1]>>
+  %10 = arith.index_cast %1 : i32 to index
+  %11 = arith.index_cast %3 : i32 to index
+  %12 = vector.transfer_read %9[%10, %11], %cst_0 {in_bounds = [true, true]} : memref<?x?xf32, strided<[?, 1]>>, vector<2x32xf32>
+  %13 = scf.for %arg6 = %c0_i32 to %arg5 step %c1_i32 iter_args(%arg7 = %12) -> (vector<2x32xf32>)  : i32 {
+    %14 = triton_cpu.extract_memref %5 : <2x1xbf16> -> memref<?x?xbf16, strided<[?, 1]>>
+    %15 = arith.index_cast %arg6 : i32 to index
+    %16 = vector.transfer_read %14[%10, %15], %cst {in_bounds = [true, true]} : memref<?x?xbf16, strided<[?, 1]>>, vector<2x1xbf16>
+    %17 = triton_cpu.extract_memref %7 : <1x32xbf16> -> memref<?x?xbf16, strided<[?, 1]>>
+    %18 = vector.transfer_read %17[%15, %11], %cst {in_bounds = [true, true]} : memref<?x?xbf16, strided<[?, 1]>>, vector<1x32xbf16>
+    %19 = triton_cpu.dot %16, %18, %arg7, inputPrecision = tf32 : vector<2x1xbf16> * vector<1x32xbf16> -> vector<2x32xf32>
+    scf.yield %19 : vector<2x32xf32>
+  }
+  vector.transfer_write %13, %9[%10, %11] {in_bounds = [true, true]} : vector<2x32xf32>, memref<?x?xf32, strided<[?, 1]>>
   tt.return
 }

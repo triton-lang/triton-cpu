@@ -28,28 +28,34 @@ using namespace mlir::triton::cpu;
 namespace {
 
 enum ISAExt : unsigned {
-  AVX512 = 1 << 0,
-  AVX10_2 = 1 << 1,
-  AMX_BF16 = 1 << 2,
-  AMX_INT8 = 1 << 3,
+  AVX_NE_CONVERT = 1 << 0,
+  AVX512_BF16 = 1 << 1,
+  AVX10_2 = 1 << 2,
+  AMX_BF16 = 1 << 3,
+  AMX_INT8 = 1 << 4,
 };
 
-const char *stringifyISAExt(ISAExt isaExt) {
-  if (isaExt == AVX512)
-    return "AVX512";
-  if (isaExt == AVX10_2)
-    return "AVX10.2";
-  if (isaExt == AMX_BF16)
-    return "AMX_BF16";
-  if (isaExt == AMX_INT8)
-    return "AMX_INT8";
-  return "Unknown";
+std::string stringifyISAExtMask(unsigned mask) {
+  std::string res;
+  if (mask & AVX_NE_CONVERT)
+    res += "AVX_NE_CONVERT ";
+  if (mask & AVX512_BF16)
+    res += "AVX512_BF16 ";
+  if (mask & AVX10_2)
+    res += "AVX10.2 ";
+  if (mask & AMX_BF16)
+    res += "AMX_BF16 ";
+  if (mask & AMX_INT8)
+    res += "AMX_INT8 ";
+  return res.empty() ? "None" : res.substr(0, res.size() - 1);
 }
 
 unsigned parseCPUFeatures(const std::string &cpuFeatures) {
   unsigned mask = 0;
-  if (cpuFeatures.find("avx512f") != std::string::npos)
-    mask |= AVX512;
+  if (cpuFeatures.find("avxneconvert") != std::string::npos)
+    mask |= AVX_NE_CONVERT;
+  if (cpuFeatures.find("avx512bf16") != std::string::npos)
+    mask |= AVX512_BF16;
   if (cpuFeatures.find("avx10.2") != std::string::npos)
     mask |= AVX10_2;
   if (cpuFeatures.find("amx-bf16") != std::string::npos)
@@ -98,7 +104,7 @@ unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   }
 
   if (lhsElemTy.isBF16() && accElemTy.isF32())
-    return mask & (AVX512 | AMX_BF16);
+    return mask & (AVX_NE_CONVERT | AVX512_BF16 | AMX_BF16);
 
   if (lhsElemTy.isInteger(8) && accElemTy.isInteger(32))
     return mask & (AVX10_2 | AMX_INT8);
@@ -113,8 +119,11 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
 
+  if (candidate.blockM == 2 && candidate.blockN == 32 && candidate.blockK == 1)
+    return mask & AVX_NE_CONVERT;
+
   if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 2)
-    return mask & AVX512;
+    return mask & AVX512_BF16;
 
   if (candidate.blockM == 4 && candidate.blockN == 64 && candidate.blockK == 4)
     return mask & AVX10_2;
@@ -136,7 +145,7 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
 // If conversion is possible, then true is returned and candidate structure is
 // filled with detailed transformation info.
 bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
-                           const std::string &cpuFeatures) {
+                           unsigned mask) {
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
   VectorType rhsTy = cast<VectorType>(op.getB().getType());
   VectorType accTy = cast<VectorType>(op.getC().getType());
@@ -149,7 +158,6 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
-  unsigned mask = parseCPUFeatures(cpuFeatures);
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
   mask = checkInputShapes(lhsTy, resTy, candidate, mask);
@@ -307,7 +315,18 @@ void performRegisterTiling(DotOpCandidate &candidate,
 
   static constexpr auto *unrollShapeAttrName = "unroll_shape";
 
-  if (candidate.target & (AVX512 | AVX10_2)) {
+  if (candidate.target & AVX_NE_CONVERT) {
+    candidate.contract->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({1, 8, 1}));
+    candidate.lhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({1, 1}));
+    candidate.rhsRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({1, 8}));
+    candidate.accRead->setAttr(unrollShapeAttrName,
+                               rewriter.getI64ArrayAttr({1, 8}));
+    candidate.accWrite->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({1, 8}));
+  } else if (candidate.target & (AVX512_BF16 | AVX10_2)) {
     candidate.contract->setAttr(unrollShapeAttrName,
                                 rewriter.getI64ArrayAttr({1, 16, vnniFactor}));
     candidate.lhsRead->setAttr(unrollShapeAttrName,
@@ -516,7 +535,9 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
 LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
                                       PatternRewriter &rewriter) {
   RewritePatternSet patterns(candidate.contract.getContext());
-  if (candidate.target & (AVX512 | AVX10_2))
+  if (candidate.target & AVX_NE_CONVERT)
+    x86::populateVectorContractBF16ToFMAPatterns(patterns);
+  else if (candidate.target & (AVX512_BF16 | AVX10_2))
     x86::populateVectorContractToPackedTypeDotProductPatterns(patterns);
   else if (candidate.target & (AMX_BF16 | AMX_INT8))
     x86::populateVectorContractToAMXDotProductPatterns(patterns);
@@ -568,14 +589,16 @@ struct ConvertDotToNanokernel
       LDBG("No CPU features specified. Skipping pass.");
       return;
     }
+    unsigned mask = parseCPUFeatures(cpuFeatures);
+    LDBG("Available CPU features: " << stringifyISAExtMask(mask));
 
     SmallVector<DotOpCandidate, 2> candidates;
     mod->walk([&](triton::cpu::DotOp op) {
       DotOpCandidate candidate;
-      if (isNanokernelCandidate(op, candidate, cpuFeatures)) {
+      if (isNanokernelCandidate(op, candidate, mask)) {
         LLVM_DEBUG({
           LDBG("Found nanokernel candidate");
-          LDBG("  Target: " << stringifyISAExt(candidate.target));
+          LDBG("  Target: " << stringifyISAExtMask(candidate.target));
           LDBG("  Op: " << candidate.dot);
           LDBG("  blockM: " << candidate.blockM);
           LDBG("  blockN: " << candidate.blockN);
@@ -594,12 +617,12 @@ struct ConvertDotToNanokernel
       PatternRewriter rewriter(context);
       if (succeeded(convertCandidate(candidate, rewriter))) {
         LDBG("Conversion succeeded!");
+        LDBG("Resulting module:\n" << mod);
       } else {
         LDBG("Conversion failed!");
         return signalPassFailure();
       }
     }
-    LDBG("Resulting module:\n" << mod);
   }
 };
 
