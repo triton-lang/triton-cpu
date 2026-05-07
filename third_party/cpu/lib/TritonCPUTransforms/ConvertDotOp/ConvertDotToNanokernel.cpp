@@ -88,6 +88,9 @@ struct DotOpCandidate {
   vector::TransferReadOp rhsRead;
   vector::TransferReadOp accRead;
   vector::TransferWriteOp accWrite;
+
+  // Temporary buffer for accumulator.
+  memref::AllocaOp accBuffer;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -196,24 +199,25 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   auto accRead = accLoop.getTiedLoopInit(cast<BlockArgument>(op.getC()))
                      ->get()
                      .getDefiningOp<vector::TransferReadOp>();
-  if (!accRead) {
-    LDBG("  Drop candidate. Expected vector.transfer_read op initializing the "
-         "accumulator, but got: "
-         << accLoop.getTiedLoopInit(cast<BlockArgument>(op.getC()))->get());
-    return false;
-  }
 
   auto accWrite = accLoop.getResults().front().hasOneUse()
                       ? dyn_cast<vector::TransferWriteOp>(
                             *accLoop.getResults().front().getUsers().begin())
                       : nullptr;
-  if (!accWrite) {
-    LDBG("  Drop candidate. Expected single vector.transfer_write op storing "
-         "the accumulator");
-    return false;
+
+  if (accRead && accWrite &&
+      (accRead.getBase() != accWrite.getBase() ||
+       !llvm::equal(accRead.getIndices(), accWrite.getIndices()))) {
+    LDBG("  Cannot use existing vector.transfer_read/write due to mismatch in "
+         "memref or indices.");
+    accRead = nullptr;
+    accWrite = nullptr;
   }
 
   auto checkTransferOp = [&](auto transferOp) {
+    if (!transferOp)
+      return true; // No op to check, so no reason to drop the candidate.
+
     bool hasNonIdentityPermutation =
         !transferOp.getPermutationMap().isMinorIdentity();
     bool hasMask = transferOp.getMask() != nullptr;
@@ -246,6 +250,46 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   candidate.accWrite = accWrite;
 
   return true;
+}
+
+void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  if (candidate.accRead && candidate.accWrite)
+    return; // Nothing to do.
+
+  Location loc = candidate.accLoop.getLoc();
+  auto accTy = cast<VectorType>(candidate.dot.getC().getType());
+  auto allocaTy = MemRefType::get(accTy.getShape(), accTy.getElementType());
+
+  // Before the loop...
+  rewriter.setInsertionPoint(candidate.accLoop);
+  candidate.accBuffer = memref::AllocaOp::create(rewriter, loc, allocaTy);
+
+  SmallVector<Value> zeroIndices(
+      accTy.getRank(), arith::ConstantIndexOp::create(rewriter, loc, 0));
+  Value padding = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getZeroAttr(accTy.getElementType()));
+
+  OpOperand *initOperand = candidate.accLoop.getTiedLoopInit(
+      cast<BlockArgument>(candidate.dot.getC()));
+  Value init = initOperand->get();
+
+  vector::TransferWriteOp::create(rewriter, loc, init, candidate.accBuffer,
+                                  zeroIndices);
+  candidate.accRead = vector::TransferReadOp::create(
+      rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
+  initOperand->set(candidate.accRead);
+
+  // After the loop...
+  rewriter.setInsertionPointAfter(candidate.accLoop);
+
+  Value result = candidate.accLoop.getTiedLoopResult(initOperand);
+
+  candidate.accWrite = vector::TransferWriteOp::create(
+      rewriter, loc, result, candidate.accBuffer, zeroIndices);
+  Value remat = vector::TransferReadOp::create(
+      rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
+
+  rewriter.replaceAllUsesExcept(result, remat, candidate.accWrite);
 }
 
 template <typename TransferOp>
@@ -562,6 +606,9 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
 
 LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
+  // Introduce temporary buffer if needed.
+  makeAccBuffer(candidate, rewriter);
+
   // Insert memref.subview ops to ensure all transfer ops have zero indices.
   moveIndicesToSubview(candidate, rewriter);
 
@@ -615,8 +662,12 @@ struct ConvertDotToNanokernel
           LDBG("  blockK: " << candidate.blockK);
           LDBG("  LHS read: " << candidate.lhsRead);
           LDBG("  RHS read: " << candidate.rhsRead);
-          LDBG("  Acc read: " << candidate.accRead);
-          LDBG("  Acc write: " << candidate.accWrite);
+          if (!candidate.accRead || !candidate.accWrite)
+            LDBG("  Accumulating into temporary buffer");
+          else {
+            LDBG("  Acc read: " << candidate.accRead);
+            LDBG("  Acc write: " << candidate.accWrite);
+          }
         });
         candidates.push_back(candidate);
       }
