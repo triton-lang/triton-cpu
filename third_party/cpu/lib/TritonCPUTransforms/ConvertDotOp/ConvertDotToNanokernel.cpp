@@ -234,6 +234,32 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
            << transferOp);
       return false;
     }
+
+    auto vecTy = transferOp.getVectorType();
+    if (vecTy.getRank() != 2) {
+      LDBG("  Drop candidate. Expected 2D vector.transfer_read/write op, but "
+           "got: "
+           << transferOp);
+      return false;
+    }
+
+    auto memrefTy = cast<MemRefType>(transferOp.getBase().getType());
+    auto memrefRank = memrefTy.getRank();
+    if (memrefRank < 2) {
+      auto memrefShape = memrefTy.getShape();
+      auto vecShape = vecTy.getShape();
+      auto indices = transferOp.getIndices();
+      if (memrefShape[memrefRank - 1] != vecShape[memrefRank - 1] ||
+          memrefShape[memrefRank - 2] != vecShape[memrefRank - 2] ||
+          !isZeroInteger(indices[memrefRank - 1]) ||
+          !isZeroInteger(indices[memrefRank - 2])) {
+        LDBG("  Drop candidate. Expected last two dimensions of the memref to "
+             "match the vector shape, but got: "
+             << transferOp);
+        return false;
+      }
+    }
+
     return true;
   };
 
@@ -304,24 +330,41 @@ void moveIndicesToSubview(TransferOp op, PatternRewriter &rewriter) {
 
   auto memrefTy = cast<MemRefType>(op.getBase().getType());
   auto vecTy = op.getVectorType();
-  SmallVector<int64_t> shape(memrefTy.getRank(), 1);
+
+  SmallVector<int64_t> sizes(memrefTy.getRank(), 1);
   SmallVector<int64_t> strides(memrefTy.getRank(), 1);
 
   int64_t startDim = memrefTy.getRank() - vecTy.getRank();
   assert(startDim >= 0);
 
   for (int64_t i = 0; i < vecTy.getRank(); ++i)
-    shape[startDim + i] = vecTy.getShape()[i];
+    sizes[startDim + i] = vecTy.getShape()[i];
+
+  // We checked during candidate selection that if the memref rank is greater
+  // than 2, then the last two dimensions match the vector shape and the indices
+  // are zero.
+  auto layout = cast<StridedLayoutAttr>(memrefTy.getLayout());
+  auto resultMemrefTy =
+      MemRefType::get(vecTy.getShape(), vecTy.getElementType(),
+                      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                                             layout.getStrides().take_back(2)),
+                      memrefTy.getMemorySpace());
 
   Value memrefView = memref::SubViewOp::create(
-      rewriter, loc, op.getBase(), getAsOpFoldResult(op.getIndices()),
-      getAsIndexOpFoldResult(ctx, shape), getAsIndexOpFoldResult(ctx, strides));
+      rewriter, loc, resultMemrefTy, op.getBase(),
+      getAsOpFoldResult(op.getIndices()), getAsIndexOpFoldResult(ctx, sizes),
+      getAsIndexOpFoldResult(ctx, strides));
 
-  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  SmallVector<Value> zeros(memrefTy.getRank(), zero);
+  SmallVector<Value> zeros(resultMemrefTy.getRank(),
+                           arith::ConstantIndexOp::create(rewriter, loc, 0));
+
+  auto idMap = AffineMap::getMultiDimIdentityMap(vecTy.getRank(), ctx);
 
   op.getBaseMutable().assign(memrefView);
   op.getIndicesMutable().assign(zeros);
+  op.setPermutationMap(idMap);
+
+  LDBG("  Inserted subview: " << memrefView << " for transfer op: " << op);
 }
 
 void moveIndicesToSubview(DotOpCandidate &candidate,
