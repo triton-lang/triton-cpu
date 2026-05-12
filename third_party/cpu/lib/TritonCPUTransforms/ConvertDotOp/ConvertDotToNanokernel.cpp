@@ -546,8 +546,8 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
   auto indexCast = [&](Value val) -> Value {
     if (val.getType().isIndex())
       return val;
-    return arith::IndexCastOp::create(rewriter, oldFor.getLoc(),
-                                      rewriter.getIndexType(), val);
+    return rewriter.createOrFold<arith::IndexCastOp>(
+        oldFor.getLoc(), rewriter.getIndexType(), val);
   };
 
   // Create the new loop with the new init values.
@@ -616,7 +616,8 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
     if (i != dropIdx)
       oldResult.replaceAllUsesWith(newFor.getResult(newResPos++));
 
-  Value newVec = oldInit;
+  Value newVec =
+      ub::PoisonOp::create(rewriter, oldFor.getLoc(), oldInit.getType());
   for (auto [i, offset] : llvm::enumerate(offsets))
     newVec = vector::InsertStridedSliceOp::create(
         rewriter, oldFor.getLoc(), newFor.getResult(newResPos + i), newVec,
