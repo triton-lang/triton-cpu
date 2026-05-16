@@ -334,6 +334,7 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
     torch.testing.assert_close(expect, actual)
 
 
+@pytest.mark.cpu
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
@@ -341,6 +342,9 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
 def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
+    if is_cpu() and INNER_BLOCK > 32:
+        pytest.skip("Large block size unsupported on CPU")
+
 
     @triton.jit
     def kernel(out_ptr, a_ptr, shape, strides, BLOCK_SHAPE):
@@ -399,6 +403,7 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
     torch.testing.assert_close(expect, actual)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_tensor_descriptor_padding(device):
 
@@ -448,14 +453,16 @@ def test_tensor_descriptor_padding(device):
     in_desc = TensorDescriptor(input, input.shape, input.stride(), dummy_block, padding=padding)
     grid = (triton.cdiv(OM, M_BLOCK), triton.cdiv(ON, N_BLOCK))
     device_tma_load[grid](input, out_device_tma, IM, IN, OM, ON, M_BLOCK, N_BLOCK, padding)
-    host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
+    if not is_cpu():
+        host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
     expected = torch.zeros((OM, ON), device=device, dtype=torch.float32)
     expected[0:IN, 0:IM] = input
     expected[:, IN:ON] = float('nan')
     expected[IM:OM, :] = float('nan')
 
     torch.testing.assert_close(expected, out_device_tma, equal_nan=True)
-    torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
+    if not is_cpu():
+        torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
 
 
 @triton.jit(noinline=True)
