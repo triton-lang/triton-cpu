@@ -345,7 +345,6 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
     if is_cpu() and INNER_BLOCK > 32:
         pytest.skip("Large block size unsupported on CPU")
 
-
     @triton.jit
     def kernel(out_ptr, a_ptr, shape, strides, BLOCK_SHAPE):
         desc = tl.make_tensor_descriptor(
