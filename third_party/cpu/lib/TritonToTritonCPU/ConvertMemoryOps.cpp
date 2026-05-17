@@ -566,12 +566,16 @@ struct DescriptorLoadOpConversion
       paddingVal = arith::ConstantOp::create(
           rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
       break;
-    case PaddingOption::PAD_NAN:
+    case PaddingOption::PAD_NAN: {
       auto elemTy = cast<FloatType>(vectorTy.getElementType());
       paddingVal = arith::ConstantFloatOp::create(
           rewriter, loc, elemTy,
           llvm::APFloat::getNaN(elemTy.getFloatSemantics()));
       break;
+    }
+    default:
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Unsupported padding option in tensor descriptor");
     }
 
     SmallVector<bool> inBounds(readVectorTy.getRank(), assumeInBounds);
