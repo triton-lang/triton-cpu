@@ -13,6 +13,9 @@ def ConvertMemoryOps : Pass<"triton-cpu-convert-memory-ops", "mlir::ModuleOp"> {
         Option<"useGatherScatter", "use-gather-scatter",
                "bool", /*default*/"false",
                "Use Gather or Scatter to lower memory ops.">,
+        Option<"assumeInBounds", "assume-in-bounds",
+               "bool", /*default*/"false",
+               "Assume all tensor descriptor memory accesses are in bounds.">
     ];
 
     let constructor = "mlir::triton::cpu::createConvertMemoryOps()";

@@ -45,10 +45,11 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
 
   MemoryOpConversion(ModuleAxisInfoAnalysis &axisInfoAnalysis,
                      TypeConverter &typeConverter, MLIRContext *context,
-                     bool useGatherScatter)
+                     bool useGatherScatter, bool assumeInBounds)
       : OpConversionPattern<OpT>(typeConverter, context),
         axisAnalysis(axisInfoAnalysis) {
     this->useGatherScatter = useGatherScatter;
+    this->assumeInBounds = assumeInBounds;
   }
 
   Value extractScalarPointer(Location loc, Value ptrs,
@@ -150,6 +151,7 @@ struct MemoryOpConversion : public OpConversionPattern<OpT> {
 protected:
   ModuleAxisInfoAnalysis &axisAnalysis;
   bool useGatherScatter;
+  bool assumeInBounds;
 };
 
 struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
@@ -535,29 +537,54 @@ struct DescriptorLoadOpConversion
     if (!makeDescOp)
       return rewriter.notifyMatchFailure(
           descLoadOp, "Host-side tensor descriptors are unsupported");
-    if (makeDescOp.getPadding() != PaddingOption::PAD_ZERO)
-      return rewriter.notifyMatchFailure(
-          descLoadOp, "Non-default padding mode not yet supported");
 
     auto loc = descLoadOp.getLoc();
 
     auto vectorTy =
         cast<VectorType>(getTypeConverter()->convertType(descLoadOp.getType()));
+    auto readVectorTy = vectorTy;
 
     Value memRef = extractMemRef(makeDescOp, rewriter);
+    auto memRefTy = cast<MemRefType>(memRef.getType());
+
+    if (!assumeInBounds && vectorTy.getRank() < memRefTy.getRank()) {
+      // Enforce equals ranks, because a ranked-reduced vector.transfer_read
+      // doesn't model out-of-bounds checks for the leading/non-vector
+      // dimensions.
+      SmallVector<int64_t> extShape(memRefTy.getRank(), 1);
+      llvm::copy(vectorTy.getShape(),
+                 extShape.begin() + (memRefTy.getRank() - vectorTy.getRank()));
+      readVectorTy = VectorType::get(extShape, vectorTy.getElementType());
+    }
 
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
 
-    auto paddingVal = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
+    Value paddingVal;
+    switch (makeDescOp.getPadding()) {
+    case PaddingOption::PAD_ZERO:
+      paddingVal = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getZeroAttr(vectorTy.getElementType()));
+      break;
+    case PaddingOption::PAD_NAN: {
+      auto elemTy = cast<FloatType>(vectorTy.getElementType());
+      paddingVal = arith::ConstantFloatOp::create(
+          rewriter, loc, elemTy,
+          llvm::APFloat::getNaN(elemTy.getFloatSemantics()));
+      break;
+    }
+    default:
+      return rewriter.notifyMatchFailure(
+          descLoadOp, "Unsupported padding option in tensor descriptor");
+    }
 
-    // TODO: The descriptor-load op doesn't give any in-bounds guarantees
-    // (instead expects hardware support), so the transfer_read op needs to do
-    // bounds checking.
-    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
-        descLoadOp, vectorTy, memRef, indices, paddingVal);
+    SmallVector<bool> inBounds(readVectorTy.getRank(), assumeInBounds);
+    Value res = vector::TransferReadOp::create(
+        rewriter, loc, readVectorTy, memRef, indices, paddingVal, inBounds);
+    if (readVectorTy != vectorTy)
+      res = vector::ShapeCastOp::create(rewriter, loc, vectorTy, res);
 
+    rewriter.replaceOp(descLoadOp, res);
     return success();
   }
 };
@@ -576,16 +603,25 @@ struct DescriptorStoreOpConversion
 
     auto loc = descStoreOp.getLoc();
 
+    Value vecToStore = adaptor.getSrc();
     Value memRef = extractMemRef(makeDescOp, rewriter);
+
+    auto vectorTy = cast<VectorType>(vecToStore.getType());
+    auto memRefTy = cast<MemRefType>(memRef.getType());
+    if (vectorTy.getRank() != memRefTy.getRank()) {
+      // The frontend doesn't rank-reduce descriptor stores currently, but if it
+      // does in the future, we could handle that case similarly to loads.
+      return rewriter.notifyMatchFailure(
+          descStoreOp, "Rank of the value to store must match rank of the "
+                       "memref extracted from the descriptor");
+    }
 
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
 
-    // TODO: The descriptor-store op doesn't give any in-bounds guarantees
-    // (instead expects hardware support), so the transfer_write op needs to do
-    // bounds checking.
+    SmallVector<bool> inBounds(vectorTy.getRank(), assumeInBounds);
     rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-        descStoreOp, adaptor.getSrc(), memRef, indices);
+        descStoreOp, vecToStore, memRef, indices, inBounds);
 
     return success();
   }
@@ -620,8 +656,9 @@ struct ConvertMemoryOps
     : public triton::cpu::impl::ConvertMemoryOpsBase<ConvertMemoryOps> {
   ConvertMemoryOps() = default;
 
-  ConvertMemoryOps(bool useGatherScatter) {
+  ConvertMemoryOps(bool useGatherScatter, bool assumeInBounds) {
     this->useGatherScatter = useGatherScatter;
+    this->assumeInBounds = assumeInBounds;
   }
 
   void runOnOperation() override {
@@ -634,8 +671,9 @@ struct ConvertMemoryOps
     RewritePatternSet patterns(context);
     patterns.add<LoadOpConversion, StoreOpConversion, CpuStoreOpConversion,
                  CpuLoadOpConversion, DescriptorLoadOpConversion,
-                 DescriptorStoreOpConversion>(
-        axisInfoAnalysis, pointerConverter, context, useGatherScatter);
+                 DescriptorStoreOpConversion>(axisInfoAnalysis,
+                                              pointerConverter, context,
+                                              useGatherScatter, assumeInBounds);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
@@ -653,8 +691,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertMemoryOps() {
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertMemoryOps(bool useGatherScatter) {
-  return std::make_unique<ConvertMemoryOps>(useGatherScatter);
+createConvertMemoryOps(bool useGatherScatter, bool assumeInBounds) {
+  return std::make_unique<ConvertMemoryOps>(useGatherScatter, assumeInBounds);
 }
 
 } // namespace cpu

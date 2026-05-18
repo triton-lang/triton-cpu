@@ -469,3 +469,79 @@ module {
     tt.return loc(#loc)
   } loc(#loc)
 } loc(#loc)
+
+// -----
+
+// Regression test: If an extra buffer is required for the accumulator, ensure
+// that the initial value is stored to the buffer before the AMX tiles are
+// initialized from it.
+
+// CHECK-LABEL: regr_test_uninitialized_acc_buffer
+// CHECK: %[[ACC_TDESC:.+]] = tt.make_tensor_descriptor %arg2,
+// CHECK: %[[ACC_MEMREF:.+]] = triton_cpu.extract_memref %[[ACC_TDESC]]
+// CHECK: %[[ACC_INIT:.+]] = vector.transfer_read %[[ACC_MEMREF]]
+// CHECK: %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xf32>
+// CHECK: vector.transfer_write %[[ACC_INIT]], %[[ACC_BUF]][%c0, %c0]
+// CHECK-COUNT-4: x86.amx.tile_load %[[ACC_BUF]]
+
+tt.func public @regr_test_uninitialized_acc_buffer(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c0 = arith.constant 0 : index
+    %cst_0 = arith.constant 0.000000e+00 : f32
+    %c31_i32 = arith.constant 31 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c32_i64 = arith.constant 32 : i64
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i32 = arith.constant 32 : i32
+    %c8_i32 = arith.constant 8 : i32
+    %0 = tt.get_program_id x : i32
+    %1 = arith.addi %arg3, %c31_i32 : i32
+    %2 = arith.divsi %1, %c32_i32 : i32
+    %3 = arith.addi %arg4, %c31_i32 : i32
+    %4 = arith.divsi %3, %c32_i32 : i32
+    %5 = arith.muli %4, %c8_i32 : i32
+    %6 = arith.divsi %0, %5 : i32
+    %7 = arith.muli %6, %c8_i32 : i32
+    %8 = arith.subi %2, %7 : i32
+    %9 = arith.minsi %8, %c8_i32 : i32
+    %10 = arith.remsi %0, %9 : i32
+    %11 = arith.addi %7, %10 : i32
+    %12 = arith.remsi %0, %5 : i32
+    %13 = arith.divsi %12, %9 : i32
+    %14 = arith.divsi %arg3, %c32_i32 : i32
+    %15 = arith.divsi %arg5, %c32_i32 : i32
+    %16 = arith.muli %arg5, %c32_i32 : i32
+    %17 = arith.muli %arg4, %c32_i32 : i32
+    %18 = arith.extsi %16 : i32 to i64
+    %19 = arith.extsi %arg5 : i32 to i64
+    %20 = tt.make_tensor_descriptor %arg0, [%14, %15, %c32_i32, %c32_i32], [%18, %c32_i64, %19, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+    %21 = arith.divsi %arg4, %c32_i32 : i32
+    %22 = arith.extsi %17 : i32 to i64
+    %23 = arith.extsi %arg4 : i32 to i64
+    %24 = tt.make_tensor_descriptor %arg1, [%15, %21, %c32_i32, %c32_i32], [%22, %c32_i64, %23, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+    %25 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%23, %c1_i64] : <f32>, <32x32xf32>
+    %26 = arith.muli %11, %c32_i32 : i32
+    %27 = arith.muli %13, %c32_i32 : i32
+    %28 = triton_cpu.extract_memref %25 : <32x32xf32> -> memref<?x?xf32, strided<[?, 1]>>
+    %29 = arith.index_cast %26 : i32 to index
+    %30 = arith.index_cast %27 : i32 to index
+    %31 = vector.transfer_read %28[%29, %30], %cst_0 : memref<?x?xf32, strided<[?, 1]>>, vector<32x32xf32>
+    %32 = arith.addi %arg5, %c31_i32 : i32
+    %33 = arith.divsi %32, %c32_i32 : i32
+    %34 = scf.for %arg6 = %c0_i32 to %33 step %c1_i32 iter_args(%arg7 = %31) -> (vector<32x32xf32>)  : i32 {
+      %35 = triton_cpu.extract_memref %20 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+      %36 = arith.index_cast %11 : i32 to index
+      %37 = arith.index_cast %arg6 : i32 to index
+      %38 = vector.transfer_read %35[%36, %37, %c0, %c0], %cst {in_bounds = [false, false, true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<1x1x32x32xbf16>
+      %39 = vector.shape_cast %38 : vector<1x1x32x32xbf16> to vector<32x32xbf16>
+      %40 = triton_cpu.extract_memref %24 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+      %41 = arith.index_cast %13 : i32 to index
+      %42 = vector.transfer_read %40[%37, %41, %c0, %c0], %cst {in_bounds = [false, false, true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<1x1x32x32xbf16>
+      %43 = vector.shape_cast %42 : vector<1x1x32x32xbf16> to vector<32x32xbf16>
+      %44 = triton_cpu.dot %39, %43, %arg7, inputPrecision = tf32 : vector<32x32xbf16> * vector<32x32xbf16> -> vector<32x32xf32>
+      scf.yield %44 : vector<32x32xf32>
+    }
+    vector.transfer_write %34, %28[%29, %30] : vector<32x32xf32>, memref<?x?xf32, strided<[?, 1]>>
+    tt.return
+  }

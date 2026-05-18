@@ -639,7 +639,7 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
     // If accumulator is bufferized then we should move initial values before
     // the loop.
     OpBuilder::InsertionGuard g(rewriter);
-    if (candidate.keepAccInBuf)
+    if (candidate.keepAccInBuf || candidate.keepAccOnTiles)
       rewriter.setInsertionPoint(forOp);
     accBuf =
         prepareTensorBuffer(loc, accToStore, false, !candidate.keepAccInBuf,

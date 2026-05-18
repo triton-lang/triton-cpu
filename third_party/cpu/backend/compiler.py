@@ -173,7 +173,8 @@ class CPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         cpu.passes.ttcpuir.add_scalarize(pm, True)
-        cpu.passes.ttcpuir.add_convert_memory_ops(pm, True)
+        assumeInBounds = os.getenv("TRITON_CPU_ASSUME_IN_BOUNDS", "0") == "1"
+        cpu.passes.ttcpuir.add_convert_memory_ops(pm, True, assumeInBounds)
         cpu.passes.ttcpuir.add_convert_ptr_ops(pm)
         cpu.passes.ttcpuir.add_convert_elementwise_ops(pm)
         cpu.passes.ttcpuir.add_convert_elem_manip_ops(pm)
