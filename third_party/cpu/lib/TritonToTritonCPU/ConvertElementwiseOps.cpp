@@ -213,6 +213,7 @@ struct ConvertElementwiseOps
     patterns.add<OpTypeConversion<arith::MinNumFOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<arith::MinSIOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<arith::MinUIOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<arith::NegFOp>>(typeConverter, context);
 
     patterns.add<OpTypeConversion<math::FloorOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::CeilOp>>(typeConverter, context);

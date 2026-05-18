@@ -28,12 +28,22 @@ Value getLeaderCTAPredicate(ImplicitLocOpBuilder &b, uint32_t broadcastMask) {
                                arith::ConstantIntOp::create(b, 0, 32));
 }
 
+uint32_t getBlockBroadcastMask(Type type) {
+  auto memDescTy = cast<ttg::MemDescType>(type);
+  auto kBlock = StringAttr::get(type.getContext(), "block");
+  return toLinearLayout(memDescTy).getFreeVariableMasks().lookup(kBlock);
+}
+
 } // namespace
 
 class NVIDIAConSanHooks : public tti::ConSanTargetHooks {
 public:
   bool isTMAOp(Operation *op) const override {
     return isa<ttng::TMAOpInterface>(op);
+  }
+
+  bool isCLCOp(Operation *op) const override {
+    return isa<ttng::CLCTryCancelOp>(op);
   }
 
   std::optional<BarrierInitInfo>
@@ -83,18 +93,20 @@ public:
     };
     if (auto initOp = dyn_cast<ttng::InitBarrierOp>(op))
       mask = getBarrierMask(initOp.getAlloc());
-    if (auto expectOp = dyn_cast<ttng::BarrierExpectOp>(op))
-      mask = getBarrierMask(expectOp.getAlloc());
     if (auto waitOp = dyn_cast<ttng::WaitBarrierOp>(op))
       mask = getBarrierMask(waitOp.getAlloc());
     if (auto invalOp = dyn_cast<ttng::InvalBarrierOp>(op))
       mask = getBarrierMask(invalOp.getAlloc());
-    if (auto copyOp = dyn_cast<ttng::AsyncTMACopyGlobalToLocalOp>(op)) {
-      if (copyOp.getMulticast()) {
-        auto dstTy = cast<ttg::MemDescType>(copyOp.getResult().getType());
-        auto kBlock = StringAttr::get(op->getContext(), "block");
-        mask = toLinearLayout(dstTy).getFreeVariableMasks().lookup(kBlock);
-      }
+    if (auto loadOp = dyn_cast<ttng::TMALoadLikeOpInterface>(op)) {
+      if (loadOp.getMulticast())
+        mask = getBlockBroadcastMask(loadOp.getResult().getType());
+    }
+    if (auto storeOp = dyn_cast<ttng::TMAStoreLikeOpInterface>(op))
+      mask = getBlockBroadcastMask(storeOp.getSrc().getType());
+    if (isa<ttng::CLCTryCancelOp>(op) && ttg::lookupNumCTAs(op) > 1) {
+      Value ctaId = tti::ExperimentalClusterCTAIdOp::create(b, b.getLoc());
+      return arith::CmpIOp::create(b, arith::CmpIPredicate::eq, ctaId,
+                                   arith::ConstantIntOp::create(b, 0, 32));
     }
 
     // In 2CTA tcgen05 and tmem_copy, only the even CTA in each (i, i^1) pair
@@ -117,13 +129,10 @@ public:
       info.emplace();
       info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;
       info->pred = expectOp.getPred();
-      auto barrierTy = expectOp.getAlloc().getType();
-      int txCount = expectOp.getSize() * ttg::lookupNumCTAs(op) /
-                    barrierTy.getNumElements();
-      info->barriers.push_back({expectOp.getBarrier(), nullptr,
-                                /*count=*/1,
-                                MemEffectsOpInfo::BarrierTrackingMode::Frontier,
-                                /*txCount=*/txCount});
+      info->barriers.push_back(
+          {expectOp.getBarrier(), nullptr,
+           /*count=*/1, MemEffectsOpInfo::BarrierTrackingMode::Frontier,
+           /*txCount=*/static_cast<int>(expectOp.getSize())});
     }
     if (auto loadOp = dyn_cast<ttng::TMEMLoadOp>(op)) {
       info.emplace();
@@ -205,16 +214,12 @@ public:
       info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;
       info->pred = loadOp.getPred();
       int txCount = tti::getMemDescLength(loadOp.getResult());
-      if (auto copyOp = dyn_cast<ttng::AsyncTMACopyGlobalToLocalOp>(op);
-          copyOp && copyOp.getMulticast()) {
-        auto resultTy = cast<ttg::MemDescType>(loadOp.getResult().getType());
-        auto barrierTy = cast<ttg::MemDescType>(loadOp.getBarrier().getType());
-        auto kBlock = StringAttr::get(op->getContext(), "block");
-        uint16_t resultMask =
-            toLinearLayout(resultTy).getFreeVariableMasks().lookup(kBlock);
-        uint16_t barrierMask =
-            toLinearLayout(barrierTy).getFreeVariableMasks().lookup(kBlock);
-        uint16_t collapsedMask = resultMask & barrierMask;
+      if (loadOp.getMulticast()) {
+        uint32_t resultMask =
+            getBlockBroadcastMask(loadOp.getResult().getType());
+        uint32_t barrierMask =
+            getBlockBroadcastMask(loadOp.getBarrier().getType());
+        uint32_t collapsedMask = resultMask & barrierMask;
         for (; collapsedMask; collapsedMask &= collapsedMask - 1)
           txCount *= 2;
       }
@@ -224,6 +229,23 @@ public:
            /*txCount=*/-txCount});
       info->operandEffects.emplace_back(MemEffectsOpInfo::Effects::Write,
                                         loadOp.getResult());
+    }
+    if (auto tryCancelOp = dyn_cast<ttng::CLCTryCancelOp>(op)) {
+      info.emplace();
+      info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;
+      info->barriers.push_back(
+          {tryCancelOp.getMbarrier(), nullptr, /*count=*/0,
+           MemEffectsOpInfo::BarrierTrackingMode::EffectWrites,
+           /*txCount=*/
+           -static_cast<int>(tti::getMemDescLength(tryCancelOp.getResult()))});
+      info->operandEffects.emplace_back(MemEffectsOpInfo::Effects::Write,
+                                        tryCancelOp.getResult());
+    }
+    if (auto loadResultOp = dyn_cast<ttng::CLCLoadResultOp>(op)) {
+      info.emplace();
+      info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;
+      info->operandEffects.emplace_back(MemEffectsOpInfo::Effects::Read,
+                                        loadResultOp.getSrc());
     }
     if (auto storeOp = dyn_cast<ttng::TMAStoreLikeOpInterface>(op)) {
       info.emplace();

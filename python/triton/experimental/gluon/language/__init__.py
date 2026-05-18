@@ -1,9 +1,11 @@
 from ._core import (
+    aggregate_replace,
     base_value,
     base_type,
     block_type,
     broadcast,
     cast,
+    clamp,
     constexpr,
     dtype,
     void,
