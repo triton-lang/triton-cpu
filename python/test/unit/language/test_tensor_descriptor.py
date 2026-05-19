@@ -334,6 +334,7 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
     torch.testing.assert_close(expect, actual)
 
 
+@pytest.mark.cpu
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
@@ -341,6 +342,8 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
 def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
+    if is_cpu() and INNER_BLOCK > 32:
+        pytest.skip("Large block size unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, shape, strides, BLOCK_SHAPE):
@@ -399,6 +402,7 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
     torch.testing.assert_close(expect, actual)
 
 
+@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_tensor_descriptor_padding(device):
 
@@ -448,14 +452,16 @@ def test_tensor_descriptor_padding(device):
     in_desc = TensorDescriptor(input, input.shape, input.stride(), dummy_block, padding=padding)
     grid = (triton.cdiv(OM, M_BLOCK), triton.cdiv(ON, N_BLOCK))
     device_tma_load[grid](input, out_device_tma, IM, IN, OM, ON, M_BLOCK, N_BLOCK, padding)
-    host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
+    if not is_cpu():
+        host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
     expected = torch.zeros((OM, ON), device=device, dtype=torch.float32)
     expected[0:IN, 0:IM] = input
     expected[:, IN:ON] = float('nan')
     expected[IM:OM, :] = float('nan')
 
     torch.testing.assert_close(expected, out_device_tma, equal_nan=True)
-    torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
+    if not is_cpu():
+        torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
 
 
 @triton.jit(noinline=True)
@@ -1325,6 +1331,7 @@ def mxfp8_mxfp4_matmul_tma(  #
     tl.store(output_ptrs, accumulator, mask=c_mask)
 
 
+@pytest.mark.interpreter
 @pytest.mark.parametrize("M, N, K", [(1024, 512, 256), (128, 256, 256), (8192, 8192, 8192)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (128, 128, 256), (128, 256, 128),
                                                        (128, 256, 256)])
@@ -1392,8 +1399,9 @@ def torch_gather_rows(input, idx, y, block_y):
 @pytest.mark.parametrize("BLOCK_X, BLOCK_Y", [(32, 32), (64, 128), (16, 128), (512, 16)])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int8])
 @pytest.mark.parametrize("y", [0, 32, 48])
+@pytest.mark.parametrize("idx_dtype", [torch.int32, torch.int16])
 @pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
-def test_tma_gather(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
+def test_tma_gather(X, Y, BLOCK_X, BLOCK_Y, dtype, y, idx_dtype, device):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
 
@@ -1404,7 +1412,7 @@ def test_tma_gather(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
         input = torch.arange(X * Y, dtype=dtype, device=device).reshape(X, Y)
     output = torch.empty((BLOCK_X, BLOCK_Y), dtype=dtype, device=device)
 
-    idx = torch.randint(BLOCK_X, (BLOCK_X, ), dtype=torch.int32, device=device)
+    idx = torch.randint(BLOCK_X, (BLOCK_X, ), dtype=idx_dtype, device=device)
 
     def alloc_fn(size: int, align: int, steam):
         return torch.empty(size, dtype=torch.int8, device=device)
@@ -1491,9 +1499,10 @@ def tma_scatter_rows_kernel(out_ptr, in_ptr, idx_ptr, y, X: tl.constexpr, Y: tl.
 @pytest.mark.parametrize("BLOCK_X, BLOCK_Y", [(32, 32), (64, 128), (16, 128), (512, 16)])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int8])
 @pytest.mark.parametrize("y", [0, 32, 48])
+@pytest.mark.parametrize("idx_dtype", [torch.int32, torch.int16])
 @pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
 @pytest.mark.skipif(is_sm12x(), reason="TMA Scatter is not supported on sm120")
-def test_tma_scatter(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
+def test_tma_scatter(X, Y, BLOCK_X, BLOCK_Y, dtype, y, idx_dtype, device):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
 
@@ -1501,7 +1510,7 @@ def test_tma_scatter(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
     input = torch.arange(BLOCK_X * BLOCK_Y, dtype=dtype, device=device).reshape(BLOCK_X, BLOCK_Y)
     output = torch.zeros((X, Y), dtype=dtype, device=device)
 
-    idx = torch.randperm(BLOCK_X, dtype=torch.int32, device=device)
+    idx = torch.randperm(BLOCK_X, dtype=idx_dtype, device=device)
 
     def alloc_fn(size: int, align: int, steam):
         return torch.empty(size, dtype=torch.int8, device=device)

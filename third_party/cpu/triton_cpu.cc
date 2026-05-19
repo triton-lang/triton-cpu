@@ -64,8 +64,10 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
         mlir::triton::cpu::createScalarizeUsingForOpPass(skip_gather_scatter));
   });
   m.def("add_convert_memory_ops", [](mlir::PassManager &pm,
-                                     bool use_gather_scatter) {
-    pm.addPass(mlir::triton::cpu::createConvertMemoryOps(use_gather_scatter));
+                                     bool use_gather_scatter,
+                                     bool assume_in_bounds) {
+    pm.addPass(mlir::triton::cpu::createConvertMemoryOps(use_gather_scatter,
+                                                         assume_in_bounds));
   });
   m.def("add_convert_ptr_ops", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertPtrOps());

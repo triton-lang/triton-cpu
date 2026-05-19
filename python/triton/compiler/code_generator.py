@@ -117,6 +117,7 @@ class enter_sub_region:
         # record lscope & local_defs in the parent scope
         self.liveins = dict(self.generator.lscope)
         self.prev_defs = dict(self.generator.local_defs)
+        self.prev_pending_annotations = dict(self.generator.pending_annotations)
         self.generator.local_defs = {}
         self.insert_block = self.generator.builder.get_insertion_block()
         self.insert_point = self.generator.builder.get_insertion_point()
@@ -126,6 +127,7 @@ class enter_sub_region:
         self.generator.builder.restore_insertion_point(self.insert_point)
         self.generator.lscope = self.liveins
         self.generator.local_defs = self.prev_defs
+        self.generator.pending_annotations = self.prev_pending_annotations
 
 
 # Check if the given syntax node has an "early" return
@@ -334,6 +336,8 @@ class CodeGenerator(ast.NodeVisitor):
         # SSA-construction
         # name => language.tensor
         self.local_defs: Dict[str, tensor] = {}
+        # Bare local annotations such as `x: tl.constexpr`
+        self.pending_annotations: Dict[str, Any] = {}
         self.dereference_name: Callable[[str], Any] = self._define_name_lookup()
         self.fn = None
         # Are we currently visiting an ast.arg's default value?  These have some
@@ -612,9 +616,11 @@ class CodeGenerator(ast.NodeVisitor):
         self.builder.ret([self.builder.create_poison(ty) for ty in self.prototype.return_types_ir(self.builder)])
 
     def visit_FunctionDef(self, node):
-        arg_names, kwarg_names = self.visit(node.args)
         if self.fn:
-            raise self._unsupported(node, "nested function definition is not supported.")
+            raise self._unsupported(
+                node, "nested function definitions are not allowed inside a @triton.jit kernel. "
+                "Move the helper function to module level and decorate it with @triton.jit.")
+        arg_names, kwarg_names = self.visit(node.args)
         # initialize defaults
         for i, default_value in enumerate(node.args.defaults[::-1]):
             arg_node = node.args.args[-i - 1]
@@ -680,6 +686,10 @@ class CodeGenerator(ast.NodeVisitor):
         annotation = self.visit(node.annotation)
         target = self.visit(node.target)
         value = self.visit(node.value)
+        # Bare annotation, without assigment
+        if node.value is None:
+            self.pending_annotations[target] = annotation
+            return None
         # constexpr
         if annotation == constexpr:
             if target in self.lscope:
@@ -717,14 +727,26 @@ class CodeGenerator(ast.NodeVisitor):
                 value = self.semantic.to_tensor(value)
             return value
 
+        def _sanitize_target_value(target, value):
+            if isinstance(target, ast.Tuple) and isinstance(value, language.tuple):
+                vals = [_sanitize_target_value(elt, val) for elt, val in zip(target.elts, value.values)]
+                vals = [constexpr(val) if val is None else val for val in vals]
+                types = [val.type for val in vals]
+                return language.tuple(vals, language.tuple_type(types, value.type.fields))
+            if isinstance(target, ast.Name):
+                annotation = self.pending_annotations.pop(target.id, None)
+                if annotation == constexpr:
+                    return constexpr(value)
+            return _sanitize_value(value)
+
         targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
         assert len(targets) == 1
         target = targets[0]
         if isinstance(target, ast.Name):
             with self._name_loc_prefix(target.id):
-                values = _sanitize_value(self.visit(node.value))
+                values = _sanitize_target_value(target, self.visit(node.value))
         else:
-            values = _sanitize_value(self.visit(node.value))
+            values = _sanitize_target_value(target, self.visit(node.value))
         self.assignTarget(target, values)
 
     def visit_AugAssign(self, node):
@@ -739,6 +761,11 @@ class CodeGenerator(ast.NodeVisitor):
                 setattr(assign, x, y)
         self.visit(assign)
         return self.visit(lhs)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr):
+        # Named expressions are simple and can only be of the form x := value
+        self.visit_Assign(ast.Assign(targets=[node.target], value=node.value))
+        return self.dereference_name(node.target.id)
 
     def visit_Name(self, node):
         if type(node.ctx) is ast.Store:
@@ -795,6 +822,7 @@ class CodeGenerator(ast.NodeVisitor):
     }
 
     def visit_then_else_blocks(self, node, liveins, then_block, else_block):
+        pending_annotations = self.pending_annotations.copy()
         # then block
         self.builder.set_insertion_point_to_start(then_block)
         self.visit_compound_statement(node.body)
@@ -808,6 +836,7 @@ class CodeGenerator(ast.NodeVisitor):
             self.builder.set_insertion_point_to_start(else_block)
             self.lscope = liveins.copy()
             self.local_defs = {}
+            self.pending_annotations = pending_annotations.copy()
             self.visit_compound_statement(node.orelse)
             else_defs = self.local_defs.copy()
             else_block = self.builder.get_insertion_block()
@@ -1317,9 +1346,16 @@ class CodeGenerator(ast.NodeVisitor):
         bound_args.apply_defaults()
         args = bound_args.arguments
         args = [args[name] for name in fn.arg_names]
-        for i, arg in enumerate(args):
+
+        def normalize_arg(arg):
+            if isinstance(arg, language.tuple):
+                return _apply_to_tuple_values(arg, normalize_arg)
             if not isinstance(arg, base_value) or isinstance(arg, JITCallable):
-                args[i] = language.core.constexpr(arg)
+                return language.core.constexpr(arg)
+            return arg
+
+        for i, arg in enumerate(args):
+            args[i] = normalize_arg(arg)
         # mangle
         caller_context = caller_context or self.caller_context
         arg_types = [arg.type for arg in args]

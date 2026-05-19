@@ -1,5 +1,6 @@
 #include "ir.h"
 
+#include <cstring>
 #include <optional>
 #include <pybind11/cast.h>
 #include <pybind11/functional.h>
@@ -36,8 +37,8 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/PluginUtils.h"
-#include "triton/Tools/Sys/Dump.hpp"
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/Dump.h"
+#include "triton/Tools/Sys/GetEnv.h"
 #include "llvm/Support/SourceMgr.h"
 
 namespace {
@@ -786,16 +787,16 @@ void init_triton_ir(py::module &&m) {
       ret::take_ownership);
 
   m.def("deduce_scale_factor",
-        [](Value &lhs, std::optional<Value> &lhsScale,
-           ScaleDotElemType lhsFormat, bool lhsKPack, Value &rhs,
-           std::optional<Value> &rhsScale, ScaleDotElemType rhsFormat,
-           bool rhsKPack) -> int32_t {
+        [](std::vector<int64_t> &lhs,
+           std::optional<std::vector<int64_t>> &lhsScale,
+           ScaleDotElemType lhsFormat, bool lhsKPack, std::vector<int64_t> &rhs,
+           std::optional<std::vector<int64_t>> &rhsScale,
+           ScaleDotElemType rhsFormat, bool rhsKPack) -> int32_t {
           int32_t scaleFactor = 0;
           std::string errMsg;
-          if (failed(DotScaledOp::deduceScaleFactor(
-                  lhs, lhsScale.value_or(Value()), lhsFormat, lhsKPack, rhs,
-                  rhsScale.value_or(Value()), rhsFormat, rhsKPack, scaleFactor,
-                  errMsg)))
+          if (failed(deduceScaleFactor(lhs, lhsScale, lhsFormat, lhsKPack, rhs,
+                                       rhsScale, rhsFormat, rhsKPack,
+                                       scaleFactor, errMsg)))
             throw std::runtime_error(errMsg);
           return scaleFactor;
         });
@@ -1273,6 +1274,10 @@ void init_triton_ir(py::module &&m) {
       .def("create_fsub",
            [](TritonOpBuilder &self, Value &lhs, Value &rhs) -> Value {
              return self.create<arith::SubFOp>(lhs, rhs);
+           })
+      .def("create_fneg",
+           [](TritonOpBuilder &self, Value &input) -> Value {
+             return self.create<arith::NegFOp>(input);
            })
       .def("create_mul",
            [](TritonOpBuilder &self, Value &lhs, Value &rhs) -> Value {
@@ -2039,6 +2044,8 @@ void init_triton_ir(py::module &&m) {
           py::call_guard<py::gil_scoped_release>());
 }
 
+namespace {
+
 bool str_eq_ignore_case(const char *s1, const char *s2, int n) {
   for (int i = 0; i < n; ++i) {
     if (tolower(s1[i]) != s2[i])
@@ -2047,17 +2054,10 @@ bool str_eq_ignore_case(const char *s1, const char *s2, int n) {
   return true;
 }
 
-int strlen_max(const char *str, int max) {
-  for (int i = 0; i <= max; ++i) {
-    if (str[i] == '\0') {
-      return i;
-    }
-  }
-  return 0;
-}
-
 bool is_truthy(char *str) {
-  int len = strlen_max(str, 4);
+  int len = strnlen(str, 5);
+  if (len > 4)
+    return false;
   switch (len) {
   case 1:
     return str[0] == '1' || tolower(str[0]) == 'y';
@@ -2112,11 +2112,13 @@ PyObject *py_getenv_bool(PyObject *self, PyObject *const *args,
   return res;
 }
 
-static PyMethodDef ModuleMethods[] = {
+PyMethodDef ModuleMethods[] = {
     {"getenv", (PyCFunction)py_getenv, METH_FASTCALL, NULL},
     {"getenv_bool", (PyCFunction)py_getenv_bool, METH_FASTCALL, NULL},
     {NULL, NULL, 0, NULL} // sentinel
 };
+
+} // namespace
 
 void init_triton_env_vars(py::module &m) {
   m.def("get_cache_invalidating_env_vars",

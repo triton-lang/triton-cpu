@@ -25,7 +25,7 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertElementwiseOps();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertElemManipOps();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertMemoryOps();
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertMemoryOps(bool useGatherScatter);
+createConvertMemoryOps(bool useGatherScatter, bool assumeInBounds);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertPtrOps();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotOp();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertControlFlowOps();
