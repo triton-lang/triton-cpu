@@ -213,6 +213,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
         K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
+    os.environ["TRITON_CPU_ASSUME_IN_BOUNDS"] = "1"
     # 1D launch kernel where each block gets its own program.
     grid = ((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )
     if (BLOCKED_A or BLOCKED_B) and not PREPACKED:
