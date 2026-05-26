@@ -185,6 +185,8 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
+  bool isAMX = mask & (AMX_BF16 | AMX_INT8);
+
   auto accLoop = cast<scf::ForOp>(op->getParentOp());
 
   auto lhsRead = op.getA().getDefiningOp<vector::TransferReadOp>();
@@ -200,7 +202,8 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
                      ->get()
                      .getDefiningOp<vector::TransferReadOp>();
 
-  auto accWrite = accLoop.getResults().front().hasOneUse()
+  // AMX lowering doesn't care about the write-back of the accumulator anymore.
+  auto accWrite = !isAMX && accLoop.getResults().front().hasOneUse()
                       ? dyn_cast<vector::TransferWriteOp>(
                             *accLoop.getResults().front().getUsers().begin())
                       : nullptr;
@@ -279,7 +282,8 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
-  if (candidate.accRead && candidate.accWrite)
+  bool isAMX = candidate.target & (AMX_BF16 | AMX_INT8);
+  if (candidate.accRead && (isAMX || candidate.accWrite))
     return; // Nothing to do.
 
   Location loc = candidate.accLoop.getLoc();
@@ -304,6 +308,9 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   candidate.accRead = vector::TransferReadOp::create(
       rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
   initOperand->set(candidate.accRead);
+
+  if (isAMX)
+    return;
 
   // After the loop...
   rewriter.setInsertionPointAfter(candidate.accLoop);
@@ -372,7 +379,8 @@ void moveIndicesToSubview(DotOpCandidate &candidate,
   moveIndicesToSubview(candidate.lhsRead, rewriter);
   moveIndicesToSubview(candidate.rhsRead, rewriter);
   moveIndicesToSubview(candidate.accRead, rewriter);
-  moveIndicesToSubview(candidate.accWrite, rewriter);
+  if (!(candidate.target & (AMX_BF16 | AMX_INT8)))
+    moveIndicesToSubview(candidate.accWrite, rewriter);
 }
 
 void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
@@ -444,8 +452,7 @@ void performRegisterTiling(DotOpCandidate &candidate,
                                rewriter.getI64ArrayAttr({16 * vnniFactor, 16}));
     candidate.accRead->setAttr(unrollShapeAttrName,
                                rewriter.getI64ArrayAttr({16, 16}));
-    candidate.accWrite->setAttr(unrollShapeAttrName,
-                                rewriter.getI64ArrayAttr({16, 16}));
+    // Don't attempt to unroll the write.
   } else {
     llvm_unreachable("Unsupported ISA extension for register tiling");
   }
@@ -632,7 +639,7 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
 
 LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
                                       PatternRewriter &rewriter) {
-  RewritePatternSet patterns(candidate.contract.getContext());
+  RewritePatternSet patterns(candidate.splicedAccLoop.getContext());
   if (candidate.target & AVX_NE_CONVERT)
     x86::populateVectorContractBF16ToFMAPatterns(patterns);
   else if (candidate.target & (AVX512_BF16 | AVX10_2))
@@ -644,7 +651,7 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
         "Unsupported target ISA extension for nanokernel patterns");
 
   return applyPatternsGreedily(
-      candidate.contract->getParentOfType<triton::FuncOp>(),
+      candidate.splicedAccLoop->getParentOfType<triton::FuncOp>(),
       std::move(patterns));
 }
 
@@ -706,12 +713,10 @@ struct ConvertDotToNanokernel
           LDBG("  blockK: " << candidate.blockK);
           LDBG("  LHS read: " << candidate.lhsRead);
           LDBG("  RHS read: " << candidate.rhsRead);
-          if (!candidate.accRead || !candidate.accWrite)
-            LDBG("  Accumulating into temporary buffer");
-          else {
+          if (candidate.accRead)
             LDBG("  Acc read: " << candidate.accRead);
+          if (candidate.accWrite)
             LDBG("  Acc write: " << candidate.accWrite);
-          }
         });
         candidates.push_back(candidate);
       }
