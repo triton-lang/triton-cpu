@@ -459,7 +459,8 @@ void init_triton_amd(py::module &&m) {
         std::unique_ptr<llvm::MCSubtargetInfo> sti(
             target->createMCSubtargetInfo(triple, arch, features));
 
-        llvm::MCContext ctx(triple, mai.get(), mri.get(), sti.get(), &srcMgr);
+        llvm::MCContext ctx(triple, *mai.get(), *mri.get(), *sti.get(),
+                            &srcMgr);
         std::unique_ptr<llvm::MCObjectFileInfo> mofi(
             target->createMCObjectFileInfo(ctx, /*PIC=*/false,
                                            /*LargeCodeModel=*/false));
@@ -486,7 +487,7 @@ void init_triton_amd(py::module &&m) {
         std::unique_ptr<llvm::MCAsmParser> parser(
             createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
         std::unique_ptr<llvm::MCTargetAsmParser> tap(
-            target->createMCAsmParser(*sti, *parser, *mcii, mcOptions));
+            target->createMCAsmParser(*sti, *parser, *mcii));
         if (!tap)
           throw std::runtime_error("assembler initializtion error");
 
