@@ -111,6 +111,7 @@ class CPUOptions:
     def getAssumeInBounds(self):
         return getenv_bool("TRITON_CPU_ASSUME_IN_BOUNDS", self.assume_in_bounds)
 
+
 class CPUBackend(BaseBackend):
 
     @staticmethod
