@@ -213,7 +213,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
     #TODO: Currently masked load is not supported yet.
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (
         K % BLOCK_SIZE_K == 0), "Masking currently not supported, Matrix dimensions must be multiples of block size"
-    os.environ["TRITON_CPU_ASSUME_IN_BOUNDS"] = "1"
+    
     # 1D launch kernel where each block gets its own program.
     grid = ((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )
     if (BLOCKED_A or BLOCKED_B) and not PREPACKED:
@@ -223,7 +223,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
             BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
             GROUP_SIZE_M=GROUP_SIZE_M,  #
             BLOCKED_A=BLOCKED_A, TRANSPOSED_BLOCK_A=TRANSPOSED_BLOCK_A,  #
-            BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B)
+            BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B, assume_in_bounds=True)
         if BLOCKED_A:
             a = ab
         if BLOCKED_B:
@@ -235,7 +235,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ab: torch.Tensor, 
         GROUP_SIZE_M=GROUP_SIZE_M,  #
         BLOCKED_A=BLOCKED_A, TRANSPOSED_BLOCK_A=TRANSPOSED_BLOCK_A,  #
         BLOCKED_B=BLOCKED_B, TRANSPOSED_B=TRANSPOSED_B, PACKED_B=PACKED_B,  #
-        OUT_DTYPE=tl.float32 if a.dtype.is_floating_point else tl.int32, num_cpu_threads=num_cpu_threads)
+        OUT_DTYPE=tl.float32 if a.dtype.is_floating_point else tl.int32, num_cpu_threads=num_cpu_threads, assume_in_bounds=True)
     return c
 
 
