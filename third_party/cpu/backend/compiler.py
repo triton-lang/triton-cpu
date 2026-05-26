@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
-from triton._C.libtriton import cpu, ir, llvm, passes
+from triton._C.libtriton import cpu, ir, llvm, passes, getenv_bool
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.runtime.build import _build
 import triton.backends.cpu.driver as cpu_driver
@@ -56,6 +56,7 @@ class CPUOptions:
 
     # TODO: We may introduce CPU-specific options like # of cores.
     ukernels: str = None
+    assume_in_bounds: bool = False
 
     def __post_init__(self):
         pass
@@ -136,6 +137,8 @@ class CPUBackend(BaseBackend):
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(CPUOptions.supported_fp8_dtypes)
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
+        if "assume_in_bounds" not in args:
+            args["assume_in_bounds"] = getenv_bool("TRITON_CPU_ASSUME_IN_BOUNDS", False)
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -173,8 +176,7 @@ class CPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         cpu.passes.ttcpuir.add_scalarize(pm, True)
-        assumeInBounds = os.getenv("TRITON_CPU_ASSUME_IN_BOUNDS", "0") == "1"
-        cpu.passes.ttcpuir.add_convert_memory_ops(pm, True, assumeInBounds)
+        cpu.passes.ttcpuir.add_convert_memory_ops(pm, True, opt.assume_in_bounds)
         cpu.passes.ttcpuir.add_convert_ptr_ops(pm)
         cpu.passes.ttcpuir.add_convert_elementwise_ops(pm)
         cpu.passes.ttcpuir.add_convert_elem_manip_ops(pm)
