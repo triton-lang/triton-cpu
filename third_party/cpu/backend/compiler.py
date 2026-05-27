@@ -319,8 +319,7 @@ class CPUBackend(BaseBackend):
     def make_so(src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
-            # FIXME: Remove this hack.
-            Path(asm_path).write_text(src.replace('	.prefalign	4, .Lfunc_end0, nop', ''))
+            Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
             ccflags = []

@@ -123,6 +123,10 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     if (!newFuncOp)
       return failure();
 
+    // Workaround: Prevent LLVM codegen from emitting the .prefalign directive,
+    // which not all assemblers support.
+    newFuncOp.setAlignment(128);
+
     // required by AxisInfoAnalysis
     if (LLVM::isKernel(funcOp))
       rewriter.eraseOp(modifiedFuncOp);
