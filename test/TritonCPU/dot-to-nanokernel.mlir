@@ -391,4 +391,3 @@ tt.func public @gemm_amx_bf16_post_op(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>
   }
   tt.return
 }
-
