@@ -178,8 +178,8 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
     let summary = "Convert dot product op to vector contraction and apply upstream patterns.";
     let description = [{
         This pass attempts to lower tl.dot operations inside an accumulation
-        loop to optimal vector code for AMX, AVX-512 and AVX2, using upstream
-        MLIR patterns.
+        loop to optimal vector code for AMX, AVX-512, AVX10.2 and
+        AVX_NE_CONVERT, using upstream MLIR patterns.
     }];
 
     let options = [
