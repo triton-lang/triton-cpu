@@ -133,7 +133,7 @@ tt.func public @gemm_amx_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt
 // AVX512-COUNT-16:  vector.shuffle
 
 // Main loop (using 16 accumulators (1x16xf32))
-// AVX512:           %{{.+}}:16 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c2 
+// AVX512:           %{{.+}}:16 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c2
 
 // AVX512-COUNT-4:     vector.shuffle
 // AVX512-COUNT-16:    x86.avx512.dot
@@ -187,7 +187,7 @@ tt.func public @gemm_avx512_bf16(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %ar
 // AVX10_2-COUNT-16:  vector.shuffle
 
 // Main loop (using 16 accumulators (1x16xi32))
-// AVX10_2:           %{{.+}}:16 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c4 
+// AVX10_2:           %{{.+}}:16 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c4
 
 // AVX10_2-COUNT-4:     vector.shuffle
 // AVX10_2-COUNT-16:    x86.avx10.dot.i8
@@ -239,7 +239,7 @@ tt.func public @gemm_avx10_2_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2:
 // AVX_NE_CONVERT-COUNT-8:  vector.shuffle
 
 // Main loop (using 8 accumulators (1x8xf32))
-// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c1 
+// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %arg{{.+}} = %c0 to %{{.+}} step %c1
 
 // Code sequence of interest
 // AVX_NE_CONVERT:             x86.avx.bcst_to_f32.packed
@@ -305,9 +305,12 @@ tt.func public @gemm_avxneconvert_bf16(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16
 // AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
 // AMX-COUNT-2:   vector.load %[[BUFFER2]]
 // AMX-COUNT-2:   vector.load %[[BUFFER]]
-// AMX-COUNT-2:   vector.store %{{.+}}, %[[BUFFER]]
+// AMX-COUNT-2:   vector.store %{{.+}}, %[[BUFFER2]]
 
-// AMX:         %[[REMAT:.+]] = vector.transfer_read %[[BUFFER]][%c0, %c0]
+// AMX-COUNT-3: vector.transfer_read %[[BUFFER2]]
+// AMX:         %[[LAST_READ:.+]] = vector.transfer_read %[[BUFFER2]][%c16, %c16]
+// AMX-COUNT-3: vector.insert_strided_slice
+// AMX:         %[[REMAT:.+]] = vector.insert_strided_slice %[[LAST_READ]], %{{.+}}
 // AMX:         vector.transfer_write %[[REMAT]], %[[ORIG_MEMREF]]
 
 tt.func public @gemm_amx_bf16_const_init(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
@@ -344,25 +347,16 @@ tt.func public @gemm_amx_bf16_const_init(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf
 
 // -----
 
-// Temporary buffer needed: post op
+// Post op
 
 // ALL-LABEL: @gemm_amx_bf16_post_op
 
 // AMX:         %[[ORIG_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <32x32xf32> -> memref<?x?xf32, strided<[?, 1]>
-// AMX:         %[[ORIG_INIT:.+]] = vector.transfer_read %[[ORIG_MEMREF]]
-// AMX:         %[[BUFFER:.+]] = memref.alloca() : memref<32x32xf32>
-// AMX:         vector.transfer_write %[[ORIG_INIT]], %[[BUFFER]][%c0, %c0]
 
-// AMX:         %[[BUFFER2:.+]] = memref.alloca() : memref<32x32xf32>
-// AMX-COUNT-4: x86.amx.tile_store %[[BUFFER2]]
+// If pattern applied we'll have two loops with 4 tile_mulf ops each
+// AMX-COUNT-8: x86.amx.tile_mulf
 
-// AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
-// AMX-COUNT-2:   vector.load %[[BUFFER2]]
-// AMX-COUNT-2:   vector.load %[[BUFFER]]
-// AMX-COUNT-2:   vector.store %{{.+}}, %[[BUFFER]]
-
-// AMX:         %[[REMAT:.+]] = vector.transfer_read %[[BUFFER]][%c0, %c0]
-// AMX:         %[[POSTOP:.+]] = math.exp %[[REMAT]] : vector<32x32xf32>
+// AMX:         %[[POSTOP:.+]] = math.exp %{{.+}} : vector<32x32xf32>
 // AMX:         vector.transfer_write %[[POSTOP]], %[[ORIG_MEMREF]]
 
 tt.func public @gemm_amx_bf16_post_op(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
