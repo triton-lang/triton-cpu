@@ -51,3 +51,4 @@ jobs:
           bash upstream-proj-build.sh
           source upstream-proj-setup.sh
           bash upstream-proj-test.sh
+          python python/tutorials/cpu-sfc-matmul.py --bench -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
