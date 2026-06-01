@@ -291,12 +291,15 @@ def benchmark(M, N, K, provider):
         def doit():
             for i in range(n_layers):
                 torch.matmul(a[i % n_layers], b[i % n_layers])
-        ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, rep=10)
+        ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, rep=10000)  # run for 10 seconds
     elif backend == 'triton-cpu':
         def doit():
             for i in range(n_layers):
                 matmul(a[i % n_layers], b[i % n_layers], M, N, K, blocking_factor_k=sfc_bfk)
-        ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, measure_time_with_hooks=True, rep=10)
+        ms, min_ms, max_ms = triton.testing.do_bench(doit,
+                                                     quantiles=quantiles,
+                                                     measure_time_with_hooks=False,  # also capture potential Python loop overhead
+                                                     rep=10000)                      # run for 10 seconds
     perf = lambda ms: 2 * n_layers * M * N * K * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
