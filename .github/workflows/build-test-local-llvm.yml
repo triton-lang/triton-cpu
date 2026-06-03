@@ -45,10 +45,6 @@ jobs:
 
       - name: Build and test with scripts from XSMM repository
         run: |
-          wget https://github.com/libxsmm/triton-cpu/raw/refs/heads/xsmm-main/upstream-proj-build.sh
-          wget https://github.com/libxsmm/triton-cpu/raw/refs/heads/xsmm-main/upstream-proj-setup.sh
-          wget https://github.com/libxsmm/triton-cpu/raw/refs/heads/xsmm-main/upstream-proj-test.sh
-          bash upstream-proj-build.sh
-          source upstream-proj-setup.sh
-          bash upstream-proj-test.sh
-          python python/tutorials/cpu-sfc-matmul.py --bench -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
+          bash scripts/proj-build.sh
+          source scripts/proj-setup.sh
+          bash scripts/proj-test.sh
