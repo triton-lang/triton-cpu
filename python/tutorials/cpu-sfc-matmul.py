@@ -22,23 +22,19 @@ from gilbert_d2xy import gilbert_d2xy
 # Data is blocked into contiguous chunks of memory. Neighboring blocks in the K
 # dimension will also be neighboring in memory.
 @triton.jit
-def block_transpose_pack_kernel(in_ptr, out_ptr, sfc_map_ptr, N, K,
-                                    BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr):
+def block_transpose_pack_kernel(in_ptr, out_ptr, sfc_map_ptr, N, K, BLOCK_SIZE_N: tl.constexpr,
+                                BLOCK_SIZE_K: tl.constexpr):
     pid = tl.program_id(axis=0)
     block_k = tl.load(sfc_map_ptr + 2 * pid)
     block_n = tl.load(sfc_map_ptr + 2 * pid + 1)
 
-    in_desc = tl.make_tensor_descriptor(
-        base=in_ptr,
-        shape=(K, N),
-        strides=(N, 1),
-        block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N))
-    out_desc = tl.make_tensor_descriptor(
-        base=out_ptr,
-        shape=(N // BLOCK_SIZE_N, K // BLOCK_SIZE_K, BLOCK_SIZE_K, BLOCK_SIZE_N),
-        strides=(BLOCK_SIZE_N * K, BLOCK_SIZE_K * BLOCK_SIZE_N, BLOCK_SIZE_N, 1),
-        block_shape=(1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N))
-    
+    in_desc = tl.make_tensor_descriptor(base=in_ptr, shape=(K, N), strides=(N, 1),
+                                        block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N))
+    out_desc = tl.make_tensor_descriptor(base=out_ptr,
+                                         shape=(N // BLOCK_SIZE_N, K // BLOCK_SIZE_K, BLOCK_SIZE_K, BLOCK_SIZE_N),
+                                         strides=(BLOCK_SIZE_N * K, BLOCK_SIZE_K * BLOCK_SIZE_N, BLOCK_SIZE_N, 1),
+                                         block_shape=(1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N))
+
     block = in_desc.load((block_k * BLOCK_SIZE_K, block_n * BLOCK_SIZE_N)).reshape((1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N))
     out_desc.store((block_n, block_k, 0, 0), block)
 
@@ -52,10 +48,8 @@ def block_transpose_pack_kernel(in_ptr, out_ptr, sfc_map_ptr, N, K,
 #    [ ik * (BLOCKS_K // BLOCKING_FACTOR_K), (ik + 1) * (BLOCKS_K // BLOCKING_FACTOR_K) )
 #
 @triton.jit
-def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik,
-               BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
-               BLOCK_SIZE_K: tl.constexpr,
-               DTYPE: tl.constexpr, ACC_DTYPE: tl.constexpr,
+def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+               BLOCK_SIZE_K: tl.constexpr, DTYPE: tl.constexpr, ACC_DTYPE: tl.constexpr,
                BLOCKING_FACTOR_K: tl.constexpr):
     BLOCKS_M = M // BLOCK_SIZE_M
     BLOCKS_N = N // BLOCK_SIZE_N
@@ -66,18 +60,15 @@ def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik,
     block_n = tl.load(sfc_map_ptr + 2 * pid + 1)
     block_k = ik * BLOCKS_K_PER_PROG
 
-    a_desc = tl.make_tensor_descriptor(base=a_ptr,
-                                       shape=(BLOCKS_M, BLOCKS_K, BLOCK_SIZE_M, BLOCK_SIZE_K),
+    a_desc = tl.make_tensor_descriptor(base=a_ptr, shape=(BLOCKS_M, BLOCKS_K, BLOCK_SIZE_M, BLOCK_SIZE_K),
                                        strides=(BLOCK_SIZE_M * K, BLOCK_SIZE_K, K, 1),
                                        block_shape=(1, 1, BLOCK_SIZE_M, BLOCK_SIZE_K))
-    
-    b_desc = tl.make_tensor_descriptor(base=b_ptr,
-                                       shape=(BLOCKS_N, BLOCKS_K, BLOCK_SIZE_K, BLOCK_SIZE_N),
+
+    b_desc = tl.make_tensor_descriptor(base=b_ptr, shape=(BLOCKS_N, BLOCKS_K, BLOCK_SIZE_K, BLOCK_SIZE_N),
                                        strides=(BLOCK_SIZE_N * K, BLOCK_SIZE_K * BLOCK_SIZE_N, BLOCK_SIZE_N, 1),
                                        block_shape=(1, 1, BLOCK_SIZE_K, BLOCK_SIZE_N))
-    
-    c_desc = tl.make_tensor_descriptor(base=c_ptr,
-                                       shape=(BLOCKS_M, BLOCKS_N, BLOCK_SIZE_M, BLOCK_SIZE_N),
+
+    c_desc = tl.make_tensor_descriptor(base=c_ptr, shape=(BLOCKS_M, BLOCKS_N, BLOCK_SIZE_M, BLOCK_SIZE_N),
                                        strides=(BLOCK_SIZE_M * N, BLOCK_SIZE_N, N, 1),
                                        block_shape=(1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
 
@@ -116,20 +107,18 @@ def matmul(a: torch.Tensor, b: torch.Tensor, M, N, K, blocking_factor_k=1):
     tt_dtype = tl.bfloat16 if a.dtype == torch.bfloat16 else tl.int8
     tt_acc_dtype = tl.float32 if a.dtype == torch.bfloat16 else tl.int32
 
-    block_transpose_pack_kernel[((K // BLOCK_SIZE_K) * (N // BLOCK_SIZE_N),)](
-        b, bp, sfc_map_kn, N, K, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,
-        assume_in_bounds=True)
-    
+    block_transpose_pack_kernel[((K // BLOCK_SIZE_K) * (N // BLOCK_SIZE_N), )](b, bp, sfc_map_kn, N, K,
+                                                                               BLOCK_SIZE_N=BLOCK_SIZE_N,
+                                                                               BLOCK_SIZE_K=BLOCK_SIZE_K,
+                                                                               assume_in_bounds=True)
+
     for ik in range(blocking_factor_k):
-        sfc_kernel[((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N),)](
-            a, bp, c,  #
-            sfc_map_mn, #
-            M, N, K,  #
-            ik,  #
-            BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
-            DTYPE=tt_dtype, ACC_DTYPE=tt_acc_dtype,  #
-            BLOCKING_FACTOR_K=blocking_factor_k,
-            assume_in_bounds=True)
+        sfc_kernel[((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )](a, bp, c, sfc_map_mn, M, N, K, ik,
+                                                                  BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
+                                                                  BLOCK_SIZE_K=BLOCK_SIZE_K, DTYPE=tt_dtype,
+                                                                  ACC_DTYPE=tt_acc_dtype,
+                                                                  BLOCKING_FACTOR_K=blocking_factor_k,
+                                                                  assume_in_bounds=True)
     return c
 
 
@@ -175,7 +164,6 @@ torch.set_printoptions(
 
 triton.runtime.driver.set_active_to_cpu()
 
-
 # %%
 # Unit test
 # ---------
@@ -191,8 +179,8 @@ else:
     b = torch.randint(-4, 4, (K, N), device='cpu', dtype=dtype)
 
 print(f"Running unit test with "
-        f"M={M}, N={N}, K={K} dtype={dtype_str} "
-        f"BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}...")
+      f"M={M}, N={N}, K={K} dtype={dtype_str} "
+      f"BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}...")
 
 torch_output = torch.matmul(a, b)
 sfc_map_mn = make_sfc_tensor(M // BLOCK_SIZE_M, N // BLOCK_SIZE_N)
@@ -205,8 +193,7 @@ if torch.allclose(triton_output, torch_output, atol=1e-5, rtol=1e-2):
     print("✅ TritonCPU pre-packed SFC and TorchCPU match")
 else:
     print("⚠️ TritonCPU pre-packed SFC and TorchCPU differ, the maximum difference is "
-        f'{torch.max(torch.abs(triton_output - torch_output))}')
-
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
 
 # %%
 # Benchmark
@@ -215,13 +202,14 @@ else:
 if not args.bench:
     sys.exit(0)
 
+
 def calculate_layers(M, N, K, dtype: torch.dtype, low_limit_in_gb=5.0):
     size_total = lambda n_layers: dtype.itemsize * n_layers * (M * K + K * N + M * N) / (1024.0 * 1024.0 * 1024.0)
 
     n_layers = 1
     while size_total(n_layers) < low_limit_in_gb:
         n_layers += 1
-    
+
     return n_layers
 
 
@@ -245,22 +233,25 @@ def decode_provider(provider):
 
     return backend, sfc_bfk
 
+
 SFC_BFK_OPTS = [1, 2, 4, 8]
-LINE_VALS = [
-    encode_triton_provider(sfc_bfk)
-    for sfc_bfk in SFC_BFK_OPTS
-] + [encode_torch_provider()]
+LINE_VALS = [encode_triton_provider(sfc_bfk) for sfc_bfk in SFC_BFK_OPTS] + [encode_torch_provider()]
 LINE_NAMES = LINE_VALS
 LINE_STYLES = None
 
 X_VALS = [(M, N, K) for M in args.M for N in args.N for K in args.K]
 
 if dtype.is_floating_point:
-    rand_a = torch.randn((max(M * K * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS),), device='cpu', dtype=dtype)
-    rand_b = torch.randn((max(K * N * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS),), device='cpu', dtype=dtype)
+    rand_a = torch.randn((max(M * K * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS), ), device='cpu',
+                         dtype=dtype)
+    rand_b = torch.randn((max(K * N * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS), ), device='cpu',
+                         dtype=dtype)
 else:
-    rand_a = torch.randint(-4, 4, (max(M * K * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS),), device='cpu', dtype=dtype)
-    rand_b = torch.randint(-4, 4, (max(K * N * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS),), device='cpu', dtype=dtype)
+    rand_a = torch.randint(-4, 4, (max(M * K * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS), ), device='cpu',
+                           dtype=dtype)
+    rand_b = torch.randint(-4, 4, (max(K * N * calculate_layers(M, N, K, dtype) for M, N, K in X_VALS), ), device='cpu',
+                           dtype=dtype)
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -288,18 +279,21 @@ def benchmark(M, N, K, provider):
 
     quantiles = [0.5, 0.2, 0.8]
     if backend == 'torch-cpu-native':
+
         def doit():
             for i in range(n_layers):
                 torch.matmul(a[i % n_layers], b[i % n_layers])
+
         ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, rep=10000)  # run for 10 seconds
     elif backend == 'triton-cpu':
+
         def doit():
             for i in range(n_layers):
                 matmul(a[i % n_layers], b[i % n_layers], M, N, K, blocking_factor_k=sfc_bfk)
-        ms, min_ms, max_ms = triton.testing.do_bench(doit,
-                                                     quantiles=quantiles,
-                                                     measure_time_with_hooks=False,  # also capture potential Python loop overhead
-                                                     rep=10000)                      # run for 10 seconds
+
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            doit, quantiles=quantiles, measure_time_with_hooks=False,  # also capture potential Python loop overhead
+            rep=10000)  # run for 10 seconds
     perf = lambda ms: 2 * n_layers * M * N * K * 1e-9 / (ms * 1e-3)
     return perf(ms), perf(max_ms), perf(min_ms)
 
