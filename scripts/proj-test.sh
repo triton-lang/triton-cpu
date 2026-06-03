@@ -43,8 +43,10 @@ DTYPE=bfloat16 python python/tutorials/cpu-blocked-matmul.py
 DTYPE=float32 python python/tutorials/cpu-blocked-matmul.py
 DTYPE=float16 python python/tutorials/cpu-blocked-matmul.py
 
-python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target amx     -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
-python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target avx-512 -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
+python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target amx \
+  --bench -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
+python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target avx512 \
+  --bench -M 512 1024 2048 -N 512 1024 2048 -K 512 1024 2048
 
 echo "===================================== Run dot tests (XSMM)"
 
