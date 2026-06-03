@@ -239,7 +239,8 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     }
 
     auto vecTy = transferOp.getVectorType();
-    if (vecTy.getRank() != 2) {
+    auto vecRank = vecTy.getRank();
+    if (vecRank != 2) {
       LDBG("  Drop candidate. Expected 2D vector.transfer_read/write op, but "
            "got: "
            << transferOp);
@@ -248,17 +249,18 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
     auto memrefTy = cast<MemRefType>(transferOp.getBase().getType());
     auto memrefRank = memrefTy.getRank();
-    if (memrefRank < 2) {
+    if (memrefRank > 2) {
       auto memrefShape = memrefTy.getShape();
       auto vecShape = vecTy.getShape();
       auto indices = transferOp.getIndices();
-      if (memrefShape[memrefRank - 1] != vecShape[memrefRank - 1] ||
-          memrefShape[memrefRank - 2] != vecShape[memrefRank - 2] ||
+      if (memrefShape[memrefRank - 1] != vecShape[vecRank - 1] ||
+          memrefShape[memrefRank - 2] != vecShape[vecRank - 2] ||
           !isZeroInteger(indices[memrefRank - 1]) ||
           !isZeroInteger(indices[memrefRank - 2])) {
-        LDBG("  Drop candidate. Expected last two dimensions of the memref to "
-             "match the vector shape, but got: "
-             << transferOp);
+        LDBG(
+            "  Drop candidate. Expected last two dimensions of the memref to "
+            "match the vector shape and to be indexed at [..., 0, 0], but got: "
+            << transferOp);
         return false;
       }
     }

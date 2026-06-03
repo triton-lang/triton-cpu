@@ -391,3 +391,109 @@ tt.func public @gemm_amx_bf16_post_op(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>
   }
   tt.return
 }
+
+
+// -----
+
+// Check application on a blocked layout
+
+// ALL-LABEL: @gemm_amx_bf16_blocked
+
+// Operands
+// AMX:        %[[A_DESC:.+]] = tt.make_tensor_descriptor %arg0, [%{{.+}}, %{{.+}}, %c32_i32, %c32_i32], [%{{.+}}, %c32_i64, %{{.+}}, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+// AMX:        %[[B_DESC:.+]] = tt.make_tensor_descriptor %arg1, [%{{.+}}, %{{.+}}, %c32_i32, %c32_i32], [%{{.+}}, %c1024_i64, %c32_i64, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+// AMX:        %[[A_MEMREF:.+]] = triton_cpu.extract_memref %[[A_DESC]] : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+// AMX:        %[[B_MEMREF:.+]] = triton_cpu.extract_memref %[[B_DESC]] : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
+
+// Tile registers for accumulation
+// AMX-COUNT-4: x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
+
+// Subview for shuffling the first B block
+// AMX:         memref.subview %[[B_MEMREF]][%{{.+}}, %{{.+}}, 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>> to memref<32x32xbf16, strided<[32, 1], offset: ?>>
+
+// Prologue
+// AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c2
+// AMX:           vector.shuffle %{{.+}}, %{{.+}} [0, 32, 1, 33,
+// AMX:           vector.shuffle %{{.+}}, %{{.+}} [4, 36, 5, 37,
+
+// Main pipeline
+// AMX:         %{{.+}}:4 = scf.for %[[K_ITER:arg.+]] = %{{.+}} to %{{.+}} step %c1 iter_args(%arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}) ->
+// AMX-SAME:      (!x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>)
+
+// Subview for reading the current A block
+// AMX:           memref.subview %[[A_MEMREF]][%{{.+}}, %[[K_ITER]], 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>> to memref<32x32xbf16, strided<[?, 1], offset: ?>>
+
+// Subview for reading the next B block
+// AMX:           %[[NEXT_K:.+]] = arith.addi %[[K_ITER]], %c1 : index
+// AMX:           memref.subview %[[B_MEMREF]][%{{.+}}, %[[NEXT_K]], 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>> to memref<32x32xbf16, strided<[32, 1], offset: ?>>
+
+// Main computation
+// AMX-COUNT-4:   x86.amx.tile_mulf
+
+// Epilogue
+// AMX:         %{{.+}}:4 = scf.for %arg{{.+}} = %{{.+}} to %{{.+}} step %c1 iter_args(%arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}, %arg{{.+}} = %{{.+}}) ->
+// AMX-SAME:      (!x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>, !x86.amx.tile<16x16xf32>)
+
+// Store results back to memory
+// AMX-COUNT-4: x86.amx.tile_store
+
+// Shuffle results
+// AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
+
+tt.func public @gemm_amx_bf16_blocked(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<bf16>, %arg3: !tt.ptr<i32>, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %c0 = arith.constant 0 : index
+  %c32_i32 = arith.constant 32 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %c32_i64 = arith.constant 32 : i64
+  %c1_i64 = arith.constant 1 : i64
+  %c1024_i64 = arith.constant 1024 : i64
+  %c0_i32 = arith.constant 0 : i32
+  %cst_0 = arith.constant dense<0.000000e+00> : vector<1x1x32x32xbf16>
+  %0 = arith.divsi %arg4, %c32_i32 : i32
+  %1 = arith.divsi %arg5, %c32_i32 : i32
+  %2 = arith.divsi %arg6, %c32_i32 : i32
+  %3 = tt.get_program_id x : i32
+  %4 = arith.muli %3, %c2_i32 : i32
+  %5 = tt.addptr %arg3, %4 : !tt.ptr<i32>, i32
+  %6 = tt.load %5 : !tt.ptr<i32>
+  %7 = tt.addptr %5, %c1_i32 : !tt.ptr<i32>, i32
+  %8 = tt.load %7 : !tt.ptr<i32>
+  %9 = arith.muli %arg7, %2 : i32
+  %10 = arith.muli %arg6, %c32_i32 : i32
+  %11 = arith.extsi %10 : i32 to i64
+  %12 = arith.extsi %arg6 : i32 to i64
+  %13 = tt.make_tensor_descriptor %arg0, [%0, %2, %c32_i32, %c32_i32], [%11, %c32_i64, %12, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+  %14 = tt.make_tensor_descriptor %arg1, [%1, %2, %c32_i32, %c32_i32], [%11, %c1024_i64, %c32_i64, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+  %15 = arith.muli %arg5, %c32_i32 : i32
+  %16 = arith.extsi %15 : i32 to i64
+  %17 = arith.extsi %arg5 : i32 to i64
+  %18 = tt.make_tensor_descriptor %arg2, [%0, %1, %c32_i32, %c32_i32], [%16, %c32_i64, %17, %c1_i64] : <bf16>, <1x1x32x32xbf16>
+  %19 = arith.cmpi eq, %arg7, %c0_i32 : i32
+  scf.if %19 {
+    %29 = triton_cpu.extract_memref %18 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+    %30 = arith.index_cast %6 : i32 to index
+    %31 = arith.index_cast %8 : i32 to index
+    vector.transfer_write %cst_0, %29[%30, %31, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<1x1x32x32xbf16>, memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+  }
+  %20 = triton_cpu.extract_memref %18 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+  %21 = arith.index_cast %6 : i32 to index
+  %22 = arith.index_cast %8 : i32 to index
+  %23 = vector.transfer_read %20[%21, %22, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<32x32xbf16>
+  %24 = arith.extf %23 : vector<32x32xbf16> to vector<32x32xf32>
+  %25 = arith.addi %9, %2 : i32
+  %26 = scf.for %arg8 = %9 to %25 step %c1_i32 iter_args(%arg9 = %24) -> (vector<32x32xf32>)  : i32 {
+    %29 = triton_cpu.extract_memref %13 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+    %30 = arith.index_cast %arg8 : i32 to index
+    %31 = vector.transfer_read %29[%21, %30, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>, vector<32x32xbf16>
+    %32 = triton_cpu.extract_memref %14 : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
+    %33 = vector.transfer_read %32[%22, %30, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>, vector<32x32xbf16>
+    %34 = triton_cpu.dot %31, %33, %arg9, inputPrecision = tf32 : vector<32x32xbf16> * vector<32x32xbf16> -> vector<32x32xf32>
+    scf.yield %34 : vector<32x32xf32>
+  }
+  %27 = arith.truncf %26 : vector<32x32xf32> to vector<32x32xbf16>
+  %28 = vector.shape_cast %27 : vector<32x32xbf16> to vector<1x1x32x32xbf16>
+  vector.transfer_write %28, %20[%21, %22, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<1x1x32x32xbf16>, memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
+  tt.return
+}
