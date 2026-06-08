@@ -201,13 +201,14 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
-        cpu.passes.ttcpuir.add_convert_dot_to_nanokernel(pm, ",".join(self.cpu_features))
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification
             cpu.passes.ttcpuir.add_loop_invariant_code_motion(pm)
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
+        else:
+            cpu.passes.ttcpuir.add_convert_dot_to_nanokernel(pm, ",".join(self.cpu_features))
         convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
                                     and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
