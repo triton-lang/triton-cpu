@@ -4,6 +4,7 @@ add_triton_library(TritonCPUTransforms
     ConvertDotOp/ConvertDotToAMX.cpp
     ConvertDotOp/ConvertDotToFMA.cpp
     ConvertDotOp/ConvertDotOpToUkernelOps.cpp
+    ConvertDotOp/ConvertDotToNanokernel.cpp
     Canonicalize.cpp
     ConvertDotProduct.cpp
     ConvertUnsupportedOps.cpp
