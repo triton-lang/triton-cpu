@@ -203,7 +203,7 @@ elif args.target == 'avx_ne_convert':
         parser.error("AVX-NE-CONVERT target only supports bfloat16 data type")
     BLOCK_SIZE_M = 2
     BLOCK_SIZE_N = 32
-    BLOCK_SIZE_K = 1
+    BLOCK_SIZE_K = 2
 
 torch.manual_seed(0)
 torch.set_printoptions(

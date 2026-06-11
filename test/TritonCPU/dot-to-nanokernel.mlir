@@ -617,6 +617,86 @@ tt.func public @gemm_avxneconvert_bf16(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16
 
 // -----
 
+// AVX_NE_CONVERT bf16 pre-packed vector.contract inside of an accumulator loop
+
+// ALL-LABEL: @gemm_avxneconvert_bf16_vnni
+
+// No shuffles
+// AVX_NE_CONVERT-NOT:       vector.shuffle
+
+// Main loop (using 8 accumulators (1x8xf32))
+// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %arg{{.+}} = %{{.+}} to %{{.+}} step %c1
+
+// Code sequence of interest
+// AVX_NE_CONVERT:             x86.avx.bcst_to_f32.packed
+// AVX_NE_CONVERT:             x86.avx.cvt.packed.even.indexed_to_f32
+// AVX_NE_CONVERT:             vector.fma
+// AVX_NE_CONVERT:             x86.avx.cvt.packed.odd.indexed_to_f32
+// AVX_NE_CONVERT:             vector.fma
+
+// AVX_NE_CONVERT:             scf.yield
+
+// No shuffle before storing to memory
+// AVX_NE_CONVERT-NOT:         vector.shuffle
+// AVX_NE_CONVERT:             arith.truncf
+// AVX_NE_CONVERT:             vector.transfer_write
+
+tt.func public @gemm_avxneconvert_bf16_vnni(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<bf16>, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %c0 = arith.constant 0 : index
+  %c2_i32 = arith.constant 2 : i32
+  %c32_i32 = arith.constant 32 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i64 = arith.constant 4 : i64
+  %c2_i64 = arith.constant 2 : i64
+  %c1_i64 = arith.constant 1 : i64
+  %c64_i32 = arith.constant 64 : i32
+  %c64_i64 = arith.constant 64 : i64
+  %c32_i64 = arith.constant 32 : i64
+  %0 = arith.divsi %arg4, %c2_i32 : i32
+  %1 = arith.divsi %arg5, %c32_i32 : i32
+  %2 = arith.divsi %arg6, %c2_i32 : i32
+  %m = tt.get_program_id x : i32
+  %n = tt.get_program_id y : i32
+  %9 = arith.muli %arg7, %2 : i32
+  %10 = arith.muli %arg6, %c2_i32 : i32
+  %11 = arith.extsi %10 : i32 to i64
+  %12 = tt.make_tensor_descriptor %arg0, [%0, %2, %c2_i32, %c2_i32], [%11, %c4_i64, %c2_i64, %c1_i64] : <bf16>, <1x1x2x2xbf16>
+  %13 = arith.muli %arg6, %c32_i32 : i32
+  %14 = arith.extsi %13 : i32 to i64
+  %15 = tt.make_tensor_descriptor %arg1, [%1, %2, %c1_i32, %c64_i32], [%14, %c64_i64, %c64_i64, %c1_i64] : <bf16>, <1x1x1x64xbf16>
+  %16 = arith.muli %arg5, %c2_i32 : i32
+  %17 = arith.extsi %16 : i32 to i64
+  %18 = arith.extsi %arg5 : i32 to i64
+  %19 = tt.make_tensor_descriptor %arg2, [%0, %1, %c2_i32, %c32_i32], [%17, %c32_i64, %18, %c1_i64] : <bf16>, <1x1x2x32xbf16>
+  %21 = triton_cpu.extract_memref %19 : <1x1x2x32xbf16> -> memref<?x?x2x32xbf16, strided<[?, 32, ?, 1]>>
+  %22 = arith.index_cast %m : i32 to index
+  %23 = arith.index_cast %n : i32 to index
+  %24 = vector.transfer_read %21[%22, %23, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x2x32xbf16, strided<[?, 32, ?, 1]>>, vector<2x32xbf16>
+  %25 = arith.extf %24 : vector<2x32xbf16> to vector<2x32xf32>
+  %26 = arith.addi %9, %2 : i32
+  %27 = scf.for %arg8 = %9 to %26 step %c1_i32 iter_args(%arg9 = %25) -> (vector<2x32xf32>)  : i32 {
+    %30 = triton_cpu.extract_memref %12 : <1x1x2x2xbf16> -> memref<?x?x2x2xbf16, strided<[?, 4, 2, 1]>>
+    %31 = arith.index_cast %arg8 : i32 to index
+    %32 = vector.transfer_read %30[%22, %31, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x2x2xbf16, strided<[?, 4, 2, 1]>>, vector<2x2xbf16>
+    %33 = triton_cpu.extract_memref %15 : <1x1x1x64xbf16> -> memref<?x?x1x64xbf16, strided<[?, 64, 64, 1]>>
+    %34 = vector.transfer_read %33[%23, %31, %c0, %c0], %cst {in_bounds = [true, true]} : memref<?x?x1x64xbf16, strided<[?, 64, 64, 1]>>, vector<1x64xbf16>
+    %res1, %res2 = vector.deinterleave %34 : vector<1x64xbf16> -> vector<1x32xbf16>
+    %35 = vector.transpose %res1, [1, 0] : vector<1x32xbf16> to vector<32x1xbf16>
+    %36 = vector.transpose %res2, [1, 0] : vector<1x32xbf16> to vector<32x1xbf16>
+    %37 = vector.interleave %35, %36 : vector<32x1xbf16> -> vector<32x2xbf16>
+    %38 = vector.transpose %37, [1, 0] : vector<32x2xbf16> to vector<2x32xbf16>
+    %39 = triton_cpu.dot %32, %38, %arg9, inputPrecision = tf32 : vector<2x2xbf16> * vector<2x32xbf16> -> vector<2x32xf32>
+    scf.yield %39 : vector<2x32xf32>
+  }
+  %28 = arith.truncf %27 : vector<2x32xf32> to vector<2x32xbf16>
+  %29 = vector.shape_cast %28 : vector<2x32xbf16> to vector<1x1x2x32xbf16>
+  vector.transfer_write %29, %21[%22, %23, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<1x1x2x32xbf16>, memref<?x?x2x32xbf16, strided<[?, 32, ?, 1]>>
+  tt.return
+}
+
+// -----
+
 // Temporary buffer needed: accumulator is initialized from constant
 
 // ALL-LABEL: @gemm_amx_bf16_const_init

@@ -136,16 +136,31 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
            candidate.blockK == k;
   };
 
-  if (shapeUnrollsTo(1, 8, 1, 12))
+  // Check for twice the size in the N dimension, so that at least one eligble
+  // pair of contracts will be generated, which is a requirement for the flat
+  // operand version of the patterns. The VNNI-packed version would work with a
+  // single contraction, but this way we can handle both cases uniformly.
+
+  // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
+  // the pre-packed version expects K=2 (actually, 1x2).
+  if (shapeUnrollsTo(1, 16, 1, 12))
+    return mask & AVX_NE_CONVERT;
+  if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
+      shapeUnrollsTo(1, 16, 2, 12))
     return mask & AVX_NE_CONVERT;
 
-  if (shapeUnrollsTo(1, 16, 2, 24))
+  // For AVX512 and AVX10.2, we have proper dot product instructions, and K
+  // must equal the VNNI factor. We don't have to distingush between flat and
+  // pre-packed versions for shape check.
+  if (shapeUnrollsTo(1, 32, 2, 24))
     return mask & AVX512_BF16;
 
-  if (shapeUnrollsTo(1, 16, 4, 24))
+  if (shapeUnrollsTo(1, 32, 4, 24))
     return mask & AVX10_2;
 
-  // AMX lowering currently matches only the 2x2 register tiling.
+  // AMX lowering currently matches only the 2x2 register tiling. K must equal
+  // 16xVNNI factor; again no need to distinguish between flat and pre-packed
+  // versions for the shape check.
   if (shapeEquals(32, 32, 32))
     return mask & AMX_BF16;
 
@@ -176,34 +191,27 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
+  candidate.isVnniPacked = getVnniSrc(op.getB()) != nullptr;
   mask = checkInputShapes(lhsTy, resTy, candidate, mask);
   if (llvm::isPowerOf2_32(mask) != 1) {
     LDBG("  Drop candidate. No uniquely matching ISA extension for the op's "
          "types and shapes.");
     return false;
   }
+  candidate.target = static_cast<ISAExt>(mask);
 
   if (!isLoopCarriedAcc(op.getC())) {
     LDBG("  Drop candidate. Only loop-carried accumulator case is supported.");
     return false;
   }
 
-  bool isAMX = mask & (AMX_BF16 | AMX_INT8);
-
   auto accLoop = cast<scf::ForOp>(op->getParentOp());
 
   auto lhsRead = op.getA().getDefiningOp<vector::TransferReadOp>();
-  auto rhsRead = op.getB().getDefiningOp<vector::TransferReadOp>();
-
-  bool isVnniPacked = false;
-  // TODO: Handle VNNI encoding for AVX_NE_CONVERT as well.
-  if (!rhsRead && !(mask & AVX_NE_CONVERT)) {
-    Value vnniSrc = getVnniSrc(op.getB());
-    if (vnniSrc) {
-      rhsRead = vnniSrc.getDefiningOp<vector::TransferReadOp>();
-      isVnniPacked = true;
-    }
-  }
+  auto rhsRead =
+      candidate.isVnniPacked
+          ? getVnniSrc(op.getB()).getDefiningOp<vector::TransferReadOp>()
+          : op.getB().getDefiningOp<vector::TransferReadOp>();
 
   if (!lhsRead || !rhsRead) {
     LDBG("  Drop candidate. Expected vector.transfer_read ops feeding the dot, "
@@ -217,6 +225,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
                      .getDefiningOp<vector::TransferReadOp>();
 
   // AMX lowering doesn't care about the write-back of the accumulator anymore.
+  bool isAMX = candidate.target & (AMX_BF16 | AMX_INT8);
   auto accWrite = !isAMX && accLoop.getResults().front().hasOneUse()
                       ? dyn_cast<vector::TransferWriteOp>(
                             *accLoop.getResults().front().getUsers().begin())
@@ -239,12 +248,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     bool hasNonIdentityPermutation =
         !transferOp.getPermutationMap().isMinorIdentity();
     bool hasMask = transferOp.getMask() != nullptr;
-
-    ArrayAttr inBounds = transferOp.getInBounds();
-    bool hasBoundsCheck =
-        std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
-          return !cast<mlir::BoolAttr>(attr).getValue();
-        });
+    bool hasBoundsCheck = transferOp.hasOutOfBoundsDim();
 
     if (hasNonIdentityPermutation || hasMask || hasBoundsCheck) {
       LDBG("  Drop candidate. Transfer op has a permutation map, mask or needs "
@@ -298,19 +302,17 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   // TODO: Otherwise, the k-index for the A load would have to be multiplied by
   // the VNNI factor, which we don't support yet during the conversion of the
   // loop to use an index-typed induction variable.
-  if (!checkTransferOp(lhsRead, isVnniPacked) ||
-      !checkTransferOp(rhsRead, isVnniPacked) || !checkTransferOp(accRead) ||
-      !checkTransferOp(accWrite))
+  if (!checkTransferOp(lhsRead, candidate.isVnniPacked) ||
+      !checkTransferOp(rhsRead, candidate.isVnniPacked) ||
+      !checkTransferOp(accRead) || !checkTransferOp(accWrite))
     return false;
 
-  candidate.target = static_cast<ISAExt>(mask);
   candidate.dot = op;
   candidate.accLoop = accLoop;
   candidate.lhsRead = lhsRead;
   candidate.rhsRead = rhsRead;
   candidate.accRead = accRead;
   candidate.accWrite = accWrite;
-  candidate.isVnniPacked = isVnniPacked;
 
   return true;
 }
@@ -553,8 +555,8 @@ void performRegisterTiling(DotOpCandidate &candidate,
   };
 
   if (candidate.target & AVX_NE_CONVERT) {
-    assert(!candidate.isVnniPacked);
-    vnniFactor = 1; // TODO: Why is NE_CONVERT different?
+    if (!candidate.isVnniPacked)
+      vnniFactor = 1;
     setContractShape(1, 8, 1);
     setLhsShape(1, 1);
     setRhsShape(1, 8);
@@ -609,6 +611,10 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
   llvm::SmallDenseMap<ArrayAttr, vector::InsertStridedSliceOp> insertOps;
 
   for (auto user : iterArg.getUsers()) {
+    // See above: Flat operands require a pair of contractions, so the following
+    // assertion holds.
+    // TODO: If we want to handle the no-unroll-single-VNNI-packed contraction
+    // case, then the we have to make the splicing optional in this method.
     auto extractSliceOp = cast<vector::ExtractStridedSliceOp>(user);
     extractOps[extractSliceOp.getOffsets()] = extractSliceOp;
   }
@@ -831,6 +837,7 @@ struct ConvertDotToNanokernel
           LDBG("  blockM: " << candidate.blockM);
           LDBG("  blockN: " << candidate.blockN);
           LDBG("  blockK: " << candidate.blockK);
+          LDBG("  VNNI-packed: " << candidate.isVnniPacked);
           LDBG("  LHS read: " << candidate.lhsRead);
           LDBG("  RHS read: " << candidate.rhsRead);
           if (candidate.accRead)
