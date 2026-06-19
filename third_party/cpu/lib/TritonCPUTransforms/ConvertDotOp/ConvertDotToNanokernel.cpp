@@ -91,6 +91,9 @@ struct DotOpCandidate {
 
   // Temporary buffer for accumulator.
   memref::AllocaOp accBuffer;
+
+  // Keep track of whether the operands are already VNNI-packed.
+  bool isVnniPacked;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -133,16 +136,31 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
            candidate.blockK == k;
   };
 
-  if (shapeUnrollsTo(1, 8, 1, 12))
+  // Check for twice the size in the N dimension, so that at least one eligible
+  // pair of contractions will be generated, which is a requirement for the flat
+  // operand version of the patterns. The VNNI-packed version would work with a
+  // single contraction, but this way we can handle both cases uniformly.
+
+  // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
+  // the pre-packed version expects K=2 (actually, 1x2).
+  if (shapeUnrollsTo(1, 16, 1, 12))
+    return mask & AVX_NE_CONVERT;
+  if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
+      shapeUnrollsTo(1, 16, 2, 12))
     return mask & AVX_NE_CONVERT;
 
-  if (shapeUnrollsTo(1, 16, 2, 24))
+  // For AVX512 and AVX10.2, we have proper dot product instructions, and K
+  // must equal the VNNI factor. We don't have to distinguish between flat and
+  // pre-packed versions for shape check.
+  if (shapeUnrollsTo(1, 32, 2, 24))
     return mask & AVX512_BF16;
 
-  if (shapeUnrollsTo(1, 16, 4, 24))
+  if (shapeUnrollsTo(1, 32, 4, 24))
     return mask & AVX10_2;
 
-  // AMX lowering currently matches only the 2x2 register tiling.
+  // AMX lowering currently matches only the 2x2 register tiling. K must equal
+  // 16xVNNI factor; again no need to distinguish between flat and pre-packed
+  // versions for the shape check.
   if (shapeEquals(32, 32, 32))
     return mask & AMX_BF16;
 
@@ -173,24 +191,28 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
+  candidate.isVnniPacked = getVnniSrc(op.getB()) != nullptr;
   mask = checkInputShapes(lhsTy, resTy, candidate, mask);
   if (llvm::isPowerOf2_32(mask) != 1) {
     LDBG("  Drop candidate. No uniquely matching ISA extension for the op's "
          "types and shapes.");
     return false;
   }
+  candidate.target = static_cast<ISAExt>(mask);
 
   if (!isLoopCarriedAcc(op.getC())) {
     LDBG("  Drop candidate. Only loop-carried accumulator case is supported.");
     return false;
   }
 
-  bool isAMX = mask & (AMX_BF16 | AMX_INT8);
-
   auto accLoop = cast<scf::ForOp>(op->getParentOp());
 
   auto lhsRead = op.getA().getDefiningOp<vector::TransferReadOp>();
-  auto rhsRead = op.getB().getDefiningOp<vector::TransferReadOp>();
+  auto rhsRead =
+      candidate.isVnniPacked
+          ? getVnniSrc(op.getB()).getDefiningOp<vector::TransferReadOp>()
+          : op.getB().getDefiningOp<vector::TransferReadOp>();
+
   if (!lhsRead || !rhsRead) {
     LDBG("  Drop candidate. Expected vector.transfer_read ops feeding the dot, "
          "but got: "
@@ -203,6 +225,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
                      .getDefiningOp<vector::TransferReadOp>();
 
   // AMX lowering doesn't care about the write-back of the accumulator anymore.
+  bool isAMX = candidate.target & (AMX_BF16 | AMX_INT8);
   auto accWrite = !isAMX && accLoop.getResults().front().hasOneUse()
                       ? dyn_cast<vector::TransferWriteOp>(
                             *accLoop.getResults().front().getUsers().begin())
@@ -217,19 +240,15 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     accWrite = nullptr;
   }
 
-  auto checkTransferOp = [&](auto transferOp) {
+  auto checkTransferOp = [&](auto transferOp,
+                             bool expectBlockBasedIndexing = false) {
     if (!transferOp)
       return true; // No op to check, so no reason to drop the candidate.
 
     bool hasNonIdentityPermutation =
         !transferOp.getPermutationMap().isMinorIdentity();
     bool hasMask = transferOp.getMask() != nullptr;
-
-    ArrayAttr inBounds = transferOp.getInBounds();
-    bool hasBoundsCheck =
-        std::any_of(inBounds.begin(), inBounds.end(), [](Attribute attr) {
-          return !cast<mlir::BoolAttr>(attr).getValue();
-        });
+    bool hasBoundsCheck = transferOp.hasOutOfBoundsDim();
 
     if (hasNonIdentityPermutation || hasMask || hasBoundsCheck) {
       LDBG("  Drop candidate. Transfer op has a permutation map, mask or needs "
@@ -249,6 +268,9 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
     auto memrefTy = cast<MemRefType>(transferOp.getBase().getType());
     auto memrefRank = memrefTy.getRank();
+    // If the memref has more than 2 dimensions, we expect to find block-based
+    // indexing where the last two dimensions of the memref match the vector
+    // shape.
     if (memrefRank > 2) {
       auto memrefShape = memrefTy.getShape();
       auto vecShape = vecTy.getShape();
@@ -265,14 +287,26 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
       }
     }
 
+    if (expectBlockBasedIndexing && memrefRank <= 2) {
+      LDBG("  Drop candidate. Expected block-based indexing, but got: "
+           << transferOp);
+      return false;
+    }
+
     return true;
   };
 
-  if (!checkTransferOp(lhsRead) || !checkTransferOp(rhsRead) ||
+  // Conservatively enforce block-based indexing for the VNNI-packed case, so
+  // that the k-index is the same for the A and B loads, i.e. the induction
+  // variable with step == 1.
+  // TODO: Otherwise, the k-index for the A load would have to be multiplied by
+  // the VNNI factor, which we don't support yet during the conversion of the
+  // loop to use an index-typed induction variable.
+  if (!checkTransferOp(lhsRead, candidate.isVnniPacked) ||
+      !checkTransferOp(rhsRead, candidate.isVnniPacked) ||
       !checkTransferOp(accRead) || !checkTransferOp(accWrite))
     return false;
 
-  candidate.target = static_cast<ISAExt>(mask);
   candidate.dot = op;
   candidate.accLoop = accLoop;
   candidate.lhsRead = lhsRead;
@@ -327,6 +361,67 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   rewriter.replaceAllUsesExcept(result, remat, candidate.accWrite);
 }
 
+void makeVnniRead(vector::TransferReadOp &op, PatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+
+  auto memrefTy = cast<MemRefType>(op.getBase().getType());
+  auto memrefRank = memrefTy.getRank();
+
+  unsigned vnniFactor = 32 / memrefTy.getElementTypeBitWidth();
+
+  SmallVector<int64_t> newMemrefShape{memrefTy.getShape()};
+  if (newMemrefShape.back() != ShapedType::kDynamic) {
+    assert(newMemrefShape.back() % vnniFactor == 0 &&
+           "Expected the last dimension of the memref to be divisible by the "
+           "VNNI factor");
+    newMemrefShape.back() /= vnniFactor;
+  }
+  newMemrefShape.push_back(vnniFactor);
+
+  // Split last dimension.
+  SmallVector<ReassociationIndices> reassoc;
+  for (int d = 0; d < memrefRank - 1; ++d)
+    reassoc.push_back({d});
+  reassoc.push_back({memrefRank - 1, memrefRank});
+
+  auto newMemref = memref::ExpandShapeOp::create(rewriter, loc, newMemrefShape,
+                                                 op.getBase(), reassoc);
+
+  LDBG("  Transformed type: " << memrefTy << " -> " << newMemref.getType());
+
+  auto vecTy = op.getVectorType();
+  SmallVector<int64_t> newVecShape{vecTy.getShape()};
+  assert(newVecShape.back() % vnniFactor == 0 &&
+         "Expected the last dimension of the vector to be divisible by the "
+         "VNNI factor");
+  newVecShape.back() /= vnniFactor;
+  newVecShape.push_back(vnniFactor);
+  auto newVecTy = VectorType::get(newVecShape, vecTy.getElementType());
+
+  SmallVector<Value> newIndices{op.getIndices()};
+  newIndices.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
+
+  SmallVector<bool> newInBounds{op.getInBoundsValues()};
+  newInBounds.push_back(newInBounds.back());
+
+  auto newRead =
+      vector::TransferReadOp::create(rewriter, loc, newVecTy, newMemref,
+                                     newIndices, op.getPadding(), newInBounds);
+
+  // Only needed to keep IR legal.
+  rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(op, vecTy, newRead);
+
+  op = newRead;
+}
+
+void encodeVnniPacking(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  if (!candidate.isVnniPacked)
+    return;
+  makeVnniRead(candidate.lhsRead, rewriter);
+  makeVnniRead(candidate.rhsRead, rewriter);
+}
+
 template <typename TransferOp>
 void moveIndicesToSubview(TransferOp op, PatternRewriter &rewriter) {
   if (llvm::all_of(op.getIndices(), isZeroInteger))
@@ -349,15 +444,12 @@ void moveIndicesToSubview(TransferOp op, PatternRewriter &rewriter) {
   for (int64_t i = 0; i < vecTy.getRank(); ++i)
     sizes[startDim + i] = vecTy.getShape()[i];
 
-  // We checked during candidate selection that if the memref rank is greater
-  // than 2, then the last two dimensions match the vector shape and the indices
-  // are zero.
   auto layout = cast<StridedLayoutAttr>(memrefTy.getLayout());
-  auto resultMemrefTy =
-      MemRefType::get(vecTy.getShape(), vecTy.getElementType(),
-                      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
-                                             layout.getStrides().take_back(2)),
-                      memrefTy.getMemorySpace());
+  auto resultMemrefTy = MemRefType::get(
+      vecTy.getShape(), vecTy.getElementType(),
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                             layout.getStrides().take_back(vecTy.getRank())),
+      memrefTy.getMemorySpace());
 
   Value memrefView = memref::SubViewOp::create(
       rewriter, loc, resultMemrefTy, op.getBase(),
@@ -392,8 +484,10 @@ void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
   rewriter.setInsertionPoint(op);
 
-  Value a = op.getA();
-  Value b = op.getB();
+  // Use the (potentially modified to encode VNNI packing) transfer reads as
+  // operands of the new contraction op.
+  Value a = candidate.lhsRead;
+  Value b = candidate.rhsRead;
   Value c = op.getC();
   VectorType aType = cast<VectorType>(a.getType());
   VectorType bType = cast<VectorType>(b.getType());
@@ -401,17 +495,32 @@ void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
   unsigned rank = cType.getRank();
   assert(rank == 2 && "Only 2D case is supported");
-  auto aMap = AffineMap::getMultiDimMapWithTargets(3, {0, 2}, ctx);
-  auto bMap = AffineMap::getMultiDimMapWithTargets(3, {2, 1}, ctx);
-  auto cMap = AffineMap::getMultiDimMapWithTargets(3, {0, 1}, ctx);
-  auto iteratorTypes = rewriter.getArrayAttr(
-      {vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
-       vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
-       vector::IteratorTypeAttr::get(ctx, vector::IteratorType::reduction)});
+  ArrayAttr indexingMaps, iteratorTypes;
+  if (!candidate.isVnniPacked) {
+    auto aMap = AffineMap::getMultiDimMapWithTargets(3, {0, 2}, ctx);
+    auto bMap = AffineMap::getMultiDimMapWithTargets(3, {2, 1}, ctx);
+    auto cMap = AffineMap::getMultiDimMapWithTargets(3, {0, 1}, ctx);
+    indexingMaps = rewriter.getAffineMapArrayAttr({aMap, bMap, cMap});
+    iteratorTypes = rewriter.getArrayAttr(
+        {vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
+         vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
+         vector::IteratorTypeAttr::get(ctx, vector::IteratorType::reduction)});
+  } else {
+    auto aMap = AffineMap::getMultiDimMapWithTargets(4, {0, 2, 3}, ctx);
+    auto bMap = AffineMap::getMultiDimMapWithTargets(4, {2, 1, 3}, ctx);
+    auto cMap = AffineMap::getMultiDimMapWithTargets(4, {0, 1}, ctx);
+    indexingMaps = rewriter.getAffineMapArrayAttr({aMap, bMap, cMap});
+    iteratorTypes = rewriter.getArrayAttr(
+        {vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
+         vector::IteratorTypeAttr::get(ctx, vector::IteratorType::parallel),
+         vector::IteratorTypeAttr::get(ctx, vector::IteratorType::reduction),
+         vector::IteratorTypeAttr::get(ctx, vector::IteratorType::reduction)});
+  }
   candidate.contract = rewriter.replaceOpWithNewOp<vector::ContractionOp>(
-      op, a, b, c, rewriter.getAffineMapArrayAttr({aMap, bMap, cMap}),
-      iteratorTypes);
+      op, a, b, c, indexingMaps, iteratorTypes);
   candidate.dot = {};
+
+  LDBG("  Converted to contraction op: " << candidate.contract);
 }
 
 void performRegisterTiling(DotOpCandidate &candidate,
@@ -421,40 +530,50 @@ void performRegisterTiling(DotOpCandidate &candidate,
       32 / candidate.contract.getLhs().getType().getElementTypeBitWidth();
 
   static constexpr auto *unrollShapeAttrName = "unroll_shape";
-
-  if (candidate.target & AVX_NE_CONVERT) {
-    candidate.contract->setAttr(unrollShapeAttrName,
-                                rewriter.getI64ArrayAttr({1, 8, 1}));
-    candidate.lhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({1, 1}));
-    candidate.rhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({1, 8}));
-    candidate.accRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({1, 8}));
-    candidate.accWrite->setAttr(unrollShapeAttrName,
-                                rewriter.getI64ArrayAttr({1, 8}));
-  } else if (candidate.target & (AVX512_BF16 | AVX10_2)) {
-    candidate.contract->setAttr(unrollShapeAttrName,
-                                rewriter.getI64ArrayAttr({1, 16, vnniFactor}));
-    candidate.lhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({1, vnniFactor}));
-    candidate.rhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({vnniFactor, 16}));
-    candidate.accRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({1, 16}));
-    candidate.accWrite->setAttr(unrollShapeAttrName,
-                                rewriter.getI64ArrayAttr({1, 16}));
-  } else if (candidate.target & (AMX_BF16 | AMX_INT8)) {
+  auto setContractShape = [&](int64_t m, int64_t n, int64_t k) {
     candidate.contract->setAttr(
         unrollShapeAttrName,
-        rewriter.getI64ArrayAttr({16, 16, 16 * vnniFactor}));
-    candidate.lhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({16, 16 * vnniFactor}));
-    candidate.rhsRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({16 * vnniFactor, 16}));
+        candidate.isVnniPacked
+            ? rewriter.getI64ArrayAttr({m, n, k, vnniFactor})
+            : rewriter.getI64ArrayAttr({m, n, k * vnniFactor}));
+  };
+  auto setLhsShape = [&](int64_t m, int64_t k) {
+    candidate.lhsRead->setAttr(
+        unrollShapeAttrName,
+        candidate.isVnniPacked ? rewriter.getI64ArrayAttr({m, k, vnniFactor})
+                               : rewriter.getI64ArrayAttr({m, k * vnniFactor}));
+  };
+  auto setRhsShape = [&](int64_t k, int64_t n) {
+    candidate.rhsRead->setAttr(
+        unrollShapeAttrName,
+        candidate.isVnniPacked ? rewriter.getI64ArrayAttr({k, n, vnniFactor})
+                               : rewriter.getI64ArrayAttr({k * vnniFactor, n}));
+  };
+  auto setAccShape = [&](int64_t m, int64_t n) {
     candidate.accRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({16, 16}));
-    // Don't attempt to unroll the write.
+                               rewriter.getI64ArrayAttr({m, n}));
+    if (candidate.accWrite)
+      candidate.accWrite->setAttr(unrollShapeAttrName,
+                                  rewriter.getI64ArrayAttr({m, n}));
+  };
+
+  if (candidate.target & AVX_NE_CONVERT) {
+    if (!candidate.isVnniPacked)
+      vnniFactor = 1;
+    setContractShape(1, 8, 1);
+    setLhsShape(1, 1);
+    setRhsShape(1, 8);
+    setAccShape(1, 8);
+  } else if (candidate.target & (AVX512_BF16 | AVX10_2)) {
+    setContractShape(1, 16, 1);
+    setLhsShape(1, 1);
+    setRhsShape(1, 16);
+    setAccShape(1, 16);
+  } else if (candidate.target & (AMX_BF16 | AMX_INT8)) {
+    setContractShape(16, 16, 16);
+    setLhsShape(16, 16);
+    setRhsShape(16, 16);
+    setAccShape(16, 16);
   } else {
     llvm_unreachable("Unsupported ISA extension for register tiling");
   }
@@ -495,6 +614,10 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
   llvm::SmallDenseMap<ArrayAttr, vector::InsertStridedSliceOp> insertOps;
 
   for (auto user : iterArg.getUsers()) {
+    // See above: Flat operands require a pair of contractions, so the following
+    // assertion holds.
+    // TODO: If we want to handle the no-unroll-single-VNNI-packed contraction
+    // case, we have to make the splicing optional in this method.
     auto extractSliceOp = cast<vector::ExtractStridedSliceOp>(user);
     extractOps[extractSliceOp.getOffsets()] = extractSliceOp;
   }
@@ -662,6 +785,10 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
   // Introduce temporary buffer if needed.
   makeAccBuffer(candidate, rewriter);
 
+  // If the operands are already VNNI-packed, communicate this to the patterns
+  // by encoding it in the types.
+  encodeVnniPacking(candidate, rewriter);
+
   // Insert memref.subview ops to ensure all transfer ops have zero indices.
   moveIndicesToSubview(candidate, rewriter);
 
@@ -713,6 +840,7 @@ struct ConvertDotToNanokernel
           LDBG("  blockM: " << candidate.blockM);
           LDBG("  blockN: " << candidate.blockN);
           LDBG("  blockK: " << candidate.blockK);
+          LDBG("  VNNI-packed: " << candidate.isVnniPacked);
           LDBG("  LHS read: " << candidate.lhsRead);
           LDBG("  RHS read: " << candidate.rhsRead);
           if (candidate.accRead)
