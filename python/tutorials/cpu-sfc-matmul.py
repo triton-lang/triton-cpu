@@ -233,8 +233,6 @@ print(f"Running unit test with "
 
 torch_output = torch.empty((M, N), device='cpu', dtype=dtype)
 torch.matmul(a, b, out=torch_output)
-sfc_map_mn = make_sfc_tensor(M // BLOCK_SIZE_M, N // BLOCK_SIZE_N)
-sfc_map_kn = make_sfc_tensor(K // BLOCK_SIZE_K, N // BLOCK_SIZE_N)
 
 triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
 matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), M=M, N=N, K=K, blocking_factor_k=1)

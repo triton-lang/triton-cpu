@@ -136,8 +136,8 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
            candidate.blockK == k;
   };
 
-  // Check for twice the size in the N dimension, so that at least one eligble
-  // pair of contracts will be generated, which is a requirement for the flat
+  // Check for twice the size in the N dimension, so that at least one eligible
+  // pair of contractions will be generated, which is a requirement for the flat
   // operand version of the patterns. The VNNI-packed version would work with a
   // single contraction, but this way we can handle both cases uniformly.
 
@@ -150,7 +150,7 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
     return mask & AVX_NE_CONVERT;
 
   // For AVX512 and AVX10.2, we have proper dot product instructions, and K
-  // must equal the VNNI factor. We don't have to distingush between flat and
+  // must equal the VNNI factor. We don't have to distinguish between flat and
   // pre-packed versions for shape check.
   if (shapeUnrollsTo(1, 32, 2, 24))
     return mask & AVX512_BF16;
@@ -392,6 +392,9 @@ void makeVnniRead(vector::TransferReadOp &op, PatternRewriter &rewriter) {
 
   auto vecTy = op.getVectorType();
   SmallVector<int64_t> newVecShape{vecTy.getShape()};
+  assert(newVecShape.back() % vnniFactor == 0 &&
+         "Expected the last dimension of the vector to be divisible by the "
+         "VNNI factor");
   newVecShape.back() /= vnniFactor;
   newVecShape.push_back(vnniFactor);
   auto newVecTy = VectorType::get(newVecShape, vecTy.getElementType());
@@ -482,7 +485,7 @@ void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   rewriter.setInsertionPoint(op);
 
   // Use the (potentially modified to encode VNNI packing) transfer reads as
-  // operands of the new contractation op.
+  // operands of the new contraction op.
   Value a = candidate.lhsRead;
   Value b = candidate.rhsRead;
   Value c = op.getC();
@@ -614,7 +617,7 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
     // See above: Flat operands require a pair of contractions, so the following
     // assertion holds.
     // TODO: If we want to handle the no-unroll-single-VNNI-packed contraction
-    // case, then the we have to make the splicing optional in this method.
+    // case, we have to make the splicing optional in this method.
     auto extractSliceOp = cast<vector::ExtractStridedSliceOp>(user);
     extractOps[extractSliceOp.getOffsets()] = extractSliceOp;
   }
