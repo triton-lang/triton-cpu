@@ -100,7 +100,7 @@ struct DotOpCandidate {
   bool isVnniPacked;
 
   // Distinguish between replacing only the dot, or an entire accumulation loop.
-  bool isAccumulatorLoop;
+  bool isAccumulationLoop;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -133,48 +133,49 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockK = lhsTy.getDimSize(1);
 
   auto shapeUnrollsTo = [&candidate](int64_t m, int64_t n, int64_t k,
-                                     int64_t numRegs) {
+                                     int64_t numRegs, bool needsNPair = true) {
+    // `needsNPair`: Check for twice the size in the N dimension, so that at
+    // least one eligible pair of contractions will be generated, which is a
+    // requirement for the flat operand version of the patterns. The VNNI-packed
+    // version would work with a single contraction, but this way we can handle
+    // both cases uniformly.
     return candidate.blockM % m == 0 && candidate.blockN % n == 0 &&
            candidate.blockK == k &&
-           (candidate.blockM / m) * (candidate.blockN / n) <= numRegs;
+           (candidate.blockM / m) * (candidate.blockN / n) <= numRegs &&
+           (!needsNPair ||
+            (candidate.blockN / n >= 2 && candidate.blockN / n % 2 == 0));
   };
   auto shapeEquals = [&candidate](int64_t m, int64_t n, int64_t k) {
     return candidate.blockM == m && candidate.blockN == n &&
            candidate.blockK == k;
   };
 
-  // Check for twice the size in the N dimension, so that at least one eligible
-  // pair of contractions will be generated, which is a requirement for the flat
-  // operand version of the patterns. The VNNI-packed version would work with a
-  // single contraction, but this way we can handle both cases uniformly.
-
   // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
   // the pre-packed version expects K=2 (actually, 1x2).
-  if (shapeUnrollsTo(1, 16, 1, 12))
+  if (shapeUnrollsTo(1, 8, 1, 12))
     return mask & AVX_NE_CONVERT;
   if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
-      shapeUnrollsTo(1, 16, 2, 12))
+      shapeUnrollsTo(1, 8, 2, 12))
     return mask & AVX_NE_CONVERT;
 
   // For AVX512 and AVX10.2, we have proper dot product instructions, and K
   // must equal the VNNI factor. We don't have to distinguish between flat and
   // pre-packed versions for shape check.
-  if (shapeUnrollsTo(1, 32, 2, 24))
+  if (shapeUnrollsTo(1, 16, 2, 24))
     return mask & AVX512_BF16;
 
-  if (shapeUnrollsTo(1, 32, 4, 24))
+  if (shapeUnrollsTo(1, 16, 4, 24))
     return mask & AVX10_2;
 
-  // AMX _loop_ lowering currently matches only the 2x2 register tiling,
-  // otherwise unrolling to a single tile is ok. K must equal 16xVNNI factor;
-  // again no need to distinguish between flat and pre-packed versions for the
-  // shape check.
-  if (candidate.isAccumulatorLoop && shapeEquals(32, 32, 32) ||
-      shapeUnrollsTo(16, 16, 32, 4))
+  // AMX loop lowering currently matches only the 2x2 register tiling, otherwise
+  // even a single tile is ok. K must equal 16xVNNI factor; again no need to
+  // distinguish between flat and pre-packed versions for the shape check.
+  if (candidate.isAccumulationLoop && shapeEquals(32, 32, 32) ||
+      shapeUnrollsTo(16, 16, 32, 4, /*needsNPair=*/false))
     return mask & AMX_BF16;
 
-  if (candidate.isAccumulatorLoop && shapeEquals(32, 32, 64) ||
-      shapeUnrollsTo(16, 16, 64, 4))
+  if (candidate.isAccumulationLoop && shapeEquals(32, 32, 64) ||
+      shapeUnrollsTo(16, 16, 64, 4, /*needsNPair=*/false))
     return mask & AMX_INT8;
 
   LDBG("  Drop candidate. Unsupported shapes");
@@ -200,7 +201,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   }
 
   candidate.isVnniPacked = getVnniSrc(op.getB()) != nullptr;
-  candidate.isAccumulatorLoop = isLoopCarriedAcc(op.getC());
+  candidate.isAccumulationLoop = isLoopCarriedAcc(op.getC());
 
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
@@ -214,7 +215,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
   scf::ForOp accLoop;
   BlockArgument accIterArg;
-  if (candidate.isAccumulatorLoop) {
+  if (candidate.isAccumulationLoop) {
     accLoop = cast<scf::ForOp>(op->getParentOp());
     accIterArg = cast<BlockArgument>(op.getC());
   }
@@ -233,7 +234,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   }
 
   vector::TransferReadOp accRead =
-      candidate.isAccumulatorLoop
+      candidate.isAccumulationLoop
           ? accLoop.getTiedLoopInit(accIterArg)
                 ->get()
                 .getDefiningOp<vector::TransferReadOp>()
@@ -243,9 +244,9 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   // AMX loop lowering always materializes the accumulator as a vector value, so
   // it doesn't impose constraints on the the vector.transfer_write.
   bool isAMXLoop =
-      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulatorLoop;
+      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
   if (!isAMXLoop) {
-    OpResult accRes = candidate.isAccumulatorLoop
+    OpResult accRes = candidate.isAccumulationLoop
                           ? accLoop.getTiedLoopResult(accIterArg)
                           : op->getOpResult(0);
     if (accRes.hasOneUse())
@@ -267,7 +268,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
   // For the non-loop case, the pattern enforces that accumulator reads and
   // writes happen in the same block as the contract.
-  if (!candidate.isAccumulatorLoop && accRead && accWrite &&
+  if (!candidate.isAccumulationLoop && accRead && accWrite &&
       (accRead->getBlock() != op->getBlock() ||
        accWrite->getBlock() != op->getBlock())) {
     LDBG("  Cannot use existing vector.transfer_read/write due to them being "
@@ -357,7 +358,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   bool isAMXLoop =
-      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulatorLoop;
+      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
   if (candidate.accRead && (isAMXLoop || candidate.accWrite))
     return; // Nothing to do.
 
@@ -839,7 +840,7 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
   // patterns.
   performRegisterTiling(candidate, rewriter);
 
-  if (candidate.isAccumulatorLoop) {
+  if (candidate.isAccumulationLoop) {
     // Splice the accumulation loop and convert it to use an index induction
     // variable instead.
     spliceAccumulatorAndConvertToIndex(candidate, rewriter);
