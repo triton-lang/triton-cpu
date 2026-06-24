@@ -170,11 +170,11 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   // AMX loop lowering currently matches only the 2x2 register tiling, otherwise
   // even a single tile is ok. K must equal 16xVNNI factor; again no need to
   // distinguish between flat and pre-packed versions for the shape check.
-  if (candidate.isAccumulationLoop && shapeEquals(32, 32, 32) ||
+  if ((candidate.isAccumulationLoop && shapeEquals(32, 32, 32)) ||
       shapeUnrollsTo(16, 16, 32, 4, /*needsNPair=*/false))
     return mask & AMX_BF16;
 
-  if (candidate.isAccumulationLoop && shapeEquals(32, 32, 64) ||
+  if ((candidate.isAccumulationLoop && shapeEquals(32, 32, 64)) ||
       shapeUnrollsTo(16, 16, 64, 4, /*needsNPair=*/false))
     return mask & AMX_INT8;
 
@@ -242,7 +242,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
   vector::TransferWriteOp accWrite;
   // AMX loop lowering always materializes the accumulator as a vector value, so
-  // it doesn't impose constraints on the the vector.transfer_write.
+  // it doesn't impose constraints on the vector.transfer_write.
   bool isAMXLoop =
       candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
   if (!isAMXLoop) {
@@ -362,18 +362,20 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   if (candidate.accRead && (isAMXLoop || candidate.accWrite))
     return; // Nothing to do.
 
-  Location loc = rewriter.getUnknownLoc();
   auto accTy = cast<VectorType>(candidate.dot.getC().getType());
   auto allocaTy = MemRefType::get(accTy.getShape(), accTy.getElementType());
 
+  Location loc = rewriter.getUnknownLoc();
   OpOperand *operand;
   OpResult result;
 
   if (candidate.accLoop) {
+    loc = candidate.accLoop.getLoc();
     operand = candidate.accLoop.getTiedLoopInit(candidate.accIterArg);
     result = candidate.accLoop.getTiedLoopResult(candidate.accIterArg);
     rewriter.setInsertionPoint(candidate.accLoop);
   } else {
+    loc = candidate.dot.getLoc();
     operand = &candidate.dot->getOpOperand(2);
     result = candidate.dot->getOpResult(0);
     rewriter.setInsertionPoint(candidate.dot);
