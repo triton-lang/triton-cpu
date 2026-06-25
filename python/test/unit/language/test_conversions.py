@@ -342,7 +342,7 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
     ('float16', 'float8e4b8', 'rtne', 0x5b80),
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
-    if is_cpu() and dst_dtype not in ['float8e5', 'float8e4nv', 'float8e5b16']:
+    if is_cpu() and dst_dtype not in ['float8e5', 'float8e4nv', 'float8e5b16', 'float16']:
         # TODO: check if 'float8e4b15' downcast is fine for cpu if it will enable in this test
         pytest.skip(f"Conversion from {src_dtype} to {dst_dtype} is not supported on CPU")
 

@@ -62,6 +62,61 @@ struct Bf16ToFp32Conversion : public OpRewritePattern<arith::ExtFOp> {
   }
 };
 
+// Round-toward-zero f32 -> f16. MLIR lowers an arith.truncf carrying a
+// toward_zero rounding mode to a *strict* X86 CVTPS2PH that LLVM cannot
+// type-legalize for vectors wider than one register, hard-crashing the backend
+// (issue #58). Decompose it into integer ops instead, matching the bf16/fp8
+// patterns. The default RTNE truncation is left untouched.
+struct Fp32ToFp16RtzConversion : public OpRewritePattern<arith::TruncFOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncFOp op,
+                                PatternRewriter &rewriter) const override {
+    Value src = op.getIn();
+    if (!isFp16(op.getType()) || !isFp32(src.getType()))
+      return failure();
+    if (op.getRoundingmode() != arith::RoundingMode::toward_zero)
+      return failure();
+
+    Location loc = op.getLoc();
+    Type i16Ty = toInt16(src.getType());
+
+    Value u = op_bitcast(toInt32(src.getType()), src);
+    Value sign = op_and(op_lshr(u, cst_like(u, 16)), cst_like(u, 0x8000));
+    Value a = op_and(u, cst_like(u, 0x7fffffff));
+    Value exp = op_lshr(a, cst_like(a, 23));
+
+    // Normal f16 (|x| >= 2^-14): rebias the exponent and drop the low 13
+    // mantissa bits. A logical shift truncates toward zero == RTZ.
+    Value normal =
+        op_lshr(op_subi(a, cst_like(a, 0x38000000)), cst_like(a, 13));
+
+    // Subnormal f16 (2^-24 <= |x| < 2^-14): build the 24-bit significand and
+    // shift it down by (126 - exp).
+    Value sig = op_or(op_and(a, cst_like(a, 0x7fffff)), cst_like(a, 0x800000));
+    Value shift = op_subi(cst_like(exp, 126), exp);
+    // Clamp so ShRUI stays defined; out-of-range cases are overwritten below.
+    shift = op_minui(shift, cst_like(shift, 31));
+    Value subnormal = op_lshr(sig, shift);
+
+    Value res = subnormal;
+    res = op_select(op_icmp_uge(a, cst_like(a, 0x38800000)), normal, res);
+    // Finite overflow rounds toward zero to the largest finite f16.
+    res = op_select(op_icmp_uge(a, cst_like(a, 0x47800000)),
+                    cst_like(res, 0x7bff), res);
+    // Inf passes through; NaN becomes a canonical quiet NaN.
+    res = op_select(op_icmp_uge(a, cst_like(a, 0x7f800000)),
+                    cst_like(res, 0x7c00), res);
+    res = op_select(op_icmp_ugt(a, cst_like(a, 0x7f800000)),
+                    cst_like(res, 0x7e00), res);
+
+    res = op_or(res, sign);
+    Value out = op_bitcast(op.getType(), op_trunci(i16Ty, res));
+    rewriter.replaceOp(op, out);
+    return success();
+  }
+};
+
 typedef std::function<Value(Location, Value, PatternRewriter &)> FpToFpConvFn;
 
 // Convert FP8 to FP16/FP32.
@@ -519,6 +574,8 @@ struct DecomposeFpConversions
       patterns.add<RewriteTruncFp8>(context);
       patterns.add<RewriteExtFp8>(context);
     }
+    // Unconditional: the RTZ f32->f16 crash is independent of the flags above.
+    patterns.add<Fp32ToFp16RtzConversion>(context);
 
     if (failed(mlir::applyPatternsGreedily(mod, std::move(patterns))))
       return signalPassFailure();
