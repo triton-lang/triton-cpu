@@ -79,8 +79,12 @@ struct DotOpCandidate {
   int64_t blockN;
   int64_t blockK;
 
-  // Accumulation loop (original and spliced).
+  // Surrounding function.
+  triton::FuncOp func;
+
+  // Accumulation loop (original and spliced), optional.
   scf::ForOp accLoop;
+  BlockArgument accIterArg;
   scf::ForOp splicedAccLoop;
 
   // Vector transfer ops for inputs/output.
@@ -94,6 +98,9 @@ struct DotOpCandidate {
 
   // Keep track of whether the operands are already VNNI-packed.
   bool isVnniPacked;
+
+  // Distinguish between replacing only the dot, or an entire accumulation loop.
+  bool isAccumulationLoop;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -126,45 +133,49 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockK = lhsTy.getDimSize(1);
 
   auto shapeUnrollsTo = [&candidate](int64_t m, int64_t n, int64_t k,
-                                     int64_t numRegs) {
+                                     int64_t numRegs, bool needsNPair = true) {
+    // `needsNPair`: Check for twice the size in the N dimension, so that at
+    // least one eligible pair of contractions will be generated, which is a
+    // requirement for the flat operand version of the patterns. The VNNI-packed
+    // version would work with a single contraction, but this way we can handle
+    // both cases uniformly.
     return candidate.blockM % m == 0 && candidate.blockN % n == 0 &&
            candidate.blockK == k &&
-           (candidate.blockM / m) * (candidate.blockN / n) <= numRegs;
+           (candidate.blockM / m) * (candidate.blockN / n) <= numRegs &&
+           (!needsNPair ||
+            (candidate.blockN / n >= 2 && candidate.blockN / n % 2 == 0));
   };
   auto shapeEquals = [&candidate](int64_t m, int64_t n, int64_t k) {
     return candidate.blockM == m && candidate.blockN == n &&
            candidate.blockK == k;
   };
 
-  // Check for twice the size in the N dimension, so that at least one eligible
-  // pair of contractions will be generated, which is a requirement for the flat
-  // operand version of the patterns. The VNNI-packed version would work with a
-  // single contraction, but this way we can handle both cases uniformly.
-
   // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
   // the pre-packed version expects K=2 (actually, 1x2).
-  if (shapeUnrollsTo(1, 16, 1, 12))
+  if (shapeUnrollsTo(1, 8, 1, 12))
     return mask & AVX_NE_CONVERT;
   if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
-      shapeUnrollsTo(1, 16, 2, 12))
+      shapeUnrollsTo(1, 8, 2, 12))
     return mask & AVX_NE_CONVERT;
 
   // For AVX512 and AVX10.2, we have proper dot product instructions, and K
   // must equal the VNNI factor. We don't have to distinguish between flat and
   // pre-packed versions for shape check.
-  if (shapeUnrollsTo(1, 32, 2, 24))
+  if (shapeUnrollsTo(1, 16, 2, 24))
     return mask & AVX512_BF16;
 
-  if (shapeUnrollsTo(1, 32, 4, 24))
+  if (shapeUnrollsTo(1, 16, 4, 24))
     return mask & AVX10_2;
 
-  // AMX lowering currently matches only the 2x2 register tiling. K must equal
-  // 16xVNNI factor; again no need to distinguish between flat and pre-packed
-  // versions for the shape check.
-  if (shapeEquals(32, 32, 32))
+  // AMX loop lowering currently matches only the 2x2 register tiling, otherwise
+  // even a single tile is ok. K must equal 16xVNNI factor; again no need to
+  // distinguish between flat and pre-packed versions for the shape check.
+  if ((candidate.isAccumulationLoop && shapeEquals(32, 32, 32)) ||
+      shapeUnrollsTo(16, 16, 32, 4, /*needsNPair=*/false))
     return mask & AMX_BF16;
 
-  if (shapeEquals(32, 32, 64))
+  if ((candidate.isAccumulationLoop && shapeEquals(32, 32, 64)) ||
+      shapeUnrollsTo(16, 16, 64, 4, /*needsNPair=*/false))
     return mask & AMX_INT8;
 
   LDBG("  Drop candidate. Unsupported shapes");
@@ -189,9 +200,11 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
+  candidate.isVnniPacked = getVnniSrc(op.getB()) != nullptr;
+  candidate.isAccumulationLoop = isLoopCarriedAcc(op.getC());
+
   mask = checkElemTypes(lhsTy.getElementType(), rhsTy.getElementType(),
                         accTy.getElementType(), resTy.getElementType(), mask);
-  candidate.isVnniPacked = getVnniSrc(op.getB()) != nullptr;
   mask = checkInputShapes(lhsTy, resTy, candidate, mask);
   if (llvm::isPowerOf2_32(mask) != 1) {
     LDBG("  Drop candidate. No uniquely matching ISA extension for the op's "
@@ -200,12 +213,12 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   }
   candidate.target = static_cast<ISAExt>(mask);
 
-  if (!isLoopCarriedAcc(op.getC())) {
-    LDBG("  Drop candidate. Only loop-carried accumulator case is supported.");
-    return false;
+  scf::ForOp accLoop;
+  BlockArgument accIterArg;
+  if (candidate.isAccumulationLoop) {
+    accLoop = cast<scf::ForOp>(op->getParentOp());
+    accIterArg = cast<BlockArgument>(op.getC());
   }
-
-  auto accLoop = cast<scf::ForOp>(op->getParentOp());
 
   auto lhsRead = op.getA().getDefiningOp<vector::TransferReadOp>();
   auto rhsRead =
@@ -220,22 +233,46 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
-  auto accRead = accLoop.getTiedLoopInit(cast<BlockArgument>(op.getC()))
-                     ->get()
-                     .getDefiningOp<vector::TransferReadOp>();
+  vector::TransferReadOp accRead =
+      candidate.isAccumulationLoop
+          ? accLoop.getTiedLoopInit(accIterArg)
+                ->get()
+                .getDefiningOp<vector::TransferReadOp>()
+          : op.getC().getDefiningOp<vector::TransferReadOp>();
 
-  // AMX lowering doesn't care about the write-back of the accumulator anymore.
-  bool isAMX = candidate.target & (AMX_BF16 | AMX_INT8);
-  auto accWrite = !isAMX && accLoop.getResults().front().hasOneUse()
-                      ? dyn_cast<vector::TransferWriteOp>(
-                            *accLoop.getResults().front().getUsers().begin())
-                      : nullptr;
+  vector::TransferWriteOp accWrite;
+  // AMX loop lowering always materializes the accumulator as a vector value, so
+  // it doesn't impose constraints on the vector.transfer_write.
+  bool isAMXLoop =
+      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
+  if (!isAMXLoop) {
+    OpResult accRes = candidate.isAccumulationLoop
+                          ? accLoop.getTiedLoopResult(accIterArg)
+                          : op->getOpResult(0);
+    if (accRes.hasOneUse())
+      accWrite = dyn_cast<vector::TransferWriteOp>(*accRes.getUsers().begin());
+  }
 
+  // Quirk in the patterns: they assume that the accumulator read and
+  // write are from/to the same memref with the same indices. If not, we can't
+  // use the existing transfer ops. Setting accRead and accWrite to nullptr
+  // means we'll allocate a temporary buffer for the accumulator instead.
   if (accRead && accWrite &&
       (accRead.getBase() != accWrite.getBase() ||
        !llvm::equal(accRead.getIndices(), accWrite.getIndices()))) {
     LDBG("  Cannot use existing vector.transfer_read/write due to mismatch in "
          "memref or indices.");
+    accRead = nullptr;
+    accWrite = nullptr;
+  }
+
+  // For the non-loop case, the pattern enforces that accumulator reads and
+  // writes happen in the same block as the contract.
+  if (!candidate.isAccumulationLoop && accRead && accWrite &&
+      (accRead->getBlock() != op->getBlock() ||
+       accWrite->getBlock() != op->getBlock())) {
+    LDBG("  Cannot use existing vector.transfer_read/write due to them being "
+         "in different blocks");
     accRead = nullptr;
     accWrite = nullptr;
   }
@@ -308,7 +345,9 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
 
   candidate.dot = op;
+  candidate.func = op->getParentOfType<triton::FuncOp>();
   candidate.accLoop = accLoop;
+  candidate.accIterArg = accIterArg;
   candidate.lhsRead = lhsRead;
   candidate.rhsRead = rhsRead;
   candidate.accRead = accRead;
@@ -318,16 +357,31 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
-  bool isAMX = candidate.target & (AMX_BF16 | AMX_INT8);
-  if (candidate.accRead && (isAMX || candidate.accWrite))
+  bool isAMXLoop =
+      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
+  if (candidate.accRead && (isAMXLoop || candidate.accWrite))
     return; // Nothing to do.
 
-  Location loc = candidate.accLoop.getLoc();
   auto accTy = cast<VectorType>(candidate.dot.getC().getType());
   auto allocaTy = MemRefType::get(accTy.getShape(), accTy.getElementType());
 
-  // Before the loop...
-  rewriter.setInsertionPoint(candidate.accLoop);
+  Location loc = rewriter.getUnknownLoc();
+  OpOperand *operand;
+  OpResult result;
+
+  if (candidate.accLoop) {
+    loc = candidate.accLoop.getLoc();
+    operand = candidate.accLoop.getTiedLoopInit(candidate.accIterArg);
+    result = candidate.accLoop.getTiedLoopResult(candidate.accIterArg);
+    rewriter.setInsertionPoint(candidate.accLoop);
+  } else {
+    loc = candidate.dot.getLoc();
+    operand = &candidate.dot->getOpOperand(2);
+    result = candidate.dot->getOpResult(0);
+    rewriter.setInsertionPoint(candidate.dot);
+  }
+
+  // Before dot or loop...
   candidate.accBuffer = memref::AllocaOp::create(rewriter, loc, allocaTy);
 
   SmallVector<Value> zeroIndices(
@@ -335,23 +389,18 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   Value padding = arith::ConstantOp::create(
       rewriter, loc, rewriter.getZeroAttr(accTy.getElementType()));
 
-  OpOperand *initOperand = candidate.accLoop.getTiedLoopInit(
-      cast<BlockArgument>(candidate.dot.getC()));
-  Value init = initOperand->get();
-
-  vector::TransferWriteOp::create(rewriter, loc, init, candidate.accBuffer,
-                                  zeroIndices);
+  vector::TransferWriteOp::create(rewriter, loc, operand->get(),
+                                  candidate.accBuffer, zeroIndices);
   candidate.accRead = vector::TransferReadOp::create(
       rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
-  initOperand->set(candidate.accRead);
+  operand->set(candidate.accRead);
 
-  if (isAMX)
+  if (isAMXLoop)
     return;
 
-  // After the loop...
-  rewriter.setInsertionPointAfter(candidate.accLoop);
-
-  Value result = candidate.accLoop.getTiedLoopResult(initOperand);
+  // After dot or loop...
+  rewriter.setInsertionPointAfter(candidate.accLoop ? candidate.accLoop
+                                                    : candidate.dot);
 
   candidate.accWrite = vector::TransferWriteOp::create(
       rewriter, loc, result, candidate.accBuffer, zeroIndices);
@@ -434,38 +483,36 @@ void moveIndicesToSubview(TransferOp op, PatternRewriter &rewriter) {
 
   auto memrefTy = cast<MemRefType>(op.getBase().getType());
   auto vecTy = op.getVectorType();
+  auto vecShape = vecTy.getShape();
 
-  SmallVector<int64_t> sizes(memrefTy.getRank(), 1);
-  SmallVector<int64_t> strides(memrefTy.getRank(), 1);
-
+  SmallVector<int64_t> sizesInt(memrefTy.getRank(), 1);
   int64_t startDim = memrefTy.getRank() - vecTy.getRank();
   assert(startDim >= 0);
-
   for (int64_t i = 0; i < vecTy.getRank(); ++i)
-    sizes[startDim + i] = vecTy.getShape()[i];
+    sizesInt[startDim + i] = vecShape[i];
 
-  auto layout = cast<StridedLayoutAttr>(memrefTy.getLayout());
-  auto resultMemrefTy = MemRefType::get(
-      vecTy.getShape(), vecTy.getElementType(),
-      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
-                             layout.getStrides().take_back(vecTy.getRank())),
-      memrefTy.getMemorySpace());
+  auto indices = getAsOpFoldResult(op.getIndices());
+  auto sizes = getAsIndexOpFoldResult(ctx, sizesInt);
+  auto strides =
+      getAsIndexOpFoldResult(ctx, SmallVector<int64_t>(memrefTy.getRank(), 1));
 
-  Value memrefView = memref::SubViewOp::create(
-      rewriter, loc, resultMemrefTy, op.getBase(),
-      getAsOpFoldResult(op.getIndices()), getAsIndexOpFoldResult(ctx, sizes),
-      getAsIndexOpFoldResult(ctx, strides));
+  MemRefType rankReducedMemrefTy =
+      memref::SubViewOp::inferRankReducedResultType(vecShape, memrefTy, indices,
+                                                    sizes, strides);
+  Value subview =
+      memref::SubViewOp::create(rewriter, loc, rankReducedMemrefTy,
+                                op.getBase(), indices, sizes, strides);
 
-  SmallVector<Value> zeros(resultMemrefTy.getRank(),
+  SmallVector<Value> zeros(rankReducedMemrefTy.getRank(),
                            arith::ConstantIndexOp::create(rewriter, loc, 0));
 
   auto idMap = AffineMap::getMultiDimIdentityMap(vecTy.getRank(), ctx);
 
-  op.getBaseMutable().assign(memrefView);
+  op.getBaseMutable().assign(subview);
   op.getIndicesMutable().assign(zeros);
   op.setPermutationMap(idMap);
 
-  LDBG("  Inserted subview: " << memrefView << " for transfer op: " << op);
+  LDBG("  Inserted subview: " << subview << " for transfer op: " << op);
 }
 
 void moveIndicesToSubview(DotOpCandidate &candidate,
@@ -592,11 +639,9 @@ void performRegisterTiling(DotOpCandidate &candidate,
         return shape;
       });
 
-  RewritePatternSet patterns(candidate.contract.getContext());
+  RewritePatternSet patterns(candidate.func.getContext());
   vector::populateVectorUnrollPatterns(patterns, unrollOptions);
-  auto res = applyPatternsGreedily(
-      candidate.contract->getParentOfType<triton::FuncOp>(),
-      std::move(patterns));
+  auto res = applyPatternsGreedily(candidate.func, std::move(patterns));
   (void)res;
   assert(succeeded(res) && "Register tiling patterns failed to apply");
 }
@@ -604,7 +649,7 @@ void performRegisterTiling(DotOpCandidate &candidate,
 void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
                                         PatternRewriter &rewriter) {
   scf::ForOp oldFor = candidate.accLoop;
-  BlockArgument iterArg = cast<BlockArgument>(candidate.contract.getAcc());
+  BlockArgument iterArg = candidate.accIterArg;
 
   // Collect the extract/insert slice ops on the accumulator from users of iter
   // arg resp. yield operand. We checked earlier that the loop is an accumulator
@@ -764,7 +809,7 @@ void spliceAccumulatorAndConvertToIndex(DotOpCandidate &candidate,
 
 LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
                                       PatternRewriter &rewriter) {
-  RewritePatternSet patterns(candidate.splicedAccLoop.getContext());
+  RewritePatternSet patterns(candidate.func.getContext());
   if (candidate.target & AVX_NE_CONVERT)
     x86::populateVectorContractBF16ToFMAPatterns(patterns);
   else if (candidate.target & (AVX512_BF16 | AVX10_2))
@@ -775,9 +820,7 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
     llvm_unreachable(
         "Unsupported target ISA extension for nanokernel patterns");
 
-  return applyPatternsGreedily(
-      candidate.splicedAccLoop->getParentOfType<triton::FuncOp>(),
-      std::move(patterns));
+  return applyPatternsGreedily(candidate.func, std::move(patterns));
 }
 
 LogicalResult convertCandidate(DotOpCandidate &candidate,
@@ -799,13 +842,15 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
   // patterns.
   performRegisterTiling(candidate, rewriter);
 
-  // Splice the accumulation loop and convert it to use an index induction
-  // variable instead.
-  spliceAccumulatorAndConvertToIndex(candidate, rewriter);
+  if (candidate.isAccumulationLoop) {
+    // Splice the accumulation loop and convert it to use an index induction
+    // variable instead.
+    spliceAccumulatorAndConvertToIndex(candidate, rewriter);
 
-  // LICM as preparation: The contraction lowering patterns are sensitive to
-  // unexpected ops in the accumulator loop.
-  moveLoopInvariantCode(candidate.splicedAccLoop);
+    // LICM as preparation: The contraction lowering patterns are sensitive to
+    // unexpected ops in the accumulator loop.
+    moveLoopInvariantCode(candidate.splicedAccLoop);
+  }
 
   // Finally, apply the upstream patterns.
   return applyNanokernelPatterns(candidate, rewriter);
