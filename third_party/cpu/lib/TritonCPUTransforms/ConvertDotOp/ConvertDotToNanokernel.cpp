@@ -241,17 +241,11 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
           : op.getC().getDefiningOp<vector::TransferReadOp>();
 
   vector::TransferWriteOp accWrite;
-  // AMX loop lowering always materializes the accumulator as a vector value, so
-  // it doesn't impose constraints on the vector.transfer_write.
-  bool isAMXLoop =
-      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
-  if (!isAMXLoop) {
-    OpResult accRes = candidate.isAccumulationLoop
-                          ? accLoop.getTiedLoopResult(accIterArg)
-                          : op->getOpResult(0);
-    if (accRes.hasOneUse())
-      accWrite = dyn_cast<vector::TransferWriteOp>(*accRes.getUsers().begin());
-  }
+  OpResult accRes = candidate.isAccumulationLoop
+                        ? accLoop.getTiedLoopResult(accIterArg)
+                        : op->getOpResult(0);
+  if (accRes.hasOneUse())
+    accWrite = dyn_cast<vector::TransferWriteOp>(*accRes.getUsers().begin());
 
   // Quirk in the patterns: they assume that the accumulator read and
   // write are from/to the same memref with the same indices. If not, we can't
@@ -357,9 +351,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
-  bool isAMXLoop =
-      candidate.target & (AMX_BF16 | AMX_INT8) && candidate.isAccumulationLoop;
-  if (candidate.accRead && (isAMXLoop || candidate.accWrite))
+  if (candidate.accRead && candidate.accWrite)
     return; // Nothing to do.
 
   auto accTy = cast<VectorType>(candidate.dot.getC().getType());
@@ -394,9 +386,6 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   candidate.accRead = vector::TransferReadOp::create(
       rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
   operand->set(candidate.accRead);
-
-  if (isAMXLoop)
-    return;
 
   // After dot or loop...
   rewriter.setInsertionPointAfter(candidate.accLoop ? candidate.accLoop
