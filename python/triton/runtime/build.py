@@ -32,10 +32,10 @@ def quiet():
         sys.stdout, sys.stderr = old_stdout, old_stderr
 
 
-def _is_apple_clang():
+def _is_apple_clang(compiler):
     if platform.system() != "Darwin":
         return False
-    res = subprocess.run(["clang", "--version"], capture_output=True, text=True)
+    res = subprocess.run([compiler, "--version"], capture_output=True, text=True)
     if res.returncode != 0:
         return False
     return "Apple clang" in res.stdout
@@ -105,7 +105,7 @@ def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_di
     if system == "Darwin":
         cc_cmd += ["-undefined", "dynamic_lookup"]
         # Don't use libgcc on clang + macos
-        if "clang" in cc:
+        if _is_apple_clang(cc):
             libraries.remove("gcc")
 
     if language == "c++":
@@ -120,7 +120,7 @@ def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_di
         cc_cmd += ["-std=c++17"]
         if not os.environ.get("TRITON_DISABLE_OPENMP", None):
             libomp_path = os.environ.get("TRITON_LOCAL_LIBOMP_PATH", None)
-            if _is_apple_clang():
+            if _is_apple_clang(cc):
                 if libomp_path:
                     cc_cmd += ["-Xclang"]
                     cc_cmd += ["-fopenmp"]
