@@ -717,9 +717,11 @@ tt.func public @gemm_avxneconvert_bf16_vnni(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr
 
 // AMX-COUNT-3: vector.transfer_read %[[BUFFER2]]
 // AMX:         %[[LAST_READ:.+]] = vector.transfer_read %[[BUFFER2]][%c16, %c16]
-// AMX-COUNT-3: vector.insert_strided_slice
-// AMX:         %[[REMAT:.+]] = vector.insert_strided_slice %[[LAST_READ]], %{{.+}}
-// AMX:         vector.transfer_write %[[REMAT]], %[[ORIG_MEMREF]]
+// AMX-COUNT-3: vector.transfer_write %{{.+}}, %[[BUFFER]]
+// AMX:         vector.transfer_write %[[LAST_READ]], %[[BUFFER]][%c16, %c16]
+// AMX:         %[[COPY:.+]] = vector.transfer_read %[[BUFFER]]
+// AMX-SAME:      memref<32x32xf32>, vector<32x32xf32>
+// AMX:         vector.transfer_write %[[COPY]], %[[ORIG_MEMREF]]
 
 tt.func public @gemm_amx_bf16_const_init(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
   %cst = arith.constant 0.000000e+00 : bf16
