@@ -509,8 +509,7 @@ void moveIndicesToSubview(DotOpCandidate &candidate,
   moveIndicesToSubview(candidate.lhsRead, rewriter);
   moveIndicesToSubview(candidate.rhsRead, rewriter);
   moveIndicesToSubview(candidate.accRead, rewriter);
-  if (!(candidate.target & (AMX_BF16 | AMX_INT8)))
-    moveIndicesToSubview(candidate.accWrite, rewriter);
+  moveIndicesToSubview(candidate.accWrite, rewriter);
 }
 
 void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
@@ -588,9 +587,8 @@ void performRegisterTiling(DotOpCandidate &candidate,
   auto setAccShape = [&](int64_t m, int64_t n) {
     candidate.accRead->setAttr(unrollShapeAttrName,
                                rewriter.getI64ArrayAttr({m, n}));
-    if (candidate.accWrite)
-      candidate.accWrite->setAttr(unrollShapeAttrName,
-                                  rewriter.getI64ArrayAttr({m, n}));
+    candidate.accWrite->setAttr(unrollShapeAttrName,
+                                rewriter.getI64ArrayAttr({m, n}));
   };
 
   if (candidate.target & AVX_NE_CONVERT) {
