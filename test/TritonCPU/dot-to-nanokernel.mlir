@@ -697,31 +697,24 @@ tt.func public @gemm_avxneconvert_bf16_vnni(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr
 
 // -----
 
-// Temporary buffer needed: accumulator is initialized from constant
+// Accumulator is initialized from a constant. An intermediate, zero-initialized buffer is used but eliminated after applying the nanokernel pattern.
 
 // ALL-LABEL: @gemm_amx_bf16_const_init
 
-// AMX:         %[[ZEROVEC:.+]] = arith.constant dense<0.000000e+00> : vector<32x32xf32>
 // AMX:         %[[ORIG_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <32x32xf32> -> memref<?x?xf32, strided<[?, 1]>
-
-// AMX:         %[[BUFFER:.+]] = memref.alloca() : memref<32x32xf32>
-// AMX:         vector.transfer_write %[[ZEROVEC]], %[[BUFFER]][%c0, %c0]
 
 // AMX:         %[[BUFFER2:.+]] = memref.alloca() : memref<32x32xf32>
 // AMX-COUNT-4: x86.amx.tile_store %[[BUFFER2]]
 
 // AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
+// AMX-NOT:       vector.addf
 // AMX-COUNT-2:   vector.load %[[BUFFER2]]
-// AMX-COUNT-2:   vector.load %[[BUFFER]]
+// AMX-COUNT-2:   vector.shuffle
 // AMX-COUNT-2:   vector.store %{{.+}}, %[[BUFFER2]]
 
-// AMX-COUNT-3: vector.transfer_read %[[BUFFER2]]
-// AMX:         %[[LAST_READ:.+]] = vector.transfer_read %[[BUFFER2]][%c16, %c16]
-// AMX-COUNT-3: vector.transfer_write %{{.+}}, %[[BUFFER]]
-// AMX:         vector.transfer_write %[[LAST_READ]], %[[BUFFER]][%c16, %c16]
-// AMX:         %[[COPY:.+]] = vector.transfer_read %[[BUFFER]]
+// AMX:         %[[REMAT:.+]] = vector.transfer_read %[[BUFFER2]]
 // AMX-SAME:      memref<32x32xf32>, vector<32x32xf32>
-// AMX:         vector.transfer_write %[[COPY]], %[[ORIG_MEMREF]]
+// AMX:         vector.transfer_write %[[REMAT]], %[[ORIG_MEMREF]]
 
 tt.func public @gemm_amx_bf16_const_init(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
   %cst = arith.constant 0.000000e+00 : bf16

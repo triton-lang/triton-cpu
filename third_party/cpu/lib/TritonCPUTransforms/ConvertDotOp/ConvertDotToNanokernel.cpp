@@ -8,6 +8,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
+#include "triton/Analysis/Utility.h"
 
 namespace mlir {
 namespace triton {
@@ -95,6 +96,8 @@ struct DotOpCandidate {
 
   // Temporary buffer for accumulator.
   memref::AllocaOp accBuffer;
+  vector::TransferWriteOp accInit;
+  vector::TransferReadOp accRemat;
 
   // Keep track of whether the operands are already VNNI-packed.
   bool isVnniPacked;
@@ -381,8 +384,8 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   Value padding = arith::ConstantOp::create(
       rewriter, loc, rewriter.getZeroAttr(accTy.getElementType()));
 
-  vector::TransferWriteOp::create(rewriter, loc, operand->get(),
-                                  candidate.accBuffer, zeroIndices);
+  candidate.accInit = vector::TransferWriteOp::create(
+      rewriter, loc, operand->get(), candidate.accBuffer, zeroIndices);
   candidate.accRead = vector::TransferReadOp::create(
       rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
   operand->set(candidate.accRead);
@@ -393,10 +396,10 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
   candidate.accWrite = vector::TransferWriteOp::create(
       rewriter, loc, result, candidate.accBuffer, zeroIndices);
-  Value remat = vector::TransferReadOp::create(
+  candidate.accRemat = vector::TransferReadOp::create(
       rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
 
-  rewriter.replaceAllUsesExcept(result, remat, candidate.accWrite);
+  rewriter.replaceAllUsesExcept(result, candidate.accRemat, candidate.accWrite);
 }
 
 void makeVnniRead(vector::TransferReadOp &op, PatternRewriter &rewriter) {
@@ -810,6 +813,183 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
   return applyPatternsGreedily(candidate.func, std::move(patterns));
 }
 
+// The AMX patterns need to allocate a temporary buffer to store the tile
+// registers after accumulation. However, if we inserted a buffer as well, there
+// will be a redundant copy from buffer to buffer. We're looking for the
+// following pattern:
+//
+// ```
+//  // ... tile_store to %nanokernelBuffer
+//  // ... scf.for to add initial value of accumulator and shuffle if needed
+//  %t0 = vector.transfer_read %nanokernelBuffer[%c0, %c16]
+//  %t1 = vector.transfer_read %nanokernelBuffer[%c0, %c16]
+//  %t2 = vector.transfer_read %nanokernelBuffer[%c16, %c0]
+//  %t3 = vector.transfer_read %nanokernelBuffer[%c16, %c16]
+//  vector.transfer_write %t0, %candidate.accBuffer[%c0, %c0]
+//  vector.transfer_write %t1, %candidate.accBuffer[%c0, %c16]
+//  vector.transfer_write %t2, %candidate.accBuffer[%c16, %c0]
+//  vector.transfer_write %t3, %candidate.accBuffer[%c16, %c16]
+//  %candidate.accRemat = vector.transfer_read %candidate.accBuffer[%c0, %c0]
+// ```
+//
+// The replacement is simply:
+// ```
+//   %candidate.accRemat = vector.transfer_read %nanokernelBuffer[%c0, %c0]
+// ```
+void elideAccCopy(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  VectorType accTy = candidate.accRemat.getType();
+  auto accShape = accTy.getShape();
+
+  // Keep track of which elements are written.
+  llvm::SmallBitVector bits(accTy.getNumElements());
+  SmallVector<vector::TransferReadOp> reads;
+  SmallVector<vector::TransferWriteOp> writes;
+
+  // The usual checks.
+  auto isSimpleTransferOp = [](auto transferOp) -> bool {
+    return transferOp.getPermutationMap().isMinorIdentity() &&
+           !transferOp.getMask() && !transferOp.hasOutOfBoundsDim();
+  };
+
+  auto simulate = [&](vector::TransferWriteOp write) {
+    // The transfer_write must be to the accumulator buffer...
+    if (write.getBase() != candidate.accBuffer || !isSimpleTransferOp(write))
+      return;
+
+    // ... and store a value coming from a transfer_read with the same indices.
+    // Also check already that all reads are from the same base.
+    auto read = write.getValueToStore().getDefiningOp<vector::TransferReadOp>();
+    if (!read || !isSimpleTransferOp(read) ||
+        !llvm::equal(read.getIndices(), write.getIndices()) ||
+        (!reads.empty() && reads.front().getBase() != read.getBase()))
+      return;
+
+    auto vecTy = write.getVectorType();
+    auto vecShape = vecTy.getShape();
+    auto maybeConstIndices =
+        getConstantIntValues(getAsOpFoldResult(write.getIndices()));
+    // Bail out if the indices are not constant.
+    if (!maybeConstIndices)
+      return;
+
+    // Simulate effect of transfer_write.
+    SmallVector<int64_t> indices = *maybeConstIndices;
+    for (int row = indices[0]; row < indices[0] + vecShape[0]; ++row) {
+      auto firstElemIdx = row * accShape[1] + indices[1];
+      bits.set(firstElemIdx, firstElemIdx + vecShape[1]);
+    }
+
+    reads.push_back(read);
+    writes.push_back(write);
+  };
+
+  // The idea is: Look for a chain of transfer_write ops that write to the
+  // accumulator buffer, and mark the bits that are written. If all elements are
+  // guaranteed to be written afterwards, we can elide the copy.
+  Operation *opIt = candidate.accRemat->getPrevNode();
+
+  while (isa_and_present<vector::TransferWriteOp>(opIt) && !bits.all()) {
+    simulate(cast<vector::TransferWriteOp>(opIt));
+    opIt = opIt->getPrevNode();
+  }
+
+  if (!bits.all())
+    return;
+
+  candidate.accRemat.getBaseMutable().assign(reads.front().getBase());
+  for (auto write : writes)
+    rewriter.eraseOp(write);
+  for (auto read : reads)
+    rewriter.eraseOp(read);
+
+  LDBG("  Elided copy after accumulation loop.");
+}
+
+// Removes vector.store op that overwrite a memory location with its current
+// value, e.g.:
+// ```
+//   %0 = vector.load %alloca[%row, %c16] : memref<32x32xf32>, vector<16xf32>
+//   vector.store %0, %alloca[%row, %c16] : memref<32x32xf32>, vector<16xf32>
+// ```
+struct ElideSelfCopyPattern : public OpRewritePattern<vector::StoreOp> {
+  using OpRewritePattern<vector::StoreOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::StoreOp store,
+                                PatternRewriter &rewriter) const override {
+    // vector.load must have the same base and indices, and be in the same block
+    // as the store.
+    auto load = store.getValueToStore().getDefiningOp<vector::LoadOp>();
+    if (!load || load.getBase() != store.getBase() ||
+        !llvm::equal(load.getIndices(), store.getIndices()) ||
+        load->getBlock() != store->getBlock())
+      return failure();
+
+    // In lieu of proper DFA: Check that no other store happens to the memref
+    // between the load and store.
+    for (Operation *opIt = load->getNextNode(); opIt != store;
+         opIt = opIt->getNextNode()) {
+      if (auto otherStore = dyn_cast<vector::StoreOp>(opIt);
+          otherStore && otherStore.getBase() == store.getBase())
+        return failure();
+      if (auto otherTransferWrite = dyn_cast<vector::TransferWriteOp>(opIt);
+          otherTransferWrite && otherTransferWrite.getBase() == store.getBase())
+        return failure();
+    }
+
+    rewriter.eraseOp(store);
+    return success();
+  }
+};
+
+// If the accumulation buffer is only set to zero once, and read from otherwise,
+// we can replace loads and transfer_reads from it with constants.
+void elideZeroAcc(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  if (!isZeroConst(candidate.accInit.getValueToStore()))
+    return;
+
+  // Bail out if there's an unexpected user of the accumulation buffer.
+  if (!llvm::all_of(candidate.accBuffer->getUsers(), [&](Operation *user) {
+        return user == candidate.accInit ||
+               isa<vector::TransferReadOp, vector::LoadOp>(user);
+      }))
+    return;
+
+  rewriter.eraseOp(candidate.accInit);
+  candidate.accInit = {};
+
+  SmallVector<Operation *> users{candidate.accBuffer->getUsers()};
+  for (auto user : users) {
+    rewriter.setInsertionPoint(user);
+
+    auto vecTy = cast<ShapedType>(user->getResult(0).getType());
+    DenseElementsAttr zeroElemsAttr;
+    if (auto elemTy = dyn_cast<FloatType>(vecTy.getElementType()))
+      zeroElemsAttr = DenseElementsAttr::get(
+          vecTy,
+          // Taking some fast-math liberty here and use a negative zero to
+          // ensure additions will be folded.
+          APFloat::getZero(elemTy.getFloatSemantics(), /*Negative=*/true));
+    else if (vecTy.getElementType().isInteger())
+      zeroElemsAttr = DenseElementsAttr::get(vecTy, 0);
+    else
+      llvm_unreachable("Unexpected element type");
+
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(user, zeroElemsAttr);
+  }
+
+  rewriter.eraseOp(candidate.accBuffer);
+  candidate.accBuffer = {};
+
+  // Check for load-store pairs that might have become redundant after additions
+  // with zero have been folded away.
+  auto *ctx = candidate.func.getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.add<ElideSelfCopyPattern>(ctx);
+  (void)applyPatternsGreedily(candidate.func, std::move(patterns));
+
+  LDBG("  Elided zero accumulation buffer.");
+}
+
 LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
   // Introduce temporary buffer if needed.
@@ -839,8 +1019,18 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
     moveLoopInvariantCode(candidate.splicedAccLoop);
   }
 
-  // Finally, apply the upstream patterns.
-  return applyNanokernelPatterns(candidate, rewriter);
+  // Apply the upstream patterns.
+  if (failed(applyNanokernelPatterns(candidate, rewriter)))
+    return failure();
+
+  // If we inserted a temporary buffer, try to elide redundant copies and
+  // zero-initialization.
+  if (candidate.accBuffer) {
+    elideAccCopy(candidate, rewriter);
+    elideZeroAcc(candidate, rewriter);
+  }
+
+  return success();
 }
 
 struct ConvertDotToNanokernel
