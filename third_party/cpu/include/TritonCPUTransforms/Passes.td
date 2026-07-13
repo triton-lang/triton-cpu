@@ -194,6 +194,24 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
                              "mlir::x86::X86Dialect"];
 }
 
+def VectorizeElementwiseOps : Pass<"triton-cpu-vectorize-elementwise-ops", "mlir::ModuleOp"> {
+    let summary = "Vectorize elementwise computations.";
+    let description = [{
+        This pass unrolls and reorders elementwise DAGs for lower register pressure.
+    }];
+
+    let options = [
+        Option<"cpuFeatures", "cpu-features",
+               "std::string", /*default*/"",
+               "Comma-separated list of CPU features.">
+    ];
+
+    let constructor = "mlir::triton::cpu::createVectorizeElementwiseOps()";
+
+    let dependentDialects = ["mlir::vector::VectorDialect",
+                             "mlir::scf::SCFDialect"];
+}
+
 def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
     let summary = "Canonicalization pass.";
     let description = [{

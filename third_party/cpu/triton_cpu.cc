@@ -135,6 +135,10 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
                                             std::string cpuFeatures) {
     pm.addPass(mlir::triton::cpu::createConvertDotToNanokernel(cpuFeatures));
   });
+  m.def("add_vectorize_elementwise_ops", [](mlir::PassManager &pm,
+                                            std::string cpuFeatures) {
+    pm.addPass(mlir::triton::cpu::createVectorizeElementwiseOps(cpuFeatures));
+  });
   m.def("add_convert_unsupported_ops",
         [](mlir::PassManager &pm, bool promote_bf16_to_fp32,
            bool convert_mixed_precision_matmul, bool promote_lib_math_to_fp32) {

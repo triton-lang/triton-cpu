@@ -46,6 +46,9 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotToNanokernel(std::string cpuFeatures = "");
 
+std::unique_ptr<OperationPass<ModuleOp>>
+createVectorizeElementwiseOps(std::string cpuFeatures = "");
+
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotOpToUkernelOps(
