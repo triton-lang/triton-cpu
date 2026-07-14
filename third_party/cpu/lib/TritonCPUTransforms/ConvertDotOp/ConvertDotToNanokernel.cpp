@@ -851,18 +851,20 @@ void elideAccCopy(DotOpCandidate &candidate, PatternRewriter &rewriter) {
            !transferOp.getMask() && !transferOp.hasOutOfBoundsDim();
   };
 
-  auto simulate = [&](vector::TransferWriteOp write) {
+  auto simulate = [&](vector::TransferWriteOp write) -> LogicalResult {
     // The transfer_write must be to the accumulator buffer...
     if (write.getBase() != candidate.accBuffer || !isSimpleTransferOp(write))
-      return;
+      return failure();
 
     // ... and store a value coming from a transfer_read with the same indices.
-    // Also check already that all reads are from the same base.
+    // Also check already that all reads are from the same base, and that there
+    // are no other users.
     auto read = write.getValueToStore().getDefiningOp<vector::TransferReadOp>();
     if (!read || !isSimpleTransferOp(read) ||
         !llvm::equal(read.getIndices(), write.getIndices()) ||
-        (!reads.empty() && reads.front().getBase() != read.getBase()))
-      return;
+        (!reads.empty() && reads.front().getBase() != read.getBase()) ||
+        !read->hasOneUse())
+      return failure();
 
     auto vecTy = write.getVectorType();
     auto vecShape = vecTy.getShape();
@@ -870,7 +872,7 @@ void elideAccCopy(DotOpCandidate &candidate, PatternRewriter &rewriter) {
         getConstantIntValues(getAsOpFoldResult(write.getIndices()));
     // Bail out if the indices are not constant.
     if (!maybeConstIndices)
-      return;
+      return failure();
 
     // Simulate effect of transfer_write.
     SmallVector<int64_t> indices = *maybeConstIndices;
@@ -881,6 +883,7 @@ void elideAccCopy(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
     reads.push_back(read);
     writes.push_back(write);
+    return success();
   };
 
   // The idea is: Look for a chain of transfer_write ops that write to the
@@ -889,7 +892,10 @@ void elideAccCopy(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   Operation *opIt = candidate.accRemat->getPrevNode();
 
   while (isa_and_present<vector::TransferWriteOp>(opIt) && !bits.all()) {
-    simulate(cast<vector::TransferWriteOp>(opIt));
+    // Give up when we encounter a transfer_write that doesn't match the simple
+    // pattern we're looking for.
+    if (failed(simulate(cast<vector::TransferWriteOp>(opIt))))
+      return;
     opIt = opIt->getPrevNode();
   }
 
