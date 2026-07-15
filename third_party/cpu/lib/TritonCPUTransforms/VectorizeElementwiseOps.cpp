@@ -159,6 +159,12 @@ static void buildElementwiseDAG(Operation *op, VRFInfo &vrfInfo,
     if (!predOp)
       continue;
 
+    // Only consider arith and math ops, as well as selected vector ops.
+    if (!isa<arith::ArithDialect, math::MathDialect>(predOp->getDialect()) &&
+        !isa<vector::ShapeCastOp, vector::BroadcastOp, vector::TransferReadOp>(
+            predOp))
+      continue;
+
     buildElementwiseDAG(predOp, vrfInfo, dag);
   }
 
