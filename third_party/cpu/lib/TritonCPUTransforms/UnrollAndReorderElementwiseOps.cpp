@@ -8,13 +8,13 @@
 namespace mlir {
 namespace triton {
 namespace cpu {
-#define GEN_PASS_DEF_VECTORIZEELEMENTWISEOPS
+#define GEN_PASS_DEF_UNROLLANDREORDERELEMENTWISEOPS
 #include "cpu/include/TritonCPUTransforms/Passes.h.inc"
 } // namespace cpu
 } // namespace triton
 } // namespace mlir
 
-#define DEBUG_TYPE "triton-cpu-vectorize-elementwise-ops"
+#define DEBUG_TYPE "triton-cpu-unroll-and-reorder-elementwise-ops"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
@@ -291,10 +291,10 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
 
 namespace {
 
-struct VectorizeElementwiseOps
-    : public triton::cpu::impl::VectorizeElementwiseOpsBase<
-          VectorizeElementwiseOps> {
-  VectorizeElementwiseOps(std::string cpuFeatures) {
+struct UnrollAndReorderElementwiseOps
+    : public triton::cpu::impl::UnrollAndReorderElementwiseOpsBase<
+          UnrollAndReorderElementwiseOps> {
+  UnrollAndReorderElementwiseOps(std::string cpuFeatures) {
     this->cpuFeatures = cpuFeatures;
   }
 
@@ -318,8 +318,8 @@ struct VectorizeElementwiseOps
 namespace mlir::triton::cpu {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createVectorizeElementwiseOps(std::string cpuFeatures) {
-  return std::make_unique<VectorizeElementwiseOps>(cpuFeatures);
+createUnrollAndReorderElementwiseOps(std::string cpuFeatures) {
+  return std::make_unique<UnrollAndReorderElementwiseOps>(cpuFeatures);
 }
 
 } // namespace mlir::triton::cpu

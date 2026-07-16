@@ -194,7 +194,7 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
                              "mlir::x86::X86Dialect"];
 }
 
-def VectorizeElementwiseOps : Pass<"triton-cpu-vectorize-elementwise-ops", "mlir::ModuleOp"> {
+def UnrollAndReorderElementwiseOps : Pass<"triton-cpu-unroll-and-reorder-elementwise-ops", "mlir::ModuleOp"> {
     let summary = "Vectorize elementwise computations.";
     let description = [{
         This pass unrolls and reorders elementwise DAGs for lower register pressure.
@@ -206,7 +206,7 @@ def VectorizeElementwiseOps : Pass<"triton-cpu-vectorize-elementwise-ops", "mlir
                "Comma-separated list of CPU features.">
     ];
 
-    let constructor = "mlir::triton::cpu::createVectorizeElementwiseOps()";
+    let constructor = "mlir::triton::cpu::createUnrollAndReorderElementwiseOps()";
 
     let dependentDialects = ["mlir::vector::VectorDialect",
                              "mlir::scf::SCFDialect"];

@@ -1,5 +1,5 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-vectorize-elementwise-ops=cpu-features=avx512 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX512
-// RUN: triton-opt %s -split-input-file -triton-cpu-vectorize-elementwise-ops=cpu-features=avx2 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX2
+// RUN: triton-opt %s -split-input-file -triton-cpu-unroll-and-reorder-elementwise-ops=cpu-features=avx512 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX512
+// RUN: triton-opt %s -split-input-file -triton-cpu-unroll-and-reorder-elementwise-ops=cpu-features=avx2 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX2
 
 // CHECK-LABEL: eltwise_kernel
 // CHECK:         vector.transfer_read
