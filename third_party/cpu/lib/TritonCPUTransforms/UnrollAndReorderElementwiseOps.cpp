@@ -322,8 +322,9 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
                                [](auto &bucket) { return bucket.empty(); }),
                 buckets.end());
-  
-  // All remaining buckets should contain the same number of ops, equivalent to the unroll factor.
+
+  // All remaining buckets should contain the same number of ops, equivalent to
+  // the unroll factor.
   unsigned unrollFactor = buckets.back().size();
   assert(llvm::all_of(
       buckets, [&](auto &bucket) { return bucket.size() == unrollFactor; }));
