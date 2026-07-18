@@ -128,7 +128,7 @@ getUnrollingShape(ArrayRef<Operation *> ops, VRFInfo &vrfInfo) {
   return unrollShape;
 }
 
-// DFS to discover a DAG of operations that operand on a vector type that is
+// DFS to discover a DAG of operations that operate on a vector type that is
 // guaranteed to cause spilling.
 static void buildElementwiseDAG(Operation *op, VRFInfo &vrfInfo,
                                 SetVector<Operation *> &dag) {
@@ -248,10 +248,8 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   rewriter.replaceOp(writeOp, exec.getResults());
 
   // Unroll the ops in the execute_region.
-  if (failed(unrollOpsIn(exec))) {
-    LDBG("  Failed to unroll ops in execute_region.");
-    return;
-  }
+  [[maybe_unused]] auto res = unrollOpsIn(exec);
+  assert(succeeded(res));
 
   // Remove the unroll_shape attribute and reorder ops in the execute_region.
   // The idea is to produce chains from sources to the sinks (= unrolled
