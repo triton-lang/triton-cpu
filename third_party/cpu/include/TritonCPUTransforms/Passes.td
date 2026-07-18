@@ -195,9 +195,10 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
 }
 
 def UnrollAndReorderElementwiseOps : Pass<"triton-cpu-unroll-and-reorder-elementwise-ops", "mlir::ModuleOp"> {
-    let summary = "Vectorize elementwise computations.";
+    let summary = "Unroll and reorder elementwise computations.";
     let description = [{
-        This pass unrolls and reorders elementwise DAGs for lower register pressure.
+        This pass transforms DAGs of elementwise operations to heuristically shorten value lifetimes/lower register
+        pressure.
     }];
 
     let options = [
