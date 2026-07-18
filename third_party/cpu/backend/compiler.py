@@ -243,6 +243,8 @@ class CPUBackend(BaseBackend):
         decompose_bf16_conv = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
         decompose_fp8_conv = True
         cpu.passes.ttcpuir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
+        if os.getenv("TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS", "0") == "1":
+            cpu.passes.ttcpuir.add_unroll_and_reorder_elementwise_ops(pm, ",".join(self.cpu_features))
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)

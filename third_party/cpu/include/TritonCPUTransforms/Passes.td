@@ -194,6 +194,25 @@ def ConvertDotToNanokernel : Pass<"triton-cpu-convert-dot-to-nanokernel", "mlir:
                              "mlir::x86::X86Dialect"];
 }
 
+def UnrollAndReorderElementwiseOps : Pass<"triton-cpu-unroll-and-reorder-elementwise-ops", "mlir::ModuleOp"> {
+    let summary = "Unroll and reorder elementwise computations.";
+    let description = [{
+        This pass transforms DAGs of elementwise operations to heuristically shorten value lifetimes/lower register
+        pressure.
+    }];
+
+    let options = [
+        Option<"cpuFeatures", "cpu-features",
+               "std::string", /*default*/"",
+               "Comma-separated list of CPU features.">
+    ];
+
+    let constructor = "mlir::triton::cpu::createUnrollAndReorderElementwiseOps()";
+
+    let dependentDialects = ["mlir::vector::VectorDialect",
+                             "mlir::scf::SCFDialect"];
+}
+
 def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
     let summary = "Canonicalization pass.";
     let description = [{
