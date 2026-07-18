@@ -13,7 +13,7 @@ on:
       - main
 
 env:
-  python-verson: '3.11'
+  python-version: '3.12'
 
 jobs:
   pre-commit:
@@ -30,10 +30,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python ${{ env.python-verson }}
+      - name: Install Python ${{ env.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.python-verson }}
+          python-version: ${{ env.python-version }}
 
       - name: Run pre-commit checks
         run: |
@@ -60,11 +60,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Python ${{ env.python-verson }}
+      - name: Install Python ${{ env.python-version }}
         id: install-python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.python-verson }}
+          python-version: ${{ env.python-version }}
 
       - name: Install pip and apt dependencies
         env:
@@ -173,10 +173,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Python ${{ env.python-verson }}
+      - name: Install Python ${{ env.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.python-verson }}
+          python-version: ${{ env.python-version }}
 
       - name: Install pip and apt dependencies
         run: |
