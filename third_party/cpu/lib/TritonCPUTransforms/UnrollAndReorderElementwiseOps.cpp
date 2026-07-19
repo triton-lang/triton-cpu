@@ -91,6 +91,9 @@ static SmallVector<int64_t> getUnrollingShape(VectorType vecTy,
   return unrollShape;
 }
 
+// Attempts to find a common unrolling shape for all ops in the DAG. The suffix
+// of the common shape divides the shape of each op's vector type. Returns
+// failure() if no common shape can be found.
 static FailureOr<SmallVector<int64_t>>
 getUnrollingShape(ArrayRef<Operation *> ops, VRFInfo &vrfInfo) {
   SmallVector<int64_t> unrollShape;
@@ -173,7 +176,44 @@ static void buildElementwiseDAG(Operation *op, VRFInfo &vrfInfo,
 }
 
 static constexpr auto *unrollShapeAttrName = "unroll_shape";
+static constexpr auto *unrollOrderAttrName = "unroll_order";
 
+namespace {
+// The upstream vector unroll patterns don't always propagate discardable
+// attributes to the unrolled ops. This should be fixed upstream, but until
+// then, this listener looks for the canonical chain of insert_strided_slice ops
+// and propagates the unroll_order attribute to the clones.
+struct PropagateOrderAttrListener : public virtual RewriterBase::Listener {
+  template <typename OpTy>
+  void propagateAttrToUnrolledOps(Operation *op, IntegerAttr attr,
+                                  Value newValue) {
+    if (auto oldOp = dyn_cast<OpTy>(op)) {
+      Value it = newValue;
+      vector::InsertStridedSliceOp insertOp;
+      OpTy newOp;
+      while ((insertOp = it.getDefiningOp<vector::InsertStridedSliceOp>()) &&
+             (newOp = insertOp.getValueToStore().getDefiningOp<OpTy>())) {
+        newOp->setAttr(unrollOrderAttrName, attr);
+        it = insertOp.getDest();
+      }
+    }
+  }
+
+  void notifyOperationReplaced(Operation *op, ValueRange newValues) override {
+    auto unrollOrderAttr = op->getAttrOfType<IntegerAttr>(unrollOrderAttrName);
+    if (!unrollOrderAttr || newValues.size() != 1)
+      return;
+    Value newValue = newValues.front();
+    propagateAttrToUnrolledOps<vector::TransferReadOp>(op, unrollOrderAttr,
+                                                       newValue);
+    propagateAttrToUnrolledOps<vector::ShapeCastOp>(op, unrollOrderAttr,
+                                                    newValue);
+  }
+};
+} // namespace
+
+// Apply the upstream vector unroll patterns for ops that have the unroll_shape
+// attribute and are contained in the given scf.execute_region.
 static LogicalResult unrollOpsIn(scf::ExecuteRegionOp exec) {
   vector::UnrollVectorOptions unrollOptions;
   // Op has attribute and is contained in the execute_region.
@@ -194,19 +234,30 @@ static LogicalResult unrollOpsIn(scf::ExecuteRegionOp exec) {
 
   RewritePatternSet patterns(exec.getContext());
   vector::populateVectorUnrollPatterns(patterns, unrollOptions);
+  GreedyRewriteConfig config;
+  PropagateOrderAttrListener listener;
+  config.setListener(&listener);
   return applyPatternsGreedily(exec->getParentOfType<triton::FuncOp>(),
-                               std::move(patterns));
+                               std::move(patterns), config);
 }
 
-static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
-                                  VRFInfo &vrfInfo, PatternRewriter &rewriter) {
+// Main driver. Checks whether the DAG rooted in `writeOp` is amenable for
+// unrolling and reordering, and if so, performs the transformation.
+//
+// Return value is success() if the transformation was either not applicable or
+// succeeded, and failure() if the transformation failed mid-way.
+static LogicalResult rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
+                                           VRFInfo &vrfInfo,
+                                           PatternRewriter &rewriter) {
   LDBG("Attempt to rewrite elementwise DAG rooted in " << writeOp);
   SetVector<Operation *> dag;
   buildElementwiseDAG(writeOp, vrfInfo, dag);
 
+  if (dag.size() <= 1) {
+    LDBG("  No suitable elementwise DAG detected, giving up.");
+    return success();
+  }
   LDBG("  Discovered DAG of size " << dag.size() << ".");
-  if (dag.size() <= 1)
-    return;
 
   bool allUsersInDAG = llvm::all_of(dag, [&dag](Operation *node) {
     return isa<arith::ConstantOp, vector::TransferWriteOp>(node) ||
@@ -214,15 +265,15 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
                         [&dag](Operation *user) { return dag.contains(user); });
   });
   if (!allUsersInDAG) {
-    LDBG("  Elementwise DAG has external users, aborting.");
-    return;
+    LDBG("  Elementwise DAG has external users, giving up.");
+    return success();
   }
 
   // Determine an unrolling shape that is suitable for all ops.
   SmallVector<Operation *> ops = dag.takeVector();
   auto maybeUnrollShape = getUnrollingShape(ops, vrfInfo);
   if (failed(maybeUnrollShape))
-    return;
+    return success();
   ArrayRef<int64_t> unrollShape = *maybeUnrollShape;
 
   rewriter.setInsertionPoint(writeOp);
@@ -233,13 +284,15 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   Block *execBlock = rewriter.createBlock(&exec.getRegion());
   rewriter.setInsertionPointToStart(execBlock);
 
-  // Clone ops into the execute_region and determine unrolling shape.
+  // Clone ops into the execute_region.
   IRMapping mapping;
+  unsigned order = 0;
   for (auto *op : ops) {
     Operation *cloned = rewriter.clone(*op, mapping);
     auto rank = getVectorType(cloned).getRank();
     cloned->setAttr(unrollShapeAttrName,
                     rewriter.getI64ArrayAttr(unrollShape.take_back(rank)));
+    cloned->setAttr(unrollOrderAttrName, rewriter.getI64IntegerAttr(order++));
   }
 
   // Insert terminator and replace the original write op with the
@@ -248,43 +301,68 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   rewriter.replaceOp(writeOp, exec.getResults());
 
   // Unroll the ops in the execute_region.
-  [[maybe_unused]] auto res = unrollOpsIn(exec);
-  assert(succeeded(res));
-
-  // Remove the unroll_shape attribute and reorder ops in the execute_region.
-  // The idea is to produce chains from sources to the sinks (= unrolled
-  // transfer_write ops) that do not exceed the VRF's capacity.
-  SmallVector<Operation *> unrolledOps;
-  llvm::transform(execBlock->getOperations(), std::back_inserter(unrolledOps),
-                  [](Operation &op) { return &op; });
-  Operation *lastInvOp = nullptr;
-  for (auto *unrOp : unrolledOps) {
-    if (unrOp == execBlock->getTerminator())
-      continue;
-
-    unrOp->removeAttr(unrollShapeAttrName);
-
-    Operation *lastOperandOp = nullptr;
-    for (Value operand : unrOp->getOperands()) {
-      Operation *operandOp = operand.getDefiningOp();
-      if (!operandOp || operandOp->getBlock() != execBlock)
-        continue;
-      if (!lastOperandOp || lastOperandOp->isBeforeInBlock(operandOp))
-        lastOperandOp = operandOp;
-    }
-    if (lastOperandOp)
-      unrOp->moveAfter(lastOperandOp);
-    else {
-      // Make sure invariant ops moved to the top remain in their original
-      // order.
-      if (lastInvOp)
-        unrOp->moveAfter(lastInvOp);
-      else
-        unrOp->moveBefore(&execBlock->front());
-      lastInvOp = unrOp;
-    }
+  if (failed(unrollOpsIn(exec))) {
+    LDBG("  Error: Failed to unroll ops in execute_region.");
+    return failure();
   }
+
+  // Sort the ops into buckets, according to their unroll_order attribute:
+  // 0:    Ops that don't have an order attribute and are not
+  //       vector.transfer.write ops.
+  // 1..N: Ops that have an order attribute.
+  // N+1:  vector.transfer.write ops.
+  SmallVector<SmallVector<Operation *>> buckets(order + 2);
+  Operation *terminator = execBlock->getTerminator();
+  for (Operation &op : execBlock->getOperations()) {
+    if (&op == terminator)
+      continue;
+    if (isa<vector::TransferWriteOp>(op)) {
+      buckets.back().push_back(&op);
+      continue;
+    }
+
+    auto orderAttr = op.getAttrOfType<IntegerAttr>(unrollOrderAttrName);
+    unsigned bucketIdx = orderAttr ? orderAttr.getInt() + 1 : 0;
+    buckets[bucketIdx].push_back(&op);
+  }
+
+  // We'll bring ops in the desired order by subsequently moving them before the
+  // terminator.
+  for (auto *op : buckets.front())
+    op->moveBefore(terminator);
+
+  // Remove special buckets: The first one we just handled, and any empty
+  // buckets (that corresponded to constants or folded operations).
+  buckets.erase(buckets.begin());
+  buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
+                               [](auto &bucket) { return bucket.empty(); }),
+                buckets.end());
+
+  if (buckets.empty()) {
+    LDBG("  Error: All buckets were empty.");
+    return failure();
+  }
+
+  // All remaining buckets should contain the same number of ops, equivalent to
+  // the unroll factor.
+  unsigned unrollFactor = buckets.back().size();
+  if (unrollFactor == 0 || !llvm::all_of(buckets, [&](auto &bucket) {
+        return bucket.size() == unrollFactor;
+      })) {
+    LDBG("  Error: Unexpected number of ops in buckets.");
+    return failure();
+  }
+
+  for (unsigned u = 0; u < unrollFactor; ++u)
+    for (unsigned b = 0; b < buckets.size(); ++b) {
+      Operation *op = buckets[b][u];
+      op->moveBefore(terminator);
+      op->removeAttr(unrollShapeAttrName);
+      op->removeAttr(unrollOrderAttrName);
+    }
+
   LDBG("  Success.");
+  return success();
 }
 
 namespace {
@@ -305,9 +383,13 @@ struct UnrollAndReorderElementwiseOps
          << vrfInfo.nRegisters << "x" << vrfInfo.registerWidthBits);
 
     PatternRewriter rewriter(context);
-    mod->walk([&](vector::TransferWriteOp write) {
-      rewriteElementwiseDAG(write, vrfInfo, rewriter);
+    auto res = mod->walk([&](vector::TransferWriteOp write) {
+      if (failed(rewriteElementwiseDAG(write, vrfInfo, rewriter)))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
     });
+    if (res.wasInterrupted())
+      signalPassFailure();
   }
 };
 

@@ -221,11 +221,13 @@ jobs:
           DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
           DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
 
-          export TRITON_ALWAYS_COMPILE=1 TRITON_LLVM_DEBUG_ONLY=triton-cpu-dot-conversion
+          export TRITON_ALWAYS_COMPILE=1 \
+                 TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS=1 \
+                 TRITON_LLVM_DEBUG_ONLY=triton-cpu-dot-conversion,triton-cpu-unroll-and-reorder-elementwise-ops
           python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target amx
           python python/tutorials/cpu-sfc-matmul.py --dtype int8     --target amx
           python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target avx512
-          unset TRITON_ALWAYS_COMPILE TRITON_LLVM_DEBUG_ONLY
+          unset TRITON_ALWAYS_COMPILE TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS TRITON_LLVM_DEBUG_ONLY
 
       - name: OneDNN Run python unit tests on GNR
         env:
