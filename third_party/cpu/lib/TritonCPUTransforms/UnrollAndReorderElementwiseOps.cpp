@@ -91,6 +91,9 @@ static SmallVector<int64_t> getUnrollingShape(VectorType vecTy,
   return unrollShape;
 }
 
+// Attempts to find a common unrolling shape for all ops in the DAG. The suffix
+// of the common shape divides the shape of each op's vector type. Returns
+// failure() if no common shape can be found.
 static FailureOr<SmallVector<int64_t>>
 getUnrollingShape(ArrayRef<Operation *> ops, VRFInfo &vrfInfo) {
   SmallVector<int64_t> unrollShape;
@@ -209,6 +212,8 @@ struct PropagateOrderAttrListener : public virtual RewriterBase::Listener {
 };
 } // namespace
 
+// Apply the upstream vector unroll patterns for ops that have the unroll_shape
+// attribute and are contained in the given scf.execute_region.
 static LogicalResult unrollOpsIn(scf::ExecuteRegionOp exec) {
   vector::UnrollVectorOptions unrollOptions;
   // Op has attribute and is contained in the execute_region.
@@ -236,15 +241,23 @@ static LogicalResult unrollOpsIn(scf::ExecuteRegionOp exec) {
                                std::move(patterns), config);
 }
 
-static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
-                                  VRFInfo &vrfInfo, PatternRewriter &rewriter) {
+// Main driver. Checks whether the DAG rooted in `writeOp` is amenable for
+// unrolling and reordering, and if so, performs the transformation.
+//
+// Return value is success() if the transformation was either not applicable or
+// succeeded, and failure() if the transformation failed mid-way.
+static LogicalResult rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
+                                           VRFInfo &vrfInfo,
+                                           PatternRewriter &rewriter) {
   LDBG("Attempt to rewrite elementwise DAG rooted in " << writeOp);
   SetVector<Operation *> dag;
   buildElementwiseDAG(writeOp, vrfInfo, dag);
 
   LDBG("  Discovered DAG of size " << dag.size() << ".");
-  if (dag.size() <= 1)
-    return;
+  if (dag.size() <= 1) {
+    LDBG("  No suitable elementwise DAG detected, giving up.");
+    return success();
+  }
 
   bool allUsersInDAG = llvm::all_of(dag, [&dag](Operation *node) {
     return isa<arith::ConstantOp, vector::TransferWriteOp>(node) ||
@@ -252,15 +265,15 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
                         [&dag](Operation *user) { return dag.contains(user); });
   });
   if (!allUsersInDAG) {
-    LDBG("  Elementwise DAG has external users, aborting.");
-    return;
+    LDBG("  Elementwise DAG has external users, giving up.");
+    return success();
   }
 
   // Determine an unrolling shape that is suitable for all ops.
   SmallVector<Operation *> ops = dag.takeVector();
   auto maybeUnrollShape = getUnrollingShape(ops, vrfInfo);
   if (failed(maybeUnrollShape))
-    return;
+    return success();
   ArrayRef<int64_t> unrollShape = *maybeUnrollShape;
 
   rewriter.setInsertionPoint(writeOp);
@@ -288,8 +301,10 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   rewriter.replaceOp(writeOp, exec.getResults());
 
   // Unroll the ops in the execute_region.
-  [[maybe_unused]] auto res = unrollOpsIn(exec);
-  assert(succeeded(res));
+  if (failed(unrollOpsIn(exec))) {
+    LDBG("  Error: Failed to unroll ops in execute_region.");
+    return failure();
+  }
 
   // Sort the ops into buckets, according to their unroll_order attribute:
   // 0:    Ops that don't have an order attribute and are not
@@ -323,11 +338,20 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
                                [](auto &bucket) { return bucket.empty(); }),
                 buckets.end());
 
+  if (buckets.empty()) {
+    LDBG("  Error: All buckets were empty.");
+    return failure();
+  }
+
   // All remaining buckets should contain the same number of ops, equivalent to
   // the unroll factor.
   unsigned unrollFactor = buckets.back().size();
-  assert(llvm::all_of(
-      buckets, [&](auto &bucket) { return bucket.size() == unrollFactor; }));
+  if (unrollFactor == 0 || !llvm::all_of(buckets, [&](auto &bucket) {
+        return bucket.size() == unrollFactor;
+      })) {
+    LDBG("  Error: Unexpected number of ops in buckets.");
+    return failure();
+  }
 
   for (unsigned u = 0; u < unrollFactor; ++u)
     for (unsigned b = 0; b < buckets.size(); ++b) {
@@ -338,6 +362,7 @@ static void rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
     }
 
   LDBG("  Success.");
+  return success();
 }
 
 namespace {
@@ -358,9 +383,13 @@ struct UnrollAndReorderElementwiseOps
          << vrfInfo.nRegisters << "x" << vrfInfo.registerWidthBits);
 
     PatternRewriter rewriter(context);
-    mod->walk([&](vector::TransferWriteOp write) {
-      rewriteElementwiseDAG(write, vrfInfo, rewriter);
+    auto res = mod->walk([&](vector::TransferWriteOp write) {
+      if (failed(rewriteElementwiseDAG(write, vrfInfo, rewriter)))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
     });
+    if (res.wasInterrupted())
+      signalPassFailure();
   }
 };
 
