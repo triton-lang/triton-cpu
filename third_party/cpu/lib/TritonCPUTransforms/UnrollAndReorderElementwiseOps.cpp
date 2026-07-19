@@ -322,8 +322,8 @@ static LogicalResult rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
     }
 
     auto orderAttr = op.getAttrOfType<IntegerAttr>(unrollOrderAttrName);
-    unsigned order = orderAttr ? orderAttr.getInt() + 1 : 0;
-    buckets[order].push_back(&op);
+    unsigned bucketIdx = orderAttr ? orderAttr.getInt() + 1 : 0;
+    buckets[bucketIdx].push_back(&op);
   }
 
   // We'll bring ops in the desired order by subsequently moving them before the
