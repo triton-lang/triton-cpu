@@ -253,11 +253,11 @@ static LogicalResult rewriteElementwiseDAG(vector::TransferWriteOp writeOp,
   SetVector<Operation *> dag;
   buildElementwiseDAG(writeOp, vrfInfo, dag);
 
-  LDBG("  Discovered DAG of size " << dag.size() << ".");
   if (dag.size() <= 1) {
     LDBG("  No suitable elementwise DAG detected, giving up.");
     return success();
   }
+  LDBG("  Discovered DAG of size " << dag.size() << ".");
 
   bool allUsersInDAG = llvm::all_of(dag, [&dag](Operation *node) {
     return isa<arith::ConstantOp, vector::TransferWriteOp>(node) ||
