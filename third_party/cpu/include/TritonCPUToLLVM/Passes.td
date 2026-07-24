@@ -63,7 +63,8 @@ def DebugOpsToLLVM : Pass<"triton-cpu-debug-ops-to-llvm", "mlir::ModuleOp"> {
     let constructor = "mlir::triton::cpu::createDebugOpsToLLVMPass()";
 
     let dependentDialects = ["mlir::triton::cpu::TritonCPUDialect",
-                             "mlir::triton::TritonDialect"];
+                             "mlir::triton::TritonDialect",
+                             "mlir::LLVM::LLVMDialect"];
 }
 
 def UkernelOpsToOneDNNLLVM : Pass<"triton-cpu-ukernels-to-onednn-llvm", "mlir::ModuleOp"> {
