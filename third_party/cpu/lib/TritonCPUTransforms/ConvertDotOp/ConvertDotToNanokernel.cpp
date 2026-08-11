@@ -34,6 +34,7 @@ enum ISAExt : unsigned {
   AVX10_2 = 1 << 2,
   AMX_BF16 = 1 << 3,
   AMX_INT8 = 1 << 4,
+  AMX_FP8 = 1 << 5,
 };
 
 std::string stringifyISAExtMask(unsigned mask) {
@@ -48,6 +49,8 @@ std::string stringifyISAExtMask(unsigned mask) {
     res += "AMX_BF16 ";
   if (mask & AMX_INT8)
     res += "AMX_INT8 ";
+  if (mask & AMX_FP8)
+    res += "AMX_FP8 ";
   return res.empty() ? "None" : res.substr(0, res.size() - 1);
 }
 
@@ -63,6 +66,8 @@ unsigned parseCPUFeatures(const std::string &cpuFeatures) {
     mask |= AMX_BF16;
   if (cpuFeatures.find("amx-int8") != std::string::npos)
     mask |= AMX_INT8;
+  if (cpuFeatures.find("amx-fp8") != std::string::npos)
+    mask |= AMX_FP8;
   return mask;
 }
 
@@ -125,6 +130,9 @@ unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
   if (lhsElemTy.isInteger(8) && accElemTy.isInteger(32))
     return mask & (AVX10_2 | AMX_INT8);
 
+  if ((lhsElemTy.isF8E4M3FN() || lhsElemTy.isF8E5M2()) && accElemTy.isF32())
+    return mask & AMX_FP8;
+
   LDBG("  Drop candidate. Unsupported type combination");
   return 0;
 }
@@ -179,7 +187,7 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
 
   if ((candidate.isAccumulationLoop && shapeEquals(32, 32, 64)) ||
       shapeUnrollsTo(16, 16, 64, 4, /*needsNPair=*/false))
-    return mask & AMX_INT8;
+    return mask & (AMX_INT8 | AMX_FP8);
 
   LDBG("  Drop candidate. Unsupported shapes");
   return 0;
@@ -606,7 +614,7 @@ void performRegisterTiling(DotOpCandidate &candidate,
     setLhsShape(1, 1);
     setRhsShape(1, 16);
     setAccShape(1, 16);
-  } else if (candidate.target & (AMX_BF16 | AMX_INT8)) {
+  } else if (candidate.target & (AMX_BF16 | AMX_INT8 | AMX_FP8)) {
     setContractShape(16, 16, 16);
     setLhsShape(16, 16);
     setRhsShape(16, 16);
@@ -804,7 +812,7 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
     x86::populateVectorContractBF16ToFMAPatterns(patterns);
   else if (candidate.target & (AVX512_BF16 | AVX10_2))
     x86::populateVectorContractToPackedTypeDotProductPatterns(patterns);
-  else if (candidate.target & (AMX_BF16 | AMX_INT8))
+  else if (candidate.target & (AMX_BF16 | AMX_INT8 | AMX_FP8))
     x86::populateVectorContractToAMXDotProductPatterns(patterns);
   else
     llvm_unreachable(
