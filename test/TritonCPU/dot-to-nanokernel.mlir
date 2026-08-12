@@ -201,9 +201,9 @@ tt.func public @gemm_amx_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt
 
 // -----
 
-// AMX fp8e4e3 flat/online-packing vector.contract inside of an accumulator loop
+// AMX fp8e4m3 flat/online-packing vector.contract inside of an accumulator loop
 
-// ALL-LABEL: @gemm_amx_fp8e4e3
+// ALL-LABEL: @gemm_amx_fp8e4m3
 
 // Tile registers for accumulation
 // AMX-COUNT-4: x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
@@ -228,7 +228,7 @@ tt.func public @gemm_amx_int8(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt
 // Shuffle results
 // AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
 
-tt.func public @gemm_amx_fp8e4e3(%arg0: !tt.ptr<f8E4M3FN>, %arg1: !tt.ptr<f8E4M3FN>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+tt.func public @gemm_amx_fp8e4m3(%arg0: !tt.ptr<f8E4M3FN>, %arg1: !tt.ptr<f8E4M3FN>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
   %cst = arith.constant 0.000000e+00 : f8E4M3FN
   %cst_0 = arith.constant 0.000000e+00 : f32
   %c64_i32 = arith.constant 64 : i32
@@ -263,9 +263,9 @@ tt.func public @gemm_amx_fp8e4e3(%arg0: !tt.ptr<f8E4M3FN>, %arg1: !tt.ptr<f8E4M3
 
 // -----
 
-// AMX fp8e5e2 flat/online-packing vector.contract inside of an accumulator loop
+// AMX fp8e5m2 flat/online-packing vector.contract inside of an accumulator loop
 
-// ALL-LABEL: @gemm_amx_fp8e5e2
+// ALL-LABEL: @gemm_amx_fp8e5m2
 
 // Tile registers for accumulation
 // AMX-COUNT-4: x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
@@ -290,7 +290,7 @@ tt.func public @gemm_amx_fp8e4e3(%arg0: !tt.ptr<f8E4M3FN>, %arg1: !tt.ptr<f8E4M3
 // Shuffle results
 // AMX:         scf.for %arg{{.+}} = %c0 to %c32 step %c1
 
-tt.func public @gemm_amx_fp8e5e2(%arg0: !tt.ptr<f8E5M2>, %arg1: !tt.ptr<f8E5M2>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+tt.func public @gemm_amx_fp8e5m2(%arg0: !tt.ptr<f8E5M2>, %arg1: !tt.ptr<f8E5M2>, %arg2: !tt.ptr<f32>, %arg3: i32, %arg4: i32, %arg5: i32) {
   %cst = arith.constant 0.000000e+00 : f8E5M2
   %cst_0 = arith.constant 0.000000e+00 : f32
   %c64_i32 = arith.constant 64 : i32
