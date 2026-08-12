@@ -138,6 +138,7 @@ class CPUBackend(BaseBackend):
                 self.cpu_features.discard('amx-int8')
                 self.cpu_features.discard('amx-fp16')
                 self.cpu_features.discard('amx-bf16')
+                self.cpu_features.discard('amx-fp8')
 
     def parse_options(self, opts) -> Any:
         args = {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
