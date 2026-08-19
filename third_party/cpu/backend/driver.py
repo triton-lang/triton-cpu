@@ -13,7 +13,7 @@ from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 
 from pathlib import Path
-from triton._C.libtriton import llvm
+from triton._C.libtriton import cpu
 
 _dirname = os.getenv("TRITON_SYS_PATH", default="/usr/local")
 # for locating libTritonCPURuntime
@@ -472,7 +472,7 @@ class CPUDriver(DriverBase):
     def get_current_target(self):
         # Capability and warp size are zeros for CPU.
         # TODO: GPUTarget naming isn't obviously good.
-        cpu_arch = llvm.get_cpu_tripple().split("-")[0]
+        cpu_arch = cpu.llvm.get_cpu_triple().split("-")[0]
         return GPUTarget("cpu", cpu_arch, 0)
 
     def get_device_interface(self):

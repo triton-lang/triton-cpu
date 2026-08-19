@@ -18,7 +18,6 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/Support/TargetSelect.h"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/set.h>
@@ -51,6 +50,8 @@ bool is_xsmm_available() {
 }
 
 namespace py = nanobind;
+
+void init_triton_cpu_llvm(py::module_ &m);
 
 namespace {
 
@@ -274,6 +275,9 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
 void init_triton_cpu(py::module_ &m) {
   auto ir = m.def_submodule("ir");
   init_triton_cpu_ir(ir);
+
+  auto llvm = m.def_submodule("llvm");
+  init_triton_cpu_llvm(llvm);
 
   auto passes = m.def_submodule("passes");
   auto ttcpuir = passes.def_submodule("ttcpuir");

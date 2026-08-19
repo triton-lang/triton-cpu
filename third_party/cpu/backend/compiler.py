@@ -123,9 +123,9 @@ class CPUBackend(BaseBackend):
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
         self.binary_ext = "so"
-        self.cpu_arch = llvm.get_cpu_tripple().split("-")[0]
-        self.cpu_name = llvm.get_cpu_name()
-        self.cpu_features = llvm.get_cpu_features()
+        self.cpu_arch = cpu.llvm.get_cpu_triple().split("-")[0]
+        self.cpu_name = cpu.llvm.get_cpu_name()
+        self.cpu_features = cpu.llvm.get_cpu_features()
         if 'amx-tile' in self.cpu_features:
             if not cpu.enable_amx():
                 import warnings
@@ -302,12 +302,11 @@ class CPUBackend(BaseBackend):
         assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-        llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
         if llvm_mod is None:
             raise RuntimeError("Failed to convert to LLVM IR")
-        llvm.set_host_target(llvm_mod)
+        cpu.llvm.set_host_target(llvm_mod)
         #if options.extern_libs:
         #    paths = [path for (name, path) in options.extern_libs]
         #   llvm.link_extern_libs(llvm_mod, paths)
@@ -322,7 +321,7 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_asm(src, metadata, options):
-        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+        return cpu.llvm.translate_to_asm(src, options.enable_fp_fusion, options.enable_fast_math)
 
     @staticmethod
     def make_so(src, metadata, options):
