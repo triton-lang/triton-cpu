@@ -50,7 +50,7 @@ def gemv(
     weight: torch.Tensor,
     x: torch.Tensor,
     output: torch.Tensor,
-    num_threads=0,
+    num_cpu_threads=0,
 ):
     assert weight.shape[1] == x.shape[0], "Incompatible dimensions"
     assert weight.is_contiguous() and x.is_contiguous(), "Input and weight must be contiguous"
@@ -71,7 +71,7 @@ def gemv(
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), )
 
     gemv_kernel[grid](output, weight, x, M, N, weight.stride(0), BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
-                      num_threads=num_threads)
+                      num_cpu_threads=num_cpu_threads)
 
     return output
 
@@ -158,9 +158,9 @@ def benchmark(M, N, provider):
     if device == 'cpu':
         output = torch.empty((M), device=x.device, dtype=x.dtype)
         triton.runtime.driver.set_active_to_cpu()
-        num_threads = 0
+        num_cpu_threads = 0
         if 'single' in provider:
-            num_threads = 1
+            num_cpu_threads = 1
             torch.set_num_threads(1)
         else:
             torch.set_num_threads(default_num_threads)
@@ -179,7 +179,7 @@ def benchmark(M, N, provider):
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: compiled_matmul(weight, x, out=output),
                                                      quantiles=quantiles)
     elif 'triton-cpu' in provider:
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output, num_threads=num_threads),
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output, num_cpu_threads=num_cpu_threads),
                                                      quantiles=quantiles)
 
     perf = lambda ms: 2 * M * N * 1e-9 / (ms * 1e-3)

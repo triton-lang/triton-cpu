@@ -61,9 +61,10 @@ class CPUOptions:
     def __post_init__(self):
         pass
 
-    # Launch/GPU-only knobs that don't affect the generated x86 code; excluding
-    # them from the cache key avoids redundant recompiles during autotuning.
-    _RUNTIME_ONLY_FIELDS = frozenset({"num_warps", "num_stages", "num_ctas", "num_cpu_threads"})
+    # GPU-only knobs do not affect the generated x86 code. num_cpu_threads is
+    # launch metadata, so it must remain in the key until launch options are
+    # stored separately from cached compiler metadata.
+    _RUNTIME_ONLY_FIELDS = frozenset({"num_warps", "num_stages", "num_ctas"})
 
     def hash(self):
         hash_dict = {k: v for k, v in self.__dict__.items() if k not in self._RUNTIME_ONLY_FIELDS}
@@ -114,11 +115,6 @@ class CPUOptions:
 
 
 class CPUBackend(BaseBackend):
-
-    # Implements the generic BaseBackend.autotune_option_names hook: on CPU the
-    # GPU parallelism knobs (num_warps/num_ctas/num_stages/maxnreg) are ignored,
-    # and the only tunable launch option is the OpenMP thread count.
-    autotune_option_names = ("num_cpu_threads", )
 
     @staticmethod
     def supports_target(target: GPUTarget):

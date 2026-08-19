@@ -49,7 +49,7 @@ def gemv(
     weight: torch.Tensor,
     x: torch.Tensor,
     output: torch.Tensor,
-    num_threads=0,
+    num_cpu_threads=0,
 ):
     assert weight.shape[1] == x.shape[0], "Incompatible dimensions"
     assert weight.is_contiguous() and x.is_contiguous(), "Input and weight must be contiguous"
@@ -70,7 +70,7 @@ def gemv(
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), )
 
     gemv_kernel[grid](output, weight, x, M, N, weight.stride(0), BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
-                      num_threads=num_threads)
+                      num_cpu_threads=num_cpu_threads)
 
     return output
 
@@ -187,7 +187,7 @@ def benchmark(M, N, provider):
         weight = torch.nn.Linear(N, M, bias=False, device=weight.device, dtype=weight.dtype)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: weight.forward(x), quantiles=quantiles)
     elif provider == 'triton-cpu-single':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output, num_threads=1),
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output, num_cpu_threads=1),
                                                      quantiles=quantiles)
     elif provider == 'triton-cpu':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: gemv(weight, x, output), quantiles=quantiles)
