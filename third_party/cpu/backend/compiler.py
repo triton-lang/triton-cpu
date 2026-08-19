@@ -10,8 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from triton._C.libtriton import cpu, ir, llvm, passes, getenv_bool
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
-from triton.runtime.build import _build
-import triton.backends.cpu.driver as cpu_driver
+from triton.backends.cpu.build import build_kernel_from_asm
 
 
 def min_dot_size(target: GPUTarget):
@@ -328,10 +327,7 @@ class CPUBackend(BaseBackend):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
-            lib_dirs = cpu_driver.library_dirs
-            libs = ["m", "TritonCPURuntime", "sleef"]
-            ccflags = []
-            so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs, ccflags)
+            so = build_kernel_from_asm(asm_path, tmpdir)
             with open(so, "rb") as f:
                 return f.read()
 
