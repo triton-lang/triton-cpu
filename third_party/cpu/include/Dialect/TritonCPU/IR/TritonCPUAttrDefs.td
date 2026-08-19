@@ -2,7 +2,7 @@
 #define TRITONCPU_ATTRDEFS
 
 include "mlir/IR/AttrTypeBase.td"
-include "triton/Dialect/TritonCPU/IR/TritonCPUDialect.td"
+include "TritonCPUDialect.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 
 //===----------------------------------------------------------------------===//

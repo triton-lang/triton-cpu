@@ -6,12 +6,12 @@
 #include "mlir/IR/Dialect.h"
 
 // TritonCPU depends on Triton
+#include "cpu/include/Dialect/TritonCPU/IR/Attributes.h"
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h.inc"
+#include "cpu/include/Dialect/TritonCPU/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonCPU/IR/Attributes.h"
-#include "triton/Dialect/TritonCPU/IR/Dialect.h.inc"
-#include "triton/Dialect/TritonCPU/IR/Types.h"
 
 #define GET_OP_CLASSES
-#include "triton/Dialect/TritonCPU/IR/Ops.h.inc"
+#include "cpu/include/Dialect/TritonCPU/IR/Ops.h.inc"
 
 #endif // TRITON_DIALECT_TRITONCPU_IR_DIALECT_H_

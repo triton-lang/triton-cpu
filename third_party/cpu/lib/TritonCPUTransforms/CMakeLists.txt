@@ -14,6 +14,9 @@ add_triton_library(TritonCPUTransforms
 
     DEPENDS
     TritonCPUTransformsPassIncGen
+
+    LINK_LIBS PUBLIC
+    TritonCPUIR
 )
 
 if (dnnl_FOUND)

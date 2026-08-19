@@ -40,7 +40,7 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
-  add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
+  add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonToTritonCPU TritonCPUToLLVM TritonCPUTransforms)
   target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRMemRefTransforms MLIRReconcileUnrealizedCasts PRIVATE Python3::Module nanobind-static)
 endif()
 
