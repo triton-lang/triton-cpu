@@ -111,6 +111,7 @@ jobs:
           python -m pytest -s -n 3 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
+            python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_block_pointer.py \
             python/test/unit/language/test_compile_errors.py \
@@ -137,6 +138,7 @@ jobs:
           python -m pytest -s -n 32 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
+            python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_block_pointer.py \
             python/test/unit/language/test_compile_errors.py \

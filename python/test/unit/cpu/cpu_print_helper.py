@@ -8,10 +8,6 @@ import triton
 import triton.language as tl
 
 
-def get_current_target_warp_size():
-    return triton.runtime.driver.active.get_current_target().warp_size
-
-
 @triton.jit
 def kernel_device_print(X, Y, BLOCK: tl.constexpr):
     x = tl.load(X + tl.arange(0, BLOCK))
@@ -41,10 +37,12 @@ def kernel_print(X, Y, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def kernel_device_print_scalar(SCALAR):
+def kernel_device_print_scalars(SCALAR, INT, FLOAT):
     x = tl.load(SCALAR)
     # Triton should add a space after this prefix.
     print("x:", x)
+    print("int:", INT)
+    print("float:", FLOAT)
 
 
 @triton.jit
@@ -75,7 +73,7 @@ def kernel_device_print_multiple_args(X, Y, BLOCK: tl.constexpr):
 @triton.jit
 def kernel_static_print(X, Y, BLOCK: tl.constexpr, PLACEHOLDER: tl.constexpr):
     # This function takes an extra value as a tl.constexpr so this kernel is not
-    # cached.  This way the static print is run every time.
+    # cached. This way the static print is run every time.
     x = tl.load(X + tl.arange(0, BLOCK))
     tl.static_print("", x)
     tl.store(Y + tl.arange(0, BLOCK), x)
@@ -105,19 +103,22 @@ def kernel_print_2d_tensor(X, Y, BLOCK_SIZE_X: tl.constexpr, BLOCK_SIZE_Y: tl.co
 
 
 def test_print(func: str, data_type: str, device: str):
-    N = 128  # This value should match with test_print in test_subprocess.py.
-    # TODO(antiagainst): Currently the warp count is chosen to make sure we don't have multiple
-    # threads printing duplicated messages due to broadcasting. Improve print op lowering logic
-    # to filter out duplicated data range.
-    num_warps = N // get_current_target_warp_size()
+    if device != "cpu":
+        raise ValueError(f"CPU print helper received unexpected device: {device}")
+
+    N = 128  # This value should match test_cpu_print in test_cpu_subprocess.py.
+    SCALAR = 42
+    # The CPU target has no GPU warp. A logical size of one preserves the
+    # launch geometry used by the CPU print lowering.
+    num_warps = N
 
     x = torch.arange(0, N, dtype=torch.int32, device=device).to(getattr(torch, data_type))
     y = torch.zeros((N, ), dtype=x.dtype, device=device)
     if func == "device_print":
         kernel_device_print[(1, )](x, y, num_warps=num_warps, BLOCK=N)
-    elif func == "device_print_scalar":
-        scalar = torch.tensor(42, dtype=x.dtype, device=device)
-        kernel_device_print_scalar[(1, )](scalar, num_warps=num_warps)
+    elif func == "device_print_scalars":
+        scalar = torch.tensor(SCALAR, dtype=x.dtype, device=device)
+        kernel_device_print_scalars[(1, )](scalar, SCALAR, 3.14, num_warps=num_warps)
     elif func == "device_print_negative":
         x = -x
         kernel_device_print[(1, )](x, y, num_warps=num_warps, BLOCK=N)
@@ -145,24 +146,20 @@ def test_print(func: str, data_type: str, device: str):
     elif func == "device_print_pointer":
         kernel_print_pointer[(1, )](x, y, num_warps=num_warps, BLOCK=N)
     elif func == "device_print_2d_tensor":
-        BLOCK_SIZE_X = num_warps
-        BLOCK_SIZE_Y = get_current_target_warp_size()
-        x_2d_tensor = x.reshape((BLOCK_SIZE_X, BLOCK_SIZE_Y))
-        kernel_print_2d_tensor[(1, )](x_2d_tensor, y, num_warps=num_warps, BLOCK_SIZE_X=BLOCK_SIZE_X,
-                                      BLOCK_SIZE_Y=BLOCK_SIZE_Y)
+        block_size_x = N
+        block_size_y = 1
+        x_2d_tensor = x.reshape((block_size_x, block_size_y))
+        kernel_print_2d_tensor[(1, )](x_2d_tensor, y, num_warps=num_warps, BLOCK_SIZE_X=block_size_x,
+                                      BLOCK_SIZE_Y=block_size_y)
     else:
-        assert f"Unknown kernel: {func}"
+        raise ValueError(f"Unknown kernel: {func}")
 
     excluded_funcs = {
         "print_no_arg", "no_arg_print", "device_print_large", "print_multiple_args", "device_print_multiple_args",
-        "device_print_pointer", "device_print_scalar", "device_print_2d_tensor", "device_print_uint_cast"
+        "device_print_pointer", "device_print_scalars", "device_print_2d_tensor", "device_print_uint_cast"
     }
     if func not in excluded_funcs:
         assert_close(y, x)
-
-    # Wait until driver complete all the jobs for the device_print, especially test_subprocess
-    # require this which captures stdout when child exits.
-    getattr(torch, device).synchronize()
 
 
 if __name__ == "__main__":
