@@ -167,24 +167,27 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   };
 
   // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
-  // the pre-packed version expects K=2 (actually, 1x2).
+  // the pre-packed version expects K=2 (actually, 1x2). The latter is checked
+  // further down due to the partial overlap with AVX512.
   if (shapeUnrollsTo(1, 8, 1, 12))
-    return mask & AVX_NE_CONVERT;
-  if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
-      shapeUnrollsTo(1, 8, 2, 12))
     return mask & AVX_NE_CONVERT;
 
   // For AVX512, AVX10.2 and AVX_VNNI_INT8, we have proper dot product
   // instructions, and K must equal the VNNI factor. We don't have to
-  // distinguish between flat and pre-packed versions for shape check.
-  if (shapeUnrollsTo(1, 16, 2, 24))
-    return mask & AVX512_BF16;
+  // distinguish between flat and pre-packed versions for the shape check.
 
-  if (!(mask & AVX10_2) && shapeUnrollsTo(1, 8, 4, 12))
-    return mask & AVX_VNNI_INT8;
+  // Partially overlapping cases for K=2.
+  if (shapeUnrollsTo(1, 16, 2, 24) && (mask & AVX512_BF16))
+    return AVX512_BF16;
+  if (shapeUnrollsTo(1, 8, 2, 12) && (mask & AVX_NE_CONVERT) &&
+      candidate.isVnniPacked)
+    return AVX_NE_CONVERT;
 
-  if (shapeUnrollsTo(1, 16, 4, 24))
-    return mask & AVX10_2;
+  // Partially overlapping cases for K=4.
+  if (shapeUnrollsTo(1, 16, 4, 24) && (mask & AVX10_2))
+    return AVX10_2;
+  if (shapeUnrollsTo(1, 8, 4, 12) && (mask & AVX_VNNI_INT8))
+    return AVX_VNNI_INT8;
 
   // AMX loop lowering currently matches only the 2x2 register tiling, otherwise
   // even a single tile is ok. K must equal 16xVNNI factor; again no need to
