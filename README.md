@@ -29,8 +29,8 @@ See below in the upstream README for further instructions, e.g. to
 Smoke-test your environment by running the following samples:
 
 ```shell
-uv run python python/tutorials/01-vector-add.py
-uv run python python/tutorials/cpu-sfc-matmul.py
+uv run python python/tutorials/cpu/01-vector-add.py
+uv run python python/tutorials/cpu/08-sfc-matmul.py
 ```
 
 The samples use `triton.runtime.driver.set_active_to_cpu()` to switch to CPU
