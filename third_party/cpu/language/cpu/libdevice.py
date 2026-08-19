@@ -1,4 +1,5 @@
 import triton.language as tl
+from triton._C.libtriton import cpu as _cpu
 from triton.language import core
 from triton.language.core import builtin
 from triton import jit
@@ -6,37 +7,37 @@ from triton import jit
 
 @core.extern
 def acos(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_acos(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_acos(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def acosh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_acosh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_acosh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def asin(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_asin(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_asin(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def asinh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_asinh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_asinh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def atan(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_atan(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_atan(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def atanh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_atanh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_atanh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def cbrt(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_cbrt(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_cbrt(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
@@ -46,7 +47,7 @@ def cos(arg0, _semantic=None):
 
 @core.extern
 def cosh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_cosh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_cosh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
@@ -66,7 +67,7 @@ def exp2(arg0, _semantic=None):
 
 @core.extern
 def expm1(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_expm1(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_expm1(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
@@ -86,12 +87,12 @@ def log2(arg0, _semantic=None):
 
 @core.extern
 def log10(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_log10(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_log10(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def log1p(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_log1p(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_log1p(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
@@ -111,22 +112,22 @@ def sqrt(arg0, _semantic=None):
 
 @core.extern
 def sinh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_sinh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_sinh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def tan(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_tan(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_tan(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def tanh(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_tanh(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_tanh(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern
 def trunc(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_trunc(arg0.handle), arg0.type)
+    return core.tensor(_cpu.ir.create_trunc(_semantic.builder, arg0.handle), arg0.type)
 
 
 @core.extern

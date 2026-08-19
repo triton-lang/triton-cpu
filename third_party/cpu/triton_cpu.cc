@@ -4,10 +4,13 @@
 #include "TritonToTritonCPU/Passes.h"
 
 #include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
+#include "python/src/ir.h"
 
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
@@ -48,6 +51,33 @@ bool is_xsmm_available() {
 }
 
 namespace py = nanobind;
+
+namespace {
+
+template <typename OpTy>
+mlir::Value createUnaryMathOp(TritonOpBuilder &builder, mlir::Value &value) {
+  return builder.create<OpTy>(value);
+}
+
+void init_triton_cpu_ir(py::module_ &m) {
+  m.def("create_acos", &createUnaryMathOp<mlir::math::AcosOp>);
+  m.def("create_acosh", &createUnaryMathOp<mlir::math::AcoshOp>);
+  m.def("create_asin", &createUnaryMathOp<mlir::math::AsinOp>);
+  m.def("create_asinh", &createUnaryMathOp<mlir::math::AsinhOp>);
+  m.def("create_atan", &createUnaryMathOp<mlir::math::AtanOp>);
+  m.def("create_atanh", &createUnaryMathOp<mlir::math::AtanhOp>);
+  m.def("create_cbrt", &createUnaryMathOp<mlir::math::CbrtOp>);
+  m.def("create_cosh", &createUnaryMathOp<mlir::math::CoshOp>);
+  m.def("create_expm1", &createUnaryMathOp<mlir::math::ExpM1Op>);
+  m.def("create_log1p", &createUnaryMathOp<mlir::math::Log1pOp>);
+  m.def("create_log10", &createUnaryMathOp<mlir::math::Log10Op>);
+  m.def("create_sinh", &createUnaryMathOp<mlir::math::SinhOp>);
+  m.def("create_tan", &createUnaryMathOp<mlir::math::TanOp>);
+  m.def("create_tanh", &createUnaryMathOp<mlir::math::TanhOp>);
+  m.def("create_trunc", &createUnaryMathOp<mlir::math::TruncOp>);
+}
+
+} // namespace
 
 void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
   using namespace mlir::triton;
@@ -227,6 +257,9 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
                                   std::set<std::string> cpu_features) {
     pm.addPass(mlir::triton::cpu::createMathToVecLibPass(lib, cpu_features));
   });
+  m.def("add_math_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::createConvertMathToLLVMPass());
+  });
   m.def("add_math_to_libm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertMathToLibmPass());
   });
@@ -239,6 +272,9 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
 }
 
 void init_triton_cpu(py::module_ &m) {
+  auto ir = m.def_submodule("ir");
+  init_triton_cpu_ir(ir);
+
   auto passes = m.def_submodule("passes");
   auto ttcpuir = passes.def_submodule("ttcpuir");
   init_triton_cpu_passes_ttcpuir(ttcpuir);

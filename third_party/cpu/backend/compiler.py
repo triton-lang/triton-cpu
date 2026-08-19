@@ -281,7 +281,7 @@ class CPUBackend(BaseBackend):
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
             cpu.passes.ttcpuir.add_math_to_vec_lib(pm, vec_lib, self.cpu_features)
 
-        passes.convert.add_math_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
         cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
