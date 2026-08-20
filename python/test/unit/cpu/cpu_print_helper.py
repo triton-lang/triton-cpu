@@ -172,6 +172,34 @@ def test_hook_refcount(device: str):
         raise RuntimeError(f"launch hook return reference leaked: {initial_refcount} -> {final_refcount}")
 
 
+@triton.jit(noinline=True)
+def print_context_from_subfunction(s0, s1, s2, s3, s4, s5):
+    pid = tl.program_id(0) + 10 * tl.program_id(1)
+    num_programs = tl.num_programs(0) + 10 * tl.num_programs(1)
+    encoded_context = pid + 100 * num_programs
+    # Keep all six sentinel arguments live so that the regression test catches
+    # them being mistaken for pid and num_programs arguments.
+    sentinel_sum = s0 + s1 + s2 + s3 + s4 + s5
+    print("context:", encoded_context + 0 * sentinel_sum)
+
+
+@triton.jit
+def kernel_print_from_subfunction(SENTINELS):
+    print_context_from_subfunction(
+        tl.load(SENTINELS + 0),
+        tl.load(SENTINELS + 1),
+        tl.load(SENTINELS + 2),
+        tl.load(SENTINELS + 3),
+        tl.load(SENTINELS + 4),
+        tl.load(SENTINELS + 5),
+    )
+
+
+def test_print_from_subfunction(device: str):
+    sentinels = torch.tensor([11, 12, 13, 14, 15, 16], dtype=torch.int32, device=device)
+    kernel_print_from_subfunction[(2, 3)](sentinels, num_warps=1, num_cpu_threads=1)
+
+
 def test_print(func: str, data_type: str, device: str):
     if device != "cpu":
         raise ValueError(f"CPU print helper received unexpected device: {device}")

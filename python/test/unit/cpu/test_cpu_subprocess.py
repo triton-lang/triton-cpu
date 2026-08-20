@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from collections import Counter
 
 import pytest
 
@@ -99,6 +100,28 @@ def test_cpu_launcher_hook_refcount(device: str):
         env=env,
     )
     assert proc.returncode == 0, proc.stderr.decode("UTF-8", errors="replace")
+
+
+@pytest.mark.cpu
+def test_cpu_print_from_subfunction(device: str):
+    if device != "cpu":
+        pytest.skip("CPU print tests require --device cpu.")
+
+    env = os.environ.copy()
+    env.pop("TRITON_CPU_BACKEND", None)
+    env.pop("TRITON_INTERPRET", None)
+    env["TRITON_DEFAULT_BACKEND"] = "cpu"
+    proc = subprocess.run(
+        [sys.executable, print_path, "test_print_from_subfunction", device],
+        capture_output=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("UTF-8", errors="replace")
+
+    actual = proc.stdout.decode("UTF-8")
+    expected = [f"({x}, {y}, 0) context: {3200 + x + 10 * y}" for y in range(3) for x in range(2)]
+    assert actual.endswith("\n")
+    assert Counter(actual.splitlines()) == Counter(expected)
 
 
 def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
