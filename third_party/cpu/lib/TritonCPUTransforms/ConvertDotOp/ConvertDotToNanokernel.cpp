@@ -30,17 +30,20 @@ namespace {
 
 enum ISAExt : unsigned {
   AVX_NE_CONVERT = 1 << 0,
-  AVX512_BF16 = 1 << 1,
-  AVX10_2 = 1 << 2,
-  AMX_BF16 = 1 << 3,
-  AMX_INT8 = 1 << 4,
-  AMX_FP8 = 1 << 5,
+  AVX_VNNI_INT8 = 1 << 1,
+  AVX512_BF16 = 1 << 2,
+  AVX10_2 = 1 << 3,
+  AMX_BF16 = 1 << 4,
+  AMX_INT8 = 1 << 5,
+  AMX_FP8 = 1 << 6,
 };
 
 std::string stringifyISAExtMask(unsigned mask) {
   std::string res;
   if (mask & AVX_NE_CONVERT)
     res += "AVX_NE_CONVERT ";
+  if (mask & AVX_VNNI_INT8)
+    res += "AVX_VNNI_INT8 ";
   if (mask & AVX512_BF16)
     res += "AVX512_BF16 ";
   if (mask & AVX10_2)
@@ -58,6 +61,8 @@ unsigned parseCPUFeatures(const std::string &cpuFeatures) {
   unsigned mask = 0;
   if (cpuFeatures.find("avxneconvert") != std::string::npos)
     mask |= AVX_NE_CONVERT;
+  if (cpuFeatures.find("avxvnniint8") != std::string::npos)
+    mask |= AVX_VNNI_INT8;
   if (cpuFeatures.find("avx512bf16") != std::string::npos)
     mask |= AVX512_BF16;
   if (cpuFeatures.find("avx10.2") != std::string::npos)
@@ -128,7 +133,7 @@ unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
     return mask & (AVX_NE_CONVERT | AVX512_BF16 | AMX_BF16);
 
   if (lhsElemTy.isInteger(8) && accElemTy.isInteger(32))
-    return mask & (AVX10_2 | AMX_INT8);
+    return mask & (AVX_VNNI_INT8 | AVX10_2 | AMX_INT8);
 
   if ((lhsElemTy.isF8E4M3FN() || lhsElemTy.isF8E5M2()) && accElemTy.isF32())
     return mask & AMX_FP8;
@@ -162,21 +167,27 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   };
 
   // AVX_NE_CONVERT lowers to an FMA, so the flat version expects K=1, whereas
-  // the pre-packed version expects K=2 (actually, 1x2).
+  // the pre-packed version expects K=2 (actually, 1x2). The latter is checked
+  // further down due to the partial overlap with AVX512.
   if (shapeUnrollsTo(1, 8, 1, 12))
     return mask & AVX_NE_CONVERT;
-  if (candidate.isVnniPacked && !(mask & AVX512_BF16) &&
-      shapeUnrollsTo(1, 8, 2, 12))
-    return mask & AVX_NE_CONVERT;
 
-  // For AVX512 and AVX10.2, we have proper dot product instructions, and K
-  // must equal the VNNI factor. We don't have to distinguish between flat and
-  // pre-packed versions for shape check.
-  if (shapeUnrollsTo(1, 16, 2, 24))
-    return mask & AVX512_BF16;
+  // For AVX512, AVX10.2 and AVX_VNNI_INT8, we have proper dot product
+  // instructions, and K must equal the VNNI factor. We don't have to
+  // distinguish between flat and pre-packed versions for the shape check.
 
-  if (shapeUnrollsTo(1, 16, 4, 24))
-    return mask & AVX10_2;
+  // Partially overlapping cases for K=2.
+  if (shapeUnrollsTo(1, 16, 2, 24) && (mask & AVX512_BF16))
+    return AVX512_BF16;
+  if (shapeUnrollsTo(1, 8, 2, 12) && (mask & AVX_NE_CONVERT) &&
+      candidate.isVnniPacked)
+    return AVX_NE_CONVERT;
+
+  // Partially overlapping cases for K=4.
+  if (shapeUnrollsTo(1, 16, 4, 24) && (mask & AVX10_2))
+    return AVX10_2;
+  if (shapeUnrollsTo(1, 8, 4, 12) && (mask & AVX_VNNI_INT8))
+    return AVX_VNNI_INT8;
 
   // AMX loop lowering currently matches only the 2x2 register tiling, otherwise
   // even a single tile is ok. K must equal 16xVNNI factor; again no need to
@@ -602,8 +613,8 @@ void performRegisterTiling(DotOpCandidate &candidate,
                                 rewriter.getI64ArrayAttr({m, n}));
   };
 
-  if (candidate.target & AVX_NE_CONVERT) {
-    if (!candidate.isVnniPacked)
+  if (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) {
+    if ((candidate.target & AVX_NE_CONVERT) && !candidate.isVnniPacked)
       vnniFactor = 1;
     setContractShape(1, 8, 1);
     setLhsShape(1, 1);
@@ -810,7 +821,7 @@ LogicalResult applyNanokernelPatterns(DotOpCandidate &candidate,
   RewritePatternSet patterns(candidate.func.getContext());
   if (candidate.target & AVX_NE_CONVERT)
     x86::populateVectorContractBF16ToFMAPatterns(patterns);
-  else if (candidate.target & (AVX512_BF16 | AVX10_2))
+  else if (candidate.target & (AVX512_BF16 | AVX10_2 | AVX_VNNI_INT8))
     x86::populateVectorContractToPackedTypeDotProductPatterns(patterns);
   else if (candidate.target & (AMX_BF16 | AMX_INT8 | AMX_FP8))
     x86::populateVectorContractToAMXDotProductPatterns(patterns);

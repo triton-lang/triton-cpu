@@ -176,7 +176,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ap: torch.Tensor, 
 # ---------
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--target', choices=['amx', 'avx512', 'avx_ne_convert'], default='amx')
+parser.add_argument('--target', choices=['amx', 'avx512', 'avx_ne_convert', 'avx_vnni_int8'], default='amx')
 parser.add_argument('--dtype', choices=['bfloat16', 'int8'], default='bfloat16')
 parser.add_argument('--bench', action='store_true')
 parser.add_argument('-M', type=int, nargs='+', default=[512])
@@ -204,6 +204,12 @@ elif args.target == 'avx_ne_convert':
     BLOCK_SIZE_M = 2
     BLOCK_SIZE_N = 32
     BLOCK_SIZE_K = 2
+elif args.target == 'avx_vnni_int8':
+    if dtype != torch.int8:
+        parser.error("AVX-VNNI-INT8 target only supports int8 data type")
+    BLOCK_SIZE_M = 2
+    BLOCK_SIZE_N = 32
+    BLOCK_SIZE_K = 4
 
 torch.manual_seed(0)
 torch.set_printoptions(
