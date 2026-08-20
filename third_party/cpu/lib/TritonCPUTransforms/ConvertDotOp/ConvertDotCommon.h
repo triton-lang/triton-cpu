@@ -3,8 +3,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
 #define DEBUG_TYPE "triton-cpu-dot-conversion"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")

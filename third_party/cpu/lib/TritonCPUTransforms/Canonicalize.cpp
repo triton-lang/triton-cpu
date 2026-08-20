@@ -6,8 +6,8 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {

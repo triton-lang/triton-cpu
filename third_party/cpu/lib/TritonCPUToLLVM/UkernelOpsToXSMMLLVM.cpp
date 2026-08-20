@@ -9,9 +9,9 @@
 #include "mlir/Dialect/GPU/IR/GPUOps.h.inc"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
 #if defined(XSMM_AVAILABLE)
 #include "libxsmm_typedefs.h"

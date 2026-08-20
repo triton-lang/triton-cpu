@@ -40,8 +40,37 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)
-  add_triton_plugin(TritonCPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc LINK_LIBS TritonCPUToLLVM TritonCPUTransforms)
-  target_link_libraries(TritonCPU PUBLIC MLIRVectorToSCF MLIRAffineToStandard MLIRMathToLibm MLIRMemRefTransforms MLIRReconcileUnrealizedCasts PRIVATE Python3::Module nanobind-static)
+  if(NOT "${LLVM_NATIVE_ARCH}" IN_LIST LLVM_TARGETS_TO_BUILD)
+    message(FATAL_ERROR "TritonCPU requires the LLVM native target (${LLVM_NATIVE_ARCH})")
+  endif()
+  llvm_map_components_to_libnames(TRITON_CPU_NATIVE_LLVM_LIBS nativecodegen)
+
+  add_triton_plugin(TritonCPU
+    ${CMAKE_CURRENT_SOURCE_DIR}/triton_cpu.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/llvm.cc
+    LINK_LIBS TritonToTritonCPU TritonCPUToLLVM TritonCPUTransforms
+  )
+  target_link_libraries(TritonCPU
+    PUBLIC
+      MLIRVectorToSCF
+      MLIRAffineToStandard
+      MLIRMathDialect
+      MLIRMathToLLVM
+      MLIRMathToLibm
+      MLIRMemRefTransforms
+      MLIRReconcileUnrealizedCasts
+      ${TRITON_CPU_NATIVE_LLVM_LIBS}
+      LLVMCore
+      LLVMipo
+      LLVMIRReader
+      LLVMMC
+      LLVMSupport
+      LLVMTarget
+      LLVMTargetParser
+    PRIVATE
+      Python3::Module
+      nanobind-static
+  )
 endif()
 
 # Configure and build Triton-CPU runtime

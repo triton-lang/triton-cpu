@@ -10,8 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from triton._C.libtriton import cpu, ir, llvm, passes, getenv_bool
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
-from triton.runtime.build import _build
-import triton.backends.cpu.driver as cpu_driver
+from triton.backends.cpu.build import build_kernel_from_asm
 
 
 def min_dot_size(target: GPUTarget):
@@ -61,9 +60,10 @@ class CPUOptions:
     def __post_init__(self):
         pass
 
-    # Launch/GPU-only knobs that don't affect the generated x86 code; excluding
-    # them from the cache key avoids redundant recompiles during autotuning.
-    _RUNTIME_ONLY_FIELDS = frozenset({"num_warps", "num_stages", "num_ctas", "num_cpu_threads"})
+    # GPU-only knobs do not affect the generated x86 code. num_cpu_threads is
+    # launch metadata, so it must remain in the key until launch options are
+    # stored separately from cached compiler metadata.
+    _RUNTIME_ONLY_FIELDS = frozenset({"num_warps", "num_stages", "num_ctas"})
 
     def hash(self):
         hash_dict = {k: v for k, v in self.__dict__.items() if k not in self._RUNTIME_ONLY_FIELDS}
@@ -115,11 +115,6 @@ class CPUOptions:
 
 class CPUBackend(BaseBackend):
 
-    # Implements the generic BaseBackend.autotune_option_names hook: on CPU the
-    # GPU parallelism knobs (num_warps/num_ctas/num_stages/maxnreg) are ignored,
-    # and the only tunable launch option is the OpenMP thread count.
-    autotune_option_names = ("num_cpu_threads", )
-
     @staticmethod
     def supports_target(target: GPUTarget):
         return target.backend == "cpu"
@@ -127,9 +122,9 @@ class CPUBackend(BaseBackend):
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
         self.binary_ext = "so"
-        self.cpu_arch = llvm.get_cpu_tripple().split("-")[0]
-        self.cpu_name = llvm.get_cpu_name()
-        self.cpu_features = llvm.get_cpu_features()
+        self.cpu_arch = cpu.llvm.get_cpu_triple().split("-")[0]
+        self.cpu_name = cpu.llvm.get_cpu_name()
+        self.cpu_features = cpu.llvm.get_cpu_features()
         if 'amx-tile' in self.cpu_features:
             if not cpu.enable_amx():
                 import warnings
@@ -285,7 +280,7 @@ class CPUBackend(BaseBackend):
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
             cpu.passes.ttcpuir.add_math_to_vec_lib(pm, vec_lib, self.cpu_features)
 
-        passes.convert.add_math_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
         cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
@@ -306,12 +301,11 @@ class CPUBackend(BaseBackend):
         assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-        llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
         if llvm_mod is None:
             raise RuntimeError("Failed to convert to LLVM IR")
-        llvm.set_host_target(llvm_mod)
+        cpu.llvm.set_host_target(llvm_mod)
         #if options.extern_libs:
         #    paths = [path for (name, path) in options.extern_libs]
         #   llvm.link_extern_libs(llvm_mod, paths)
@@ -326,17 +320,14 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_asm(src, metadata, options):
-        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+        return cpu.llvm.translate_to_asm(src, options.enable_fp_fusion, options.enable_fast_math)
 
     @staticmethod
     def make_so(src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
-            lib_dirs = cpu_driver.library_dirs
-            libs = ["m", "TritonCPURuntime", "sleef"]
-            ccflags = []
-            so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs, ccflags)
+            so = build_kernel_from_asm(asm_path, tmpdir)
             with open(so, "rb") as f:
                 return f.read()
 

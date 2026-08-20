@@ -217,16 +217,16 @@ jobs:
           TRITON_CPU_UKERNELS_LIB: "None"
         run: |
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
-          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py
 
           export TRITON_ALWAYS_COMPILE=1 \
                  TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS=1 \
                  TRITON_LLVM_DEBUG_ONLY=triton-cpu-dot-conversion,triton-cpu-unroll-and-reorder-elementwise-ops
-          python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target amx
-          python python/tutorials/cpu-sfc-matmul.py --dtype int8     --target amx
-          python python/tutorials/cpu-sfc-matmul.py --dtype bfloat16 --target avx512
+          python python/tutorials/cpu/08-sfc-matmul.py --dtype bfloat16 --target amx
+          python python/tutorials/cpu/08-sfc-matmul.py --dtype int8     --target amx
+          python python/tutorials/cpu/08-sfc-matmul.py --dtype bfloat16 --target avx512
           unset TRITON_ALWAYS_COMPILE TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS TRITON_LLVM_DEBUG_ONLY
 
       - name: OneDNN Run python unit tests on GNR
@@ -234,15 +234,15 @@ jobs:
           TRITON_CPU_UKERNELS_LIB: "OneDNN"
         run: |
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
-          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py
 
       - name: XSMM Run python unit tests on GNR
         env:
           TRITON_CPU_UKERNELS_LIB: "XSMM"
         run: |
           python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
-          DTYPE=bfloat16 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float32 python  python/tutorials/cpu-blocked-matmul.py
-          DTYPE=float16 python  python/tutorials/cpu-blocked-matmul.py
+          DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
+          DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py

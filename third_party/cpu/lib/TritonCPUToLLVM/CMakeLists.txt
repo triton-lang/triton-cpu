@@ -15,5 +15,6 @@ add_triton_library(TritonCPUToLLVM
     TritonCPUToLLVMConversionPassIncGen
 
     LINK_LIBS PUBLIC
+    TritonCPUIR
     MLIRVectorToLLVMPass
 )

@@ -1,61 +1,12 @@
-import os
-import hashlib
-import importlib
-import importlib.resources
 import tempfile
 import time
 
 import triton
-import triton._C
-from triton.runtime.build import _build
-from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
+from triton.backends.cpu.build import compile_launcher_from_src
 
-from pathlib import Path
-from triton._C.libtriton import llvm
-
-_dirname = os.getenv("TRITON_SYS_PATH", default="/usr/local")
-# for locating libTritonCPURuntime
-try:
-    _triton_C_dir = importlib.resources.files(triton).joinpath("_C")
-except AttributeError:
-    # resources.files() doesn't exist for Python < 3.9
-    _triton_C_dir = importlib.resources.path(triton, "_C").__enter__()
-
-include_dirs = []
-library_dirs = [_triton_C_dir]
-libraries = ["stdc++"]
-ccflags = []
-
-# Skip non-existent paths
-sys_include_dir = os.path.join(_dirname, "include")
-if os.path.exists(sys_include_dir):
-    include_dirs.append(sys_include_dir)
-
-sys_lib_dir = os.path.join(_dirname, "lib")
-if os.path.exists(sys_lib_dir):
-    library_dirs.append(sys_lib_dir)
-
-
-def compile_module_from_src(src, name):
-    key = hashlib.md5(src.encode("utf-8")).hexdigest()
-    cache = get_cache_manager(key)
-    cache_path = cache.get_file(f"{name}.so")
-    if cache_path is None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "main.cpp")
-            with open(src_path, "w") as f:
-                f.write(src)
-            so = _build(name, src_path, tmpdir, library_dirs, include_dirs, libraries, ccflags)
-            with open(so, "rb") as f:
-                cache_path = cache.put(f.read(), f"{name}.so", binary=True)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(name, cache_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
+from triton._C.libtriton import cpu
 
 # ------------------------
 # Utils
@@ -390,7 +341,7 @@ class CPULauncher(object):
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
         src = make_launcher(constants, signature, ids)
-        mod = compile_module_from_src(src, "__triton_cpu_launcher")
+        mod = compile_launcher_from_src(src, "__triton_cpu_launcher")
         self.launch = mod.launch
 
     def __call__(self, *args, **kwargs):
@@ -472,7 +423,7 @@ class CPUDriver(DriverBase):
     def get_current_target(self):
         # Capability and warp size are zeros for CPU.
         # TODO: GPUTarget naming isn't obviously good.
-        cpu_arch = llvm.get_cpu_tripple().split("-")[0]
+        cpu_arch = cpu.llvm.get_cpu_triple().split("-")[0]
         return GPUTarget("cpu", cpu_arch, 0)
 
     def get_device_interface(self):

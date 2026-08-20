@@ -2,7 +2,7 @@
 #define TRITONCPU_TYPES
 
 include "triton/Dialect/Triton/IR/TritonTypes.td"
-include "triton/Dialect/TritonCPU/IR/TritonCPUDialect.td"
+include "TritonCPUDialect.td"
 include "mlir/IR/AttrTypeBase.td"
 
 class TTC_TypeDef<string name, string _mnemonic, list<Trait> traits = []>

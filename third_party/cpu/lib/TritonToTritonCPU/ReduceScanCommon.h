@@ -3,8 +3,8 @@
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
+#include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 
 #include <numeric>
 

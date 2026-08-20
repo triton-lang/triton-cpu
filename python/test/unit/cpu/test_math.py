@@ -5,7 +5,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._C.libtriton import llvm
+from triton._C.libtriton import cpu
 from triton.language.extra import libdevice
 from itertools import chain, product
 
@@ -15,7 +15,7 @@ def get_native_vector_size_in_bits():
     Returns the native vector size of the CPU.
     Assuming x86 always uses "auto dispatch" with 512-bit vectors for Sleef.
     """
-    cpu_features = llvm.get_cpu_features()
+    cpu_features = cpu.llvm.get_cpu_features()
     # TODO support for arm sve w/ VLA
     if "neon" in cpu_features:
         return 128
