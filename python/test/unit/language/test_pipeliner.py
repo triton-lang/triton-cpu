@@ -4,7 +4,6 @@ import pytest
 import torch
 import triton
 import triton.language as tl
-from test_core import is_cpu
 
 from triton._internal_testing import is_cuda, is_hopper_or_newer, is_hip_cdna, is_hip_cdna2, is_hip
 
@@ -271,11 +270,7 @@ def test_pipeline_matmul(scale, device):
     if scale:
         ref_out = dot_scale_ref(a, scale_a, b, a_type, b_type)
     else:
-        if is_cpu():
-            ref_out = torch.matmul(a.to(torch.float32), b.to(torch.float32)).to(torch.float16)
-        else:
-            ref_out = torch.matmul(a, b)
-
+        ref_out = torch.matmul(a, b)
     # Bigger tolerance for AMD CDNA2 devices.
     # CDNA2 devices use reduced precision fp16 and bf16 and flush input and
     # output denormal values to zero. Detailed info is at: https://pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-fp16-and-bf16-gemms-and-convolutions-on-amd-instinct-mi200-devices
