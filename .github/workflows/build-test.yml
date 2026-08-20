@@ -111,6 +111,9 @@ jobs:
           python -m pytest -s -n 3 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
+            python/test/unit/cpu/test_cpu_annotations.py \
+            python/test/unit/cpu/test_cpu_conversions.py \
+            python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_block_pointer.py \
@@ -127,6 +130,11 @@ jobs:
             python/test/unit/runtime/test_launch.py \
             python/test/unit/runtime/test_subproc.py \
             python/test/unit/test_debug_dump.py \
+            --deselect python/test/unit/language/test_annotations.py::test_float_annotation \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_upcast \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast_clamping \
+            --deselect python/test/unit/language/test_standard.py::test_flip \
             -k "not bfloat16"
 
       - name: Run python unit tests for Intel
@@ -134,10 +142,13 @@ jobs:
         run: |
           python -m pytest -s -n 32 --device cpu -m cpu \
             python/test/unit/language/test_core.py \
-            python/test/unit/language/test_tensor_descriptor.py
+            python/test/unit/cpu/test_cpu_tensor_descriptor.py
           python -m pytest -s -n 32 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
+            python/test/unit/cpu/test_cpu_annotations.py \
+            python/test/unit/cpu/test_cpu_conversions.py \
+            python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_block_pointer.py \
@@ -153,7 +164,12 @@ jobs:
             python/test/unit/runtime/test_driver.py \
             python/test/unit/runtime/test_launch.py \
             python/test/unit/runtime/test_subproc.py \
-            python/test/unit/test_debug_dump.py
+            python/test/unit/test_debug_dump.py \
+            --deselect python/test/unit/language/test_annotations.py::test_float_annotation \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_upcast \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast \
+            --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast_clamping \
+            --deselect python/test/unit/language/test_standard.py::test_flip
 
       - name: Run lit tests
         run: |
