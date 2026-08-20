@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -27,6 +28,31 @@ def test_cpu_unsupported_fp8_upcast(src_dtype, device):
 
     with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
         conversions.launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("dtype", [tl.float8e5, tl.float8e5b16, tl.float8e4nv, tl.float8e4b8, tl.float8e4b15])
+def test_cpu_fp8_dot_compile_support(fresh_triton_cache, dtype, device):
+    require_cpu(device)
+
+    supported_dtypes = [tl.float8e5, tl.float8e5b16, tl.float8e4nv]
+
+    @triton.jit
+    def dtype_kernel(dtype: tl.constexpr):
+        a = tl.full((64, 64), 0.0, dtype)
+        tl.dot(a, a)
+
+    if dtype in supported_dtypes:
+        ctx = contextlib.nullcontext()
+    else:
+        ctx = pytest.raises(triton.CompilationError)
+
+    with ctx as exc_info:
+        triton.compile(
+            triton.compiler.ASTSource(fn=dtype_kernel, signature={"dtype": "constexpr"}, constexprs={"dtype": dtype}))
+
+    if dtype not in supported_dtypes:
+        assert "not supported in this architecture" in str(exc_info.value.__cause__)
 
 
 @pytest.mark.cpu
