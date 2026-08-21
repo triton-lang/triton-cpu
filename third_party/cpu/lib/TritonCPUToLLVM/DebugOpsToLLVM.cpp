@@ -140,8 +140,8 @@ getOrAddPrintMemrefFuncDecl(ConversionPatternRewriter &rewriter) {
               i32_ty,
               i32_ty, /*end type*/
               i32_ty};
-  auto funcType =
-      LLVM::LLVMFunctionType::get(i32_ty, argsType, /*isVarArg*/ false);
+  auto funcType = LLVM::LLVMFunctionType::get(void_ty(ctx), argsType,
+                                              /*isVarArg*/ false);
 
   ConversionPatternRewriter::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(moduleOp.getBody());
