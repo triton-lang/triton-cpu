@@ -27,6 +27,10 @@ _test_store_nd = _SHARED_TESTS.test_tensor_descriptor_store_nd
 
 pytestmark = pytest.mark.cpu
 
+# These wrappers preserve the CPU subset selected when the tests were split:
+# one CTA and block dimensions no larger than 32. Larger blocks and multi-CTA
+# configurations had previously been skipped by the shared tests.
+
 
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("M_BLOCK,N_BLOCK", [(2, 16), (8, 16), (8, 32)])
@@ -72,6 +76,8 @@ def test_cpu_tensor_descriptor_store_nd(dtype_str, ndim, INNER_BLOCK, device):
 
 
 def test_cpu_tensor_descriptor_padding(device):
+    # The original CPU path exercised only descriptors created in the kernel;
+    # keep padding coverage on that path rather than a host-passed descriptor.
 
     @triton.jit
     def device_descriptor_load(in_ptr, out_ptr, IM, IN, OM, ON, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,

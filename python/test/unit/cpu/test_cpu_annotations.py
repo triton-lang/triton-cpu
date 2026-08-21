@@ -17,6 +17,8 @@ def annotated_function(return_type=None, **arg_types):
     return decorator
 
 
+# Keep CPU-specific expected failures local: nonzero fp16 and bf16 scalar
+# annotations remain NYI, while zero and wider floating-point values must pass.
 @pytest.mark.cpu
 @pytest.mark.parametrize("dtype", [
     pytest.param(tl.float16, id="float16"),

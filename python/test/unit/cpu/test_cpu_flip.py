@@ -5,6 +5,9 @@ import triton
 import triton.language as tl
 from triton._internal_testing import numpy_random
 
+# This matrix preserves the CPU configurations selected when these tests were
+# isolated: shapes with both M and N non-unit had previously failed. The K=64
+# last-dimension case remains as regression coverage for a former xfail.
 flip_cases = [
     pytest.param(1, 16, 64, 0),
     pytest.param(1, 16, 64, 1),

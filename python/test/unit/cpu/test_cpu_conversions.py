@@ -15,6 +15,10 @@ conversions = importlib.util.module_from_spec(shared_test_spec)
 sys.modules[shared_test_spec.name] = conversions
 shared_test_spec.loader.exec_module(conversions)
 
+# CPU supports a narrower FP8 matrix than GPU backends. Unsupported source
+# formats are checked as compile errors below; downcasts cover e5, e4nv, and
+# e5b16, while FP8 downcast clamping remains NYI and is excluded from CPU CI.
+
 
 def require_cpu(device):
     if device != "cpu":
