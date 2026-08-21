@@ -1015,6 +1015,13 @@ void elideZeroAcc(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   LDBG("  Elided zero accumulation buffer.");
 }
 
+void flattenTransferOps(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  RewritePatternSet patterns(candidate.func.getContext());
+  unsigned targetVectorBitwidth = (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) ? 256 : 512;
+  vector::populateFlattenVectorTransferPatterns(patterns, targetVectorBitwidth);
+  (void)applyPatternsGreedily(candidate.func, std::move(patterns));
+}
+
 LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
   // Introduce temporary buffer if needed.
@@ -1054,6 +1061,11 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
     elideAccCopy(candidate, rewriter);
     elideZeroAcc(candidate, rewriter);
   }
+
+  // Flatten transfer ops to prevent inefficent lowering of VNNI-encoded reads,
+  // e.g. `vector.transfer_read ... vector<1x16x2xbf16>` shall become a single
+  // 32-element load instead of unrolling it to 16 2-element loads.
+  flattenTransferOps(candidate, rewriter);
 
   return success();
 }
