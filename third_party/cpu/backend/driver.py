@@ -380,13 +380,21 @@ class CPUDeviceInterface:
         self.kernel_times = []
         self.last_start = 0
         self.use_hooks = False
-        triton.knobs.runtime.launch_enter_hook = None
-        triton.knobs.runtime.launch_exit_hook = None
 
     def enable_hook_timing(self):
+        if self.use_hooks:
+            return
+        self.kernel_times.clear()
         self.use_hooks = True
-        triton.knobs.runtime.launch_enter_hook = lambda arg: self._enter_hook()
-        triton.knobs.runtime.launch_exit_hook = lambda arg: self._exit_hook()
+        triton.knobs.runtime.launch_enter_hook.add(self._launch_enter_hook)
+        triton.knobs.runtime.launch_exit_hook.add(self._launch_exit_hook)
+
+    def disable_hook_timing(self):
+        if not self.use_hooks:
+            return
+        triton.knobs.runtime.launch_enter_hook.remove(self._launch_enter_hook)
+        triton.knobs.runtime.launch_exit_hook.remove(self._launch_exit_hook)
+        self.use_hooks = False
 
     def synchronize(self):
         pass
@@ -396,6 +404,12 @@ class CPUDeviceInterface:
 
     def _exit_hook(self):
         self.kernel_times.append(time.perf_counter() - self.last_start)
+
+    def _launch_enter_hook(self, _metadata):
+        self._enter_hook()
+
+    def _launch_exit_hook(self, _metadata):
+        self._exit_hook()
 
     def Event(self, enable_timing=True):
         if self.use_hooks:
@@ -408,6 +422,7 @@ class CPUDriver(DriverBase):
     def __init__(self):
         self.utils = CPUUtils()
         self.launcher_cls = CPULauncher
+        self.device_interface = CPUDeviceInterface()
         super().__init__()
 
     def get_current_device(self):
@@ -427,7 +442,7 @@ class CPUDriver(DriverBase):
         return GPUTarget("cpu", cpu_arch, 0)
 
     def get_device_interface(self):
-        return CPUDeviceInterface()
+        return self.device_interface
 
     @staticmethod
     def is_active():
@@ -437,8 +452,7 @@ class CPUDriver(DriverBase):
         from triton.testing import do_bench
 
         def do_bench_cpu(*args, **kwargs):
-            if not 'measure_time_with_hooks' in kwargs:
-                kwargs['measure_time_with_hooks'] = True
+            kwargs.setdefault('measure_time_with_hooks', True)
             return do_bench(*args, **kwargs)
 
         return do_bench_cpu

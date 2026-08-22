@@ -58,7 +58,8 @@ class CPUOptions:
     assume_in_bounds: bool = False
 
     def __post_init__(self):
-        pass
+        extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
+        object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
 
     # GPU-only knobs do not affect the generated x86 code. num_cpu_threads is
     # launch metadata, so it must remain in the key until launch options are

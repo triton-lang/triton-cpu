@@ -314,32 +314,36 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_m
     if measure_time_with_hooks:
         di.enable_hook_timing()
 
-    # compute number of warmup and repeat
-    n_warmup = max(1, int(warmup / estimate_ms))
-    n_repeat = max(1, int(rep / estimate_ms))
-    start_event = [di.Event(enable_timing=True) for i in range(n_repeat)]
-    end_event = [di.Event(enable_timing=True) for i in range(n_repeat)]
-    # Warm-up
-    for _ in range(n_warmup):
-        fn()
-    # Benchmark
-    for i in range(n_repeat):
-        # we don't want `fn` to accumulate gradient values
-        # if it contains a backward pass. So we clear the
-        # provided gradients
-        if grad_to_none is not None:
-            for x in grad_to_none:
-                x.grad = None
-        # we clear the L2 cache before each run
-        runtime.driver.active.clear_cache(cache)
-        # record time of `fn`
-        start_event[i].record()
-        fn()
-        end_event[i].record()
-    # Record clocks
-    di.synchronize()
-    times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
-    return _summarize_statistics(times, quantiles, return_mode)
+    try:
+        # compute number of warmup and repeat
+        n_warmup = max(1, int(warmup / estimate_ms))
+        n_repeat = max(1, int(rep / estimate_ms))
+        start_event = [di.Event(enable_timing=True) for i in range(n_repeat)]
+        end_event = [di.Event(enable_timing=True) for i in range(n_repeat)]
+        # Warm-up
+        for _ in range(n_warmup):
+            fn()
+        # Benchmark
+        for i in range(n_repeat):
+            # we don't want `fn` to accumulate gradient values
+            # if it contains a backward pass. So we clear the
+            # provided gradients
+            if grad_to_none is not None:
+                for x in grad_to_none:
+                    x.grad = None
+            # we clear the L2 cache before each run
+            runtime.driver.active.clear_cache(cache)
+            # record time of `fn`
+            start_event[i].record()
+            fn()
+            end_event[i].record()
+        # Record clocks
+        di.synchronize()
+        times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+        return _summarize_statistics(times, quantiles, return_mode)
+    finally:
+        if measure_time_with_hooks:
+            di.disable_hook_timing()
 
 
 def do_bench_proton(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean"):
@@ -590,7 +594,6 @@ class Mark:
                     y_max = y_max.astype(float)
                     ax.fill_between(df[first_x], y_min, y_max, alpha=0.15, color=col)
             ax.legend()
-
             ax.set_xlabel(bench.xlabel or first_x)
             ax.set_ylabel(bench.ylabel)
             # ax.set_title(bench.plot_name)

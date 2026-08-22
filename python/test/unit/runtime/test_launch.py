@@ -8,12 +8,10 @@ import numpy as np
 import torch
 import triton
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_hip, is_cpu
+from triton._internal_testing import is_cuda, is_hip
 
 
 def test_metadata() -> None:
-    if is_cpu:
-        pytest.xfail("Test is flaky on CPU")
 
     used_hook = False
 
@@ -200,8 +198,7 @@ def test_launch_with_options(options) -> None:
     if option_key == "extern_libs":
         # HIPOptions overwrite the extern_libs option, so we skip the test
         # passing and specializing options still is tested
-        # CPU backend currently ignores `extern_libs`
-        if not is_hip() and not is_cpu():
+        if not is_hip():
             assert compile_info[option_key] == tuple(option_val.items())
     else:
         assert compile_info[option_key] == option_val

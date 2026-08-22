@@ -7,12 +7,11 @@ import triton.language as tl
 from triton._internal_testing import is_hopper, is_sm12x, is_interpreter, numpy_random, to_triton, unwrap_tensor, tma_dtypes, to_numpy
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 from typing import Optional
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_cpu
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton import CompilationError
 
 
-@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
@@ -20,8 +19,6 @@ from triton import CompilationError
 def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
-    if is_cpu() and M_BLOCK > 32 or N_BLOCK > 32:
-        pytest.skip("Large loads unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
@@ -59,7 +56,6 @@ def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
     torch.testing.assert_close(expect, unwrap_tensor(out))
 
 
-@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
@@ -67,8 +63,6 @@ def test_tensor_descriptor_load(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
 def test_tensor_descriptor_store(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
-    if is_cpu() and M_BLOCK > 32 or N_BLOCK > 32:
-        pytest.skip("Large stores unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
@@ -116,7 +110,6 @@ def test_tensor_descriptor_store(dtype_str, num_ctas, M_BLOCK, N_BLOCK, device):
 
 
 # Exercise the functional load/store builtins once to ensure they map through.
-@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 def test_tensor_descriptor_functional_interface(dtype_str, device):
@@ -163,13 +156,10 @@ def test_tensor_descriptor_functional_interface(dtype_str, device):
     torch.testing.assert_close(unwrap_tensor(inp), unwrap_tensor(out))
 
 
-@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("K_BLOCK", [16, 32, 64, 128])
 def test_tensor_descriptor_load3d(dtype_str, K_BLOCK, device):
-    if is_cpu() and K_BLOCK > 32:
-        pytest.skip("Large loads unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, M, N, K, stride_m, stride_n, stride_k, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,
@@ -215,13 +205,10 @@ def test_tensor_descriptor_load3d(dtype_str, K_BLOCK, device):
     torch.testing.assert_close(expect, actual)
 
 
-@pytest.mark.cpu
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("K_BLOCK", [16, 32, 64, 128])
 def test_tensor_descriptor_store3d(dtype_str, K_BLOCK, device):
-    if is_cpu() and K_BLOCK > 32:
-        pytest.skip("Large stores unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, M, N, K, stride_m, stride_n, stride_k, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,
@@ -266,7 +253,6 @@ def test_tensor_descriptor_store3d(dtype_str, K_BLOCK, device):
     torch.testing.assert_close(expect, actual)
 
 
-@pytest.mark.cpu
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
@@ -274,8 +260,6 @@ def test_tensor_descriptor_store3d(dtype_str, K_BLOCK, device):
 def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
-    if is_cpu() and INNER_BLOCK > 32:
-        pytest.skip("Large block size unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, shape, strides, BLOCK_SHAPE):
@@ -334,7 +318,6 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
     torch.testing.assert_close(expect, actual)
 
 
-@pytest.mark.cpu
 @pytest.mark.parametrize("dtype_str", tma_dtypes)
 @pytest.mark.parametrize("num_ctas", [1, 2])
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
@@ -342,8 +325,6 @@ def test_tensor_descriptor_load_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devic
 def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, device):
     if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
         pytest.skip("CTAs is unsupported for these cards")
-    if is_cpu() and INNER_BLOCK > 32:
-        pytest.skip("Large block size unsupported on CPU")
 
     @triton.jit
     def kernel(out_ptr, a_ptr, shape, strides, BLOCK_SHAPE):
@@ -402,7 +383,6 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
     torch.testing.assert_close(expect, actual)
 
 
-@pytest.mark.cpu
 @pytest.mark.interpreter
 def test_tensor_descriptor_padding(device):
 
@@ -452,16 +432,14 @@ def test_tensor_descriptor_padding(device):
     in_desc = TensorDescriptor(input, input.shape, input.stride(), dummy_block, padding=padding)
     grid = (triton.cdiv(OM, M_BLOCK), triton.cdiv(ON, N_BLOCK))
     device_tma_load[grid](input, out_device_tma, IM, IN, OM, ON, M_BLOCK, N_BLOCK, padding)
-    if not is_cpu():
-        host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
+    host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
     expected = torch.zeros((OM, ON), device=device, dtype=torch.float32)
     expected[0:IN, 0:IM] = input
     expected[:, IN:ON] = float('nan')
     expected[IM:OM, :] = float('nan')
 
     torch.testing.assert_close(expected, out_device_tma, equal_nan=True)
-    if not is_cpu():
-        torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
+    torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
 
 
 @triton.jit(noinline=True)
