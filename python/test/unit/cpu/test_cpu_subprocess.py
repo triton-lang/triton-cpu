@@ -49,6 +49,58 @@ def test_cpu_print(func_type: str, data_type: str, device: str):
     _check_cpu_print(proc.stdout.decode("UTF-8"), func_type, data_type, 128, 42)
 
 
+@pytest.mark.cpu
+def test_cpu_launcher_pointer_refcount(device: str):
+    if device != "cpu":
+        pytest.skip("CPU launcher tests require --device cpu.")
+
+    env = os.environ.copy()
+    env.pop("TRITON_CPU_BACKEND", None)
+    env.pop("TRITON_INTERPRET", None)
+    env["TRITON_DEFAULT_BACKEND"] = "cpu"
+    proc = subprocess.run(
+        [sys.executable, print_path, "test_pointer_refcount", device],
+        capture_output=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("UTF-8", errors="replace")
+
+
+@pytest.mark.cpu
+def test_cpu_launcher_pointer_error(device: str):
+    if device != "cpu":
+        pytest.skip("CPU launcher tests require --device cpu.")
+
+    env = os.environ.copy()
+    env.pop("TRITON_CPU_BACKEND", None)
+    env.pop("TRITON_INTERPRET", None)
+    env["TRITON_DEFAULT_BACKEND"] = "cpu"
+    proc = subprocess.run(
+        [sys.executable, print_path, "test_pointer_error", device],
+        capture_output=True,
+        env=env,
+    )
+    assert proc.returncode != 0
+    assert proc.stderr.decode("UTF-8", errors="replace").rstrip().endswith("RuntimeError: data_ptr sentinel error")
+
+
+@pytest.mark.cpu
+def test_cpu_launcher_hook_refcount(device: str):
+    if device != "cpu":
+        pytest.skip("CPU launcher tests require --device cpu.")
+
+    env = os.environ.copy()
+    env.pop("TRITON_CPU_BACKEND", None)
+    env.pop("TRITON_INTERPRET", None)
+    env["TRITON_DEFAULT_BACKEND"] = "cpu"
+    proc = subprocess.run(
+        [sys.executable, print_path, "test_hook_refcount", device],
+        capture_output=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("UTF-8", errors="replace")
+
+
 def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
     # An example of tensor printing is:
     # (0, 0, 0) x: [  0,   1,   2,   3,   4,   5,   6,   7,
