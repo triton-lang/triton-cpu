@@ -175,6 +175,8 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   ptr_info.valid = true;
   if (PyLong_Check(obj)) {{
     ptr_info.dev_ptr = (void*) PyLong_AsLongLong(obj);
+    if (PyErr_Occurred())
+      ptr_info.valid = false;
     return ptr_info;
   }}
   if (obj == Py_None) {{
@@ -184,19 +186,30 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
   if(ptr){{
     PyObject *empty_tuple = PyTuple_New(0);
+    if (!empty_tuple) {{
+      Py_DECREF(ptr);
+      ptr_info.valid = false;
+      return ptr_info;
+    }}
     PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
     Py_DECREF(empty_tuple);
     Py_DECREF(ptr);
+    if (!ret) {{
+      ptr_info.valid = false;
+      return ptr_info;
+    }}
     if (!PyLong_Check(ret)) {{
+      Py_DECREF(ret);
       PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
       ptr_info.valid = false;
       return ptr_info;
     }}
     ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
-    if(!ptr_info.dev_ptr) {{
+    Py_DECREF(ret);
+    if (PyErr_Occurred()) {{
+      ptr_info.valid = false;
       return ptr_info;
     }}
-    Py_DECREF(ret);  // Thanks ChatGPT!
     return ptr_info;
   }}
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
@@ -275,8 +288,20 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   // Extract num_threads metadata.
   int num_threads = 0;
   PyObject *num_threads_attr = PyObject_GetAttrString(kernel_metadata, "num_cpu_threads");
-  if (num_threads_attr && PyLong_Check(num_threads_attr))
-    num_threads = PyLong_AsLong(num_threads_attr);
+  if (num_threads_attr) {{
+    if (PyLong_Check(num_threads_attr)) {{
+      num_threads = PyLong_AsLong(num_threads_attr);
+      if (PyErr_Occurred()) {{
+        Py_DECREF(num_threads_attr);
+        return NULL;
+      }}
+    }}
+    Py_DECREF(num_threads_attr);
+  }} else if (PyErr_ExceptionMatches(PyExc_AttributeError)) {{
+    PyErr_Clear();
+  }} else {{
+    return NULL;
+  }}
 
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
@@ -285,6 +310,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature_without_constexprs.items()])};
@@ -296,6 +322,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   if (PyErr_Occurred()) {{

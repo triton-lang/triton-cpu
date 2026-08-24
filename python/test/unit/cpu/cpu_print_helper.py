@@ -102,6 +102,76 @@ def kernel_print_2d_tensor(X, Y, BLOCK_SIZE_X: tl.constexpr, BLOCK_SIZE_Y: tl.co
     tl.device_print("", x)
 
 
+@triton.jit
+def kernel_noop_pointer(_ptr):
+    pass
+
+
+@triton.jit
+def kernel_noop():
+    pass
+
+
+class RefCountedZero(int):
+    pass
+
+
+class Pointer:
+
+    def __init__(self, value):
+        self.value = value
+        self.dtype = torch.float32
+
+    def data_ptr(self):
+        return self.value
+
+
+class RaisingPointer:
+    dtype = torch.float32
+
+    def __init__(self):
+        self.calls = 0
+
+    def data_ptr(self):
+        self.calls += 1
+        if self.calls == 1:
+            return 0
+        raise RuntimeError("data_ptr sentinel error")
+
+
+def test_pointer_refcount(device: str):
+    zero = RefCountedZero(0)
+    pointer = Pointer(zero)
+    kernel_noop_pointer[(1, )](pointer, num_warps=1, num_cpu_threads=1)
+    initial_refcount = sys.getrefcount(zero)
+    for _ in range(10):
+        kernel_noop_pointer[(1, )](pointer, num_warps=1, num_cpu_threads=1)
+    final_refcount = sys.getrefcount(zero)
+    if final_refcount != initial_refcount:
+        raise RuntimeError(f"data_ptr return reference leaked: {initial_refcount} -> {final_refcount}")
+
+
+def test_pointer_error(device: str):
+    kernel_noop_pointer[(1, )](RaisingPointer(), num_warps=1, num_cpu_threads=1)
+
+
+def test_hook_refcount(device: str):
+    result = object()
+
+    def hook(_metadata):
+        return result
+
+    triton.knobs.runtime.launch_enter_hook = hook
+    triton.knobs.runtime.launch_exit_hook = hook
+    kernel_noop[(1, )](num_warps=1, num_cpu_threads=1)
+    initial_refcount = sys.getrefcount(result)
+    for _ in range(10):
+        kernel_noop[(1, )](num_warps=1, num_cpu_threads=1)
+    final_refcount = sys.getrefcount(result)
+    if final_refcount != initial_refcount:
+        raise RuntimeError(f"launch hook return reference leaked: {initial_refcount} -> {final_refcount}")
+
+
 def test_print(func: str, data_type: str, device: str):
     if device != "cpu":
         raise ValueError(f"CPU print helper received unexpected device: {device}")
