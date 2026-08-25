@@ -6,6 +6,9 @@
 
 namespace mlir::triton::cpu {
 
+inline constexpr unsigned kNumProgramDims = 3;
+inline constexpr unsigned kNumProgramContextArgs = 2 * kNumProgramDims;
+
 Value getProgramId(mlir::FunctionOpInterface funcOp, int axis);
 Value getNumPrograms(mlir::FunctionOpInterface funcOp, int axis);
 

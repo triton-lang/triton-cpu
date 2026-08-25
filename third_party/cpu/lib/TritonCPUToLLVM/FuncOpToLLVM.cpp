@@ -1,4 +1,5 @@
 #include "TypeConverter.h"
+#include "Utility.h"
 
 #include "cpu/include/TritonCPUToLLVM/Passes.h"
 
@@ -63,19 +64,15 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
 
   triton::FuncOp amendProgramIdArgs(triton::FuncOp funcOp,
                                     ConversionPatternRewriter &rewriter) const {
-    // Push back a variable that indicates the current stack pointer of shared
-    // memory to the function arguments.
     auto loc = funcOp.getLoc();
     auto ctx = funcOp->getContext();
+    SmallVector<Type, cpu::kNumProgramContextArgs> programContextTypes = {
+        i32_ty, i32_ty, i32_ty, ui32_ty, ui32_ty, ui32_ty};
+
     // 1. Modify the function type to add new arguments.
     auto funcTy = funcOp.getFunctionType();
     auto amendedInputTy = llvm::to_vector<4>(funcTy.getInputs());
-    amendedInputTy.push_back(i32_ty);
-    amendedInputTy.push_back(i32_ty);
-    amendedInputTy.push_back(i32_ty);
-    amendedInputTy.push_back(ui32_ty);
-    amendedInputTy.push_back(ui32_ty);
-    amendedInputTy.push_back(ui32_ty);
+    amendedInputTy.append(programContextTypes);
     auto amendedFuncTy = FunctionType::get(funcTy.getContext(), amendedInputTy,
                                            funcTy.getResults());
     // 2. Modify the argument attributes to add new arguments.
@@ -84,27 +81,19 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     SmallVector<Attribute> amendedArgAttrs;
     if (funcOp.getAllArgAttrs()) {
       amendedArgAttrs = llvm::to_vector<4>(funcOp.getAllArgAttrs());
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
-      amendedArgAttrs.emplace_back(DictionaryAttr::get(ctx));
+      amendedArgAttrs.append(cpu::kNumProgramContextArgs,
+                             DictionaryAttr::get(ctx));
       amendedAttrs.push_back(
           rewriter.getNamedAttr(funcOp.getArgAttrsAttrName(),
                                 rewriter.getArrayAttr(amendedArgAttrs)));
     }
-    // 3. Add a new arguments to the region
+    // 3. Add new arguments to the region.
     auto amendedFuncOp =
         triton::FuncOp::create(rewriter, funcOp.getLoc(), funcOp.getName(),
                                amendedFuncTy, amendedAttrs);
     auto &region = funcOp.getBody();
-    region.addArgument(i32_ty, loc);
-    region.addArgument(i32_ty, loc);
-    region.addArgument(i32_ty, loc);
-    region.addArgument(ui32_ty, loc);
-    region.addArgument(ui32_ty, loc);
-    region.addArgument(ui32_ty, loc);
+    for (Type type : programContextTypes)
+      region.addArgument(type, loc);
     rewriter.inlineRegionBefore(region, amendedFuncOp.getBody(),
                                 amendedFuncOp.end());
     return amendedFuncOp;
@@ -113,9 +102,11 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
   LogicalResult
   matchAndRewrite(triton::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Prevent LLVM's inliner to inline this function
+    // Defined Triton functions need pid and num_programs arguments because
+    // operations such as program_id and print may also occur in subfunctions.
+    bool isExternal = funcOp.isExternal();
     auto modifiedFuncOp = funcOp;
-    if (LLVM::isKernel(funcOp))
+    if (!isExternal)
       modifiedFuncOp = amendProgramIdArgs(modifiedFuncOp, rewriter);
 
     LLVM::LLVMFuncOp newFuncOp = *mlir::convertFuncOpToLLVMFuncOp(
@@ -127,8 +118,7 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     // which not all assemblers support.
     newFuncOp.setAlignment(128);
 
-    // required by AxisInfoAnalysis
-    if (LLVM::isKernel(funcOp))
+    if (!isExternal)
       rewriter.eraseOp(modifiedFuncOp);
     rewriter.eraseOp(funcOp);
     return success();
@@ -178,8 +168,10 @@ struct CallOpConversion : public ConvertOpToLLVMPattern<triton::CallOp> {
                   typename triton::CallOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto promotedOperands = promoteOperands(callOp, adaptor, rewriter);
+    if (failed(promotedOperands))
+      return failure();
     auto newCallOp =
-        convertCallOpToLLVMCallOp(callOp, promotedOperands, rewriter);
+        convertCallOpToLLVMCallOp(callOp, *promotedOperands, rewriter);
     if (!newCallOp)
       return failure();
     auto results = getCallOpResults(callOp, newCallOp, rewriter);
@@ -188,15 +180,49 @@ struct CallOpConversion : public ConvertOpToLLVMPattern<triton::CallOp> {
   }
 
 private:
-  SmallVector<Value, 4>
+  FailureOr<SmallVector<Value, 4>>
   promoteOperands(triton::CallOp callOp,
                   typename triton::CallOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const {
-    auto loc = callOp.getLoc();
-    auto caller = callOp->getParentOfType<FunctionOpInterface>();
     auto promotedOperands = this->getTypeConverter()->promoteOperands(
         callOp.getLoc(), /*opOperands=*/callOp->getOperands(),
         adaptor.getOperands(), rewriter);
+
+    auto callee = SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(
+        callOp, callOp.getCalleeAttr());
+    if (!callee) {
+      callOp.emitOpError("expected an LLVM function callee");
+      return failure();
+    }
+    if (callee.isExternal())
+      return promotedOperands;
+
+    auto caller = callOp->getParentOfType<LLVM::LLVMFuncOp>();
+    if (!caller) {
+      callOp.emitOpError("expected an enclosing LLVM function");
+      return failure();
+    }
+
+    // FuncOpConversion runs before CallOpConversion, so this call's enclosing
+    // function should already have the program-context arguments appended.
+    auto callerArgs = caller.getArguments();
+    if (callerArgs.size() < cpu::kNumProgramContextArgs) {
+      callOp.emitOpError("caller is missing pid and num_programs arguments");
+      return failure();
+    }
+
+    auto expectedNumArgs =
+        promotedOperands.size() + cpu::kNumProgramContextArgs;
+    if (callee.getFunctionType().getNumParams() != expectedNumArgs) {
+      callOp.emitOpError("callee has an unexpected number of arguments");
+      return failure();
+    }
+
+    // Forward pid_x/y/z and num_programs_x/y/z to the Triton subfunction.
+    for (unsigned i = callerArgs.size() - cpu::kNumProgramContextArgs;
+         i < callerArgs.size(); ++i)
+      promotedOperands.push_back(callerArgs[i]);
+
     return promotedOperands;
   }
 
