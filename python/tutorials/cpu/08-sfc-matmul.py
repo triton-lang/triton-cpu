@@ -195,19 +195,19 @@ if args.target == 'amx':
 elif args.target == 'avx512':
     if dtype != torch.bfloat16:
         parser.error("AVX-512 target only supports bfloat16 data type")
-    BLOCK_SIZE_M = 4
+    BLOCK_SIZE_M = 32
     BLOCK_SIZE_N = 64
     BLOCK_SIZE_K = 2
 elif args.target == 'avx_ne_convert':
     if dtype != torch.bfloat16:
         parser.error("AVX-NE-CONVERT target only supports bfloat16 data type")
-    BLOCK_SIZE_M = 2
+    BLOCK_SIZE_M = 32
     BLOCK_SIZE_N = 32
     BLOCK_SIZE_K = 2
 elif args.target == 'avx_vnni_int8':
     if dtype != torch.int8:
         parser.error("AVX-VNNI-INT8 target only supports int8 data type")
-    BLOCK_SIZE_M = 2
+    BLOCK_SIZE_M = 32
     BLOCK_SIZE_N = 32
     BLOCK_SIZE_K = 4
 

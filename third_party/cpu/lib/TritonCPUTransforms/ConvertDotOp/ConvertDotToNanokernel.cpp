@@ -114,6 +114,9 @@ struct DotOpCandidate {
 
   // Distinguish between replacing only the dot, or an entire accumulation loop.
   bool isAccumulationLoop;
+
+  // Has block sizes that require looping the nanokernel (experimental).
+  bool isLoopedNanokernel;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -147,6 +150,21 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
   candidate.blockM = resTy.getDimSize(0);
   candidate.blockN = resTy.getDimSize(1);
   candidate.blockK = lhsTy.getDimSize(1);
+
+  // Experimental new support for block sizes that require looping the
+  // nanokernel.
+  // TODO: Integrate with the existing logic.
+  if (candidate.isAccumulationLoop && candidate.isVnniPacked &&
+      candidate.blockM >= 32 && candidate.blockN >= 32 &&
+      candidate.blockK <= 4) {
+    // Block sizes are powers of two. The AVX512 lowering expects at least a
+    // pair of 16-element dot products in the N dimension, so we're good here.
+    candidate.isLoopedNanokernel = true;
+    if (candidate.blockK == 2)
+      return mask & (AVX_NE_CONVERT | AVX512_BF16);
+    if (candidate.blockK == 4)
+      return mask & (AVX10_2 | AVX_VNNI_INT8);
+  }
 
   auto shapeUnrollsTo = [&candidate](int64_t m, int64_t n, int64_t k,
                                      int64_t numRegs, bool needsNPair = true) {
@@ -278,6 +296,13 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
        !llvm::equal(accRead.getIndices(), accWrite.getIndices()))) {
     LDBG("  Cannot use existing vector.transfer_read/write due to mismatch in "
          "memref or indices.");
+    accRead = nullptr;
+    accWrite = nullptr;
+  }
+
+  // For now, always allocate a temporary accumulator buffer for the looped
+  // nanokernel case, as it makes indexing simpler.
+  if (candidate.isLoopedNanokernel) {
     accRead = nullptr;
     accWrite = nullptr;
   }
@@ -578,6 +603,148 @@ void convertToContract(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   candidate.dot = {};
 
   LDBG("  Converted to contraction op: " << candidate.contract);
+}
+
+void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
+  // Pick register tile sizes based on the target ISA. Currently we check for
+  // block sizes >= 32 in `checkInputShapes()`, so we know that the sizes below
+  // evenly divide the block sizes.
+  int64_t regTileM, regTileN;
+  int64_t vnni = candidate.blockK;
+
+  if (candidate.target & (AVX512_BF16 | AVX10_2)) {
+    regTileM = 8;
+    regTileN = 32;
+  } else if (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) {
+    regTileM = 4;
+    regTileN = 16;
+  } else
+    llvm_unreachable("Unexpected target ISA for looping the nanokernel");
+
+  Type accElemTy = candidate.accRead.getType().getElementType();
+  Type inpElemTy = candidate.lhsRead.getType().getElementType();
+
+  VectorType accRegTileTy = VectorType::get({regTileM, regTileN}, accElemTy);
+  VectorType lhsRegTileTy = VectorType::get({regTileM, 1, vnni}, inpElemTy);
+  VectorType rhsRegTileTy = VectorType::get({1, regTileN, vnni}, inpElemTy);
+
+  rewriter.setInsertionPoint(candidate.accLoop);
+  auto loc = candidate.accLoop.getLoc();
+
+  // Set up loop bounds.
+  Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value ubM = arith::ConstantIndexOp::create(rewriter, loc, candidate.blockM);
+  Value ubN = arith::ConstantIndexOp::create(rewriter, loc, candidate.blockN);
+  Value stepM = arith::ConstantIndexOp::create(rewriter, loc, regTileM);
+  Value stepN = arith::ConstantIndexOp::create(rewriter, loc, regTileN);
+
+  // We'll reconstruct the K loop using an index-typed induction variable, so
+  // convert bounds and step as needed.
+  auto indexCast = [&](Value val) -> Value {
+    if (val.getType().isIndex())
+      return val;
+    return rewriter.createOrFold<arith::IndexCastOp>(
+        val.getLoc(), rewriter.getIndexType(), val);
+  };
+  Value lbK = indexCast(candidate.accLoop.getLowerBound());
+  Value ubK = indexCast(candidate.accLoop.getUpperBound());
+  Value stepK = indexCast(candidate.accLoop.getStep());
+
+  auto isEqualToIndexTypedIV = [&](Value val) -> bool {
+    Value oldIV = candidate.accLoop.getInductionVar();
+    // If the loop was already index-typed, we compare against its IV.
+    if (oldIV.getType().isIndex())
+      return val == oldIV;
+    // Otherwise, we check if the value is an index cast of the old IV.
+    auto defOp = val.getDefiningOp<arith::IndexCastOp>();
+    return defOp && defOp.getOperand() == oldIV;
+  };
+
+  // Save for cleanup after inserting the new loops.
+  auto oldAccLoop = candidate.accLoop;
+  auto oldAccRead = candidate.accRead;
+  auto oldAccWrite = candidate.accWrite;
+
+  auto loopKBodyBuilder = [&](OpBuilder &b, Location loc, Value ivM, Value ivN,
+                              Value ivK, ValueRange iterArgs) {
+    candidate.accIterArg = cast<BlockArgument>(iterArgs[0]);
+
+    // Create copies of the transfer reads based on the new induction variables
+    // in the indices and smaller vector types (hence we can't just clone with
+    // an IRMapping).
+    // As this transformation is currently limited to pre-packed
+    // operands, we have checked earlier that the kernel uses block-based
+    // indexing.
+    SmallVector<Value> lhsIndices, rhsIndices;
+    llvm::replace_copy_if(candidate.lhsRead.getIndices(),
+                          std::back_inserter(lhsIndices), isEqualToIndexTypedIV,
+                          ivK);
+    assert(lhsIndices.size() >= 5 && "Expected block-based indexing for LHS");
+    lhsIndices[lhsIndices.size() - 3] = ivM;
+    candidate.lhsRead = vector::TransferReadOp::create(
+        b, loc, lhsRegTileTy, candidate.lhsRead.getBase(), lhsIndices,
+        candidate.lhsRead.getPadding(), candidate.lhsRead.getInBoundsValues());
+
+    llvm::replace_copy_if(candidate.rhsRead.getIndices(),
+                          std::back_inserter(rhsIndices), isEqualToIndexTypedIV,
+                          ivK);
+    assert(rhsIndices.size() >= 5 && "Expected block-based indexing for RHS");
+    rhsIndices[rhsIndices.size() - 2] = ivN;
+    candidate.rhsRead = vector::TransferReadOp::create(
+        b, loc, rhsRegTileTy, candidate.rhsRead.getBase(), rhsIndices,
+        candidate.rhsRead.getPadding(), candidate.rhsRead.getInBoundsValues());
+
+    candidate.contract = vector::ContractionOp::create(
+        b, candidate.contract.getLoc(), candidate.lhsRead, candidate.rhsRead,
+        iterArgs[0], candidate.contract.getIndexingMaps(),
+        candidate.contract.getIteratorTypes());
+
+    scf::YieldOp::create(b, loc, candidate.contract.getResult());
+  };
+
+  auto loopM = scf::ForOp::create(
+      rewriter, loc, c0, ubM, stepM, {},
+      [&](OpBuilder &b, Location loc, Value ivM, ValueRange iterArgs) {
+        scf::ForOp::create(
+            b, loc, c0, ubN, stepN, {},
+            [&](OpBuilder &b, Location loc, Value ivN, ValueRange iterArgs) {
+              // We unconditionally allocate a temporary accumulator buffer for
+              // the looped nanokernel case, hence we don't need any
+              // out-of-bounds handling.
+              SmallVector<bool> inBounds(
+                  cast<MemRefType>(candidate.accBuffer.getType()).getRank(),
+                  true);
+
+              auto accRead = vector::TransferReadOp::create(
+                  b, candidate.accRead.getLoc(), accRegTileTy,
+                  candidate.accBuffer, ValueRange{ivM, ivN},
+                  arith::ConstantOp::create(b, loc, b.getZeroAttr(accElemTy)),
+                  inBounds);
+
+              auto accLoop = scf::ForOp::create(
+                  b, loc, lbK, ubK, stepK, ValueRange{accRead},
+                  [&](OpBuilder &b, Location loc, Value ivK,
+                      ValueRange iterArgs) {
+                    loopKBodyBuilder(b, loc, ivM, ivN, ivK, iterArgs);
+                  });
+
+              auto accWrite = vector::TransferWriteOp::create(
+                  b, candidate.accWrite.getLoc(), accLoop.getResult(0),
+                  candidate.accBuffer, ValueRange{ivM, ivN}, inBounds);
+              scf::YieldOp::create(b, loc);
+
+              candidate.accRead = accRead;
+              candidate.accLoop = accLoop;
+              candidate.accWrite = accWrite;
+            });
+        scf::YieldOp::create(b, loc);
+      });
+
+  rewriter.eraseOp(oldAccWrite);
+  rewriter.eraseOp(oldAccLoop);
+  rewriter.eraseOp(oldAccRead);
+
+  LDBG("  Inserted register-tiled contraction: " << candidate.contract);
 }
 
 void performRegisterTiling(DotOpCandidate &candidate,
@@ -1031,11 +1198,20 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
   // by encoding it in the types.
   encodeVnniPacking(candidate, rewriter);
 
-  // Insert memref.subview ops to ensure all transfer ops have zero indices.
-  moveIndicesToSubview(candidate, rewriter);
-
   // 1:1 replacement of triton_cpu.dot -> vector.contract.
   convertToContract(candidate, rewriter);
+
+  if (candidate.isLoopedNanokernel) {
+    // Move loop-invariant code out of the way first.
+    moveLoopInvariantCode(candidate.accLoop);
+
+    // Insert loops around the nanokernel if the block sizes are larger than the
+    // maximum register tile sizes.
+    insertLoops(candidate, rewriter);
+  }
+
+  // Insert memref.subview ops to ensure all transfer ops have zero indices.
+  moveIndicesToSubview(candidate, rewriter);
 
   // Apply target-specific register tiling via upstream vector-dialect unroll
   // patterns.
