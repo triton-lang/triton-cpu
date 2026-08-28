@@ -613,8 +613,8 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   int64_t vnni = candidate.blockK;
 
   if (candidate.target & (AVX512_BF16 | AVX10_2)) {
-    regTileM = 8;
-    regTileN = 32;
+    regTileM = candidate.blockN >= 64 ? 4 : 8;
+    regTileN = candidate.blockN >= 64 ? 64 : 32;
   } else if (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) {
     regTileM = 4;
     regTileN = 16;
