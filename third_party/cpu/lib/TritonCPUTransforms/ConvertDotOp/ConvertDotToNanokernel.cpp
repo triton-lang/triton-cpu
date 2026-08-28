@@ -1184,7 +1184,8 @@ void elideZeroAcc(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
 void flattenTransferOps(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   RewritePatternSet patterns(candidate.func.getContext());
-  unsigned targetVectorBitwidth = (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) ? 256 : 512;
+  unsigned targetVectorBitwidth =
+      (candidate.target & (AVX_NE_CONVERT | AVX_VNNI_INT8)) ? 256 : 512;
   vector::populateFlattenVectorTransferPatterns(patterns, targetVectorBitwidth);
   (void)applyPatternsGreedily(candidate.func, std::move(patterns));
 }
