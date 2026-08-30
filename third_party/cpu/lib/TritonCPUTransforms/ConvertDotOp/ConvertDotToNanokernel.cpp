@@ -165,6 +165,7 @@ unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
     if (candidate.blockK == 4)
       return mask & (AVX10_2 | AVX_VNNI_INT8);
   }
+  candidate.isLoopedNanokernel = false;
 
   auto shapeUnrollsTo = [&candidate](int64_t m, int64_t n, int64_t k,
                                      int64_t numRegs, bool needsNPair = true) {
