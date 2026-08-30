@@ -117,6 +117,10 @@ struct DotOpCandidate {
 
   // Has block sizes that require looping the nanokernel (experimental).
   bool isLoopedNanokernel;
+
+  // Indicates whether an unsqueezing shape cast can be fused into the
+  // accumulator write.
+  bool hasUnsqueezingShapeCast;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -143,6 +147,28 @@ unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
 
   LDBG("  Drop candidate. Unsupported type combination");
   return 0;
+}
+
+bool isUnsqueezingShapeCast(Operation *op) {
+  auto castOp = dyn_cast<vector::ShapeCastOp>(op);
+  if (!castOp)
+    return false;
+
+  VectorType srcType = castOp.getSourceVectorType();
+  VectorType dstType = castOp.getResultVectorType();
+
+  if (dstType.getRank() <= srcType.getRank())
+    return false;
+
+  ArrayRef<int64_t> srcShape = srcType.getShape();
+  ArrayRef<int64_t> dstShape = dstType.getShape();
+
+  unsigned added = dstType.getRank() - srcType.getRank();
+  for (unsigned i = 0; i < added; ++i)
+    if (dstShape[i] != 1)
+      return false;
+
+  return dstShape.take_back(srcShape.size()).equals(srcShape);
 }
 
 unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
@@ -285,8 +311,16 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   OpResult accRes = candidate.isAccumulationLoop
                         ? accLoop.getTiedLoopResult(accIterArg)
                         : op->getOpResult(0);
-  if (accRes.hasOneUse())
-    accWrite = dyn_cast<vector::TransferWriteOp>(*accRes.getUsers().begin());
+
+  candidate.hasUnsqueezingShapeCast = false;
+  if (accRes.hasOneUse()) {
+    Operation *user = *accRes.getUsers().begin();
+    accWrite = dyn_cast<vector::TransferWriteOp>(user);
+    if (!accWrite && user->hasOneUse() && isUnsqueezingShapeCast(user)) {
+      candidate.hasUnsqueezingShapeCast = true;
+      accWrite = dyn_cast<vector::TransferWriteOp>(*user->getUsers().begin());
+    }
+  }
 
   // Quirk in the patterns: they assume that the accumulator read and
   // write are from/to the same memref with the same indices. If not, we can't
@@ -297,13 +331,6 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
        !llvm::equal(accRead.getIndices(), accWrite.getIndices()))) {
     LDBG("  Cannot use existing vector.transfer_read/write due to mismatch in "
          "memref or indices.");
-    accRead = nullptr;
-    accWrite = nullptr;
-  }
-
-  // For now, always allocate a temporary accumulator buffer for the looped
-  // nanokernel case, as it makes indexing simpler.
-  if (candidate.isLoopedNanokernel) {
     accRead = nullptr;
     accWrite = nullptr;
   }
@@ -338,13 +365,6 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
 
     auto vecTy = transferOp.getVectorType();
     auto vecRank = vecTy.getRank();
-    if (vecRank != 2) {
-      LDBG("  Drop candidate. Expected 2D vector.transfer_read/write op, but "
-           "got: "
-           << transferOp);
-      return false;
-    }
-
     auto memrefTy = cast<MemRefType>(transferOp.getBase().getType());
     auto memrefRank = memrefTy.getRank();
     // If the memref has more than 2 dimensions, we expect to find block-based
@@ -396,6 +416,24 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   candidate.accWrite = accWrite;
 
   return true;
+}
+
+void fuseAccWriteShapeCast(DotOpCandidate &candidate,
+                           PatternRewriter &rewriter) {
+  if (!candidate.hasUnsqueezingShapeCast || !candidate.accWrite)
+    return;
+
+  auto shapeCast =
+      candidate.accWrite.getValueToStore().getDefiningOp<vector::ShapeCastOp>();
+
+  rewriter.setInsertionPoint(candidate.accWrite);
+  auto rank = shapeCast.getSourceVectorType().getRank();
+  candidate.accWrite = rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
+      candidate.accWrite, shapeCast.getSource(), candidate.accWrite.getBase(),
+      candidate.accWrite.getIndices(),
+      ArrayRef<bool>(candidate.accWrite.getInBoundsValues()).take_back(rank));
+
+  rewriter.eraseOp(shapeCast);
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
@@ -709,18 +747,20 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
         scf::ForOp::create(
             b, loc, c0, ubN, stepN, {},
             [&](OpBuilder &b, Location loc, Value ivN, ValueRange iterArgs) {
-              // We unconditionally allocate a temporary accumulator buffer for
-              // the looped nanokernel case, hence we don't need any
-              // out-of-bounds handling.
-              SmallVector<bool> inBounds(
-                  cast<MemRefType>(candidate.accBuffer.getType()).getRank(),
-                  true);
+              // We know that accRead/accWrite operate on a 2D vector shaped as
+              // the block sizes, hence we can modify the last two indices to
+              // select the smaller register tiles.
+              SmallVector<Value> indices{candidate.accRead.getIndices()};
+              Value &idxM = indices[indices.size() - 2];
+              Value &idxN = indices[indices.size() - 1];
+              idxM = arith::AddIOp::create(b, loc, idxM, ivM);
+              idxN = arith::AddIOp::create(b, loc, idxN, ivN);
 
               auto accRead = vector::TransferReadOp::create(
                   b, candidate.accRead.getLoc(), accRegTileTy,
-                  candidate.accBuffer, ValueRange{ivM, ivN},
+                  candidate.accRead.getBase(), indices,
                   arith::ConstantOp::create(b, loc, b.getZeroAttr(accElemTy)),
-                  inBounds);
+                  candidate.accRead.getInBoundsValues());
 
               auto accLoop = scf::ForOp::create(
                   b, loc, lbK, ubK, stepK, ValueRange{accRead},
@@ -729,9 +769,12 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
                     loopKBodyBuilder(b, loc, ivM, ivN, ivK, iterArgs);
                   });
 
+              // The candidate selection enforces the same indices for accRead
+              // and accWrite, so we can reuse the indices vector.
               auto accWrite = vector::TransferWriteOp::create(
                   b, candidate.accWrite.getLoc(), accLoop.getResult(0),
-                  candidate.accBuffer, ValueRange{ivM, ivN}, inBounds);
+                  candidate.accWrite.getBase(), indices,
+                  candidate.accWrite.getInBoundsValues());
               scf::YieldOp::create(b, loc);
 
               candidate.accRead = accRead;
@@ -1193,6 +1236,9 @@ void flattenTransferOps(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
 LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
+  // Fuse shape cast into the accumulator write, if possible.
+  fuseAccWriteShapeCast(candidate, rewriter);
+
   // Introduce temporary buffer if needed.
   makeAccBuffer(candidate, rewriter);
 
