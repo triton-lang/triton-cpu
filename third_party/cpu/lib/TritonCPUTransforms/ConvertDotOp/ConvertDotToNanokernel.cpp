@@ -1286,7 +1286,7 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
     elideZeroAcc(candidate, rewriter);
   }
 
-  // Flatten transfer ops to prevent inefficent lowering of VNNI-encoded reads,
+  // Flatten transfer ops to prevent inefficient lowering of VNNI-encoded reads,
   // e.g. `vector.transfer_read ... vector<1x16x2xbf16>` shall become a single
   // 32-element load instead of unrolling it to 16 2-element loads.
   flattenTransferOps(candidate, rewriter);

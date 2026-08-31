@@ -97,7 +97,7 @@ tt.func public @gemm_looped_avx512(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %
 // In lieu of matching the full sequence:
 // AVX_NE_CONVERT-COUNT-7:     vector.fma
 
-// AVX_NE_CONVERT              scf.yield
+// AVX_NE_CONVERT:             scf.yield
 // AVX_NE_CONVERT-COUNT-8:  vector.transfer_write
 
 tt.func public @gemm_looped_avx_ne_convert(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<bf16>, %arg3: !tt.ptr<f32>, %arg4: !tt.ptr<bf16>, %arg5: !tt.ptr<i32>, %arg6: i32, %arg7: i32, %arg8: i32) {
