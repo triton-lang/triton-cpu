@@ -37,7 +37,6 @@ def test_cpu_print(func_type: str, data_type: str, device: str):
         pytest.skip("Printing float16, pointers, and large tensors is not yet supported on CPU.")
 
     env = os.environ.copy()
-    env.pop("TRITON_CPU_BACKEND", None)
     env.pop("TRITON_INTERPRET", None)
     env["TRITON_DEFAULT_BACKEND"] = "cpu"
     proc = subprocess.run(
@@ -56,7 +55,6 @@ def test_cpu_launcher_pointer_refcount(device: str):
         pytest.skip("CPU launcher tests require --device cpu.")
 
     env = os.environ.copy()
-    env.pop("TRITON_CPU_BACKEND", None)
     env.pop("TRITON_INTERPRET", None)
     env["TRITON_DEFAULT_BACKEND"] = "cpu"
     proc = subprocess.run(
@@ -73,7 +71,6 @@ def test_cpu_launcher_pointer_error(device: str):
         pytest.skip("CPU launcher tests require --device cpu.")
 
     env = os.environ.copy()
-    env.pop("TRITON_CPU_BACKEND", None)
     env.pop("TRITON_INTERPRET", None)
     env["TRITON_DEFAULT_BACKEND"] = "cpu"
     proc = subprocess.run(
@@ -91,7 +88,6 @@ def test_cpu_launcher_hook_refcount(device: str):
         pytest.skip("CPU launcher tests require --device cpu.")
 
     env = os.environ.copy()
-    env.pop("TRITON_CPU_BACKEND", None)
     env.pop("TRITON_INTERPRET", None)
     env["TRITON_DEFAULT_BACKEND"] = "cpu"
     proc = subprocess.run(
@@ -108,7 +104,6 @@ def test_cpu_print_from_subfunction(device: str):
         pytest.skip("CPU print tests require --device cpu.")
 
     env = os.environ.copy()
-    env.pop("TRITON_CPU_BACKEND", None)
     env.pop("TRITON_INTERPRET", None)
     env["TRITON_DEFAULT_BACKEND"] = "cpu"
     proc = subprocess.run(

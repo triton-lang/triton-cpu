@@ -15,13 +15,14 @@ def _create_driver() -> DriverBase:
             raise RuntimeError(f"Backend device '{selected}' is not active.")
         return driver()
     else:
-        if os.getenv("TRITON_CPU_BACKEND", "0") == "1":
-            if "cpu" not in backends:
-                raise RuntimeError("TRITON_CPU_BACKEND is set, but CPU backend is unavailable.")
-            return backends["cpu"].driver()
-        active_drivers = [x.driver for x in backends.values() if x.driver.is_active()]
-        if len(active_drivers) >= 2 and backends["cpu"].driver.is_active():
-            active_drivers.remove(backends["cpu"].driver)
+        # Prefer an active GPU driver, falling back to CPU when none are active.
+        active_drivers = [
+            backend.driver for name, backend in backends.items() if name != "cpu" and backend.driver.is_active()
+        ]
+        if not active_drivers:
+            cpu_backend = backends.get("cpu")
+            if cpu_backend is not None and cpu_backend.driver.is_active():
+                active_drivers.append(cpu_backend.driver)
         if len(active_drivers) != 1:
             raise RuntimeError(f"{len(active_drivers)} active drivers ({active_drivers}). There should only be one.")
         return active_drivers[0]()
