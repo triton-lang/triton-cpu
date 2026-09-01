@@ -93,14 +93,14 @@ jobs:
         run: |
           export CC=$(which clang)
           export TRITON_DISABLE_OPENMP=1 # temporary
-          export TRITON_CPU_BACKEND=1
+          export TRITON_DEFAULT_BACKEND=cpu
 
           # Document some versions/flags
           echo "xcode-select:"; xcode-select -p
           echo "CC: ${CC}"
           clang --version
           echo "TRITON_DISABLE_OPENMP=${TRITON_DISABLE_OPENMP}"
-          echo "TRITON_CPU_BACKEND=${TRITON_CPU_BACKEND}"
+          echo "TRITON_DEFAULT_BACKEND=${TRITON_DEFAULT_BACKEND}"
 
           # Skip bfloat16 tests for now
           # We are generating bfcvt for bfloat16 tests when converting to fp32.

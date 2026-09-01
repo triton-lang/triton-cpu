@@ -34,8 +34,9 @@ uv run python python/tutorials/cpu/08-sfc-matmul.py
 ```
 
 The samples use `triton.runtime.driver.set_active_to_cpu()` to switch to CPU
-usage. Alternatively, setting the environment variable `TRITON_CPU_BACKEND=1`
-gives the CPU backend priority over any available GPU backends.
+usage. Alternatively, set `TRITON_DEFAULT_BACKEND=cpu` to select the CPU
+backend explicitly. When no GPU backend is active, Triton selects CPU
+automatically.
 
 **NOTE: It's still work in progress.**
 
