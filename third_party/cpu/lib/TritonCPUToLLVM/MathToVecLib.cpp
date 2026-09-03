@@ -240,8 +240,8 @@ public:
     if (ulp == 0) {
       ulpSuffix = "";
     } else {
-      char buf[5]; // 4 char suffix + '\0' added by snprintf
-      snprintf(buf, 5, "_u%02u", ulp);
+      char buf[13]; // "_u" + 10 unsigned digits + '\0'
+      snprintf(buf, sizeof(buf), "_u%02u", ulp);
       ulpSuffix = buf;
     }
   }
