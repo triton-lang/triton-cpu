@@ -45,6 +45,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       # The LATEST_DATE here should be kept in sync with the one in Patch setup.py
       - id: check-version
