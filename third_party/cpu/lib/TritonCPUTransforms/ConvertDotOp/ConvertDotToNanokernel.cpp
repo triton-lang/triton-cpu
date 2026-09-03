@@ -98,11 +98,14 @@ struct DotOpCandidate {
   BlockArgument accIterArg;
   scf::ForOp splicedAccLoop;
 
-  // Vector transfer ops for inputs/output.
+  // Vector transfer ops for inputs/output...
   vector::TransferReadOp lhsRead;
   vector::TransferReadOp rhsRead;
   vector::TransferReadOp accRead;
   vector::TransferWriteOp accWrite;
+
+  // ... or a zero-initialization constant for the accumulator.
+  arith::ConstantOp accConstInit;
 
   // Temporary buffer for accumulator.
   memref::AllocaOp accBuffer;
@@ -300,12 +303,17 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     return false;
   }
 
+  Value accInitValue = candidate.isAccumulationLoop
+                           ? accLoop.getTiedLoopInit(accIterArg)->get()
+                           : op.getC();
   vector::TransferReadOp accRead =
-      candidate.isAccumulationLoop
-          ? accLoop.getTiedLoopInit(accIterArg)
-                ->get()
-                .getDefiningOp<vector::TransferReadOp>()
-          : op.getC().getDefiningOp<vector::TransferReadOp>();
+      accInitValue.getDefiningOp<vector::TransferReadOp>();
+  arith::ConstantOp accConstInit;
+  if (!accRead && isZeroConst(accInitValue) &&
+      (mask & ~(AMX_BF16 | AMX_INT8 | AMX_FP8))) {
+    // AMX lowering doesn't support direct zero-initialization yet.
+    accConstInit = accInitValue.getDefiningOp<arith::ConstantOp>();
+  }
 
   vector::TransferWriteOp accWrite;
   OpResult accRes = candidate.isAccumulationLoop
@@ -413,6 +421,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   candidate.lhsRead = lhsRead;
   candidate.rhsRead = rhsRead;
   candidate.accRead = accRead;
+  candidate.accConstInit = accConstInit;
   candidate.accWrite = accWrite;
 
   return true;
@@ -437,7 +446,7 @@ void fuseAccWriteShapeCast(DotOpCandidate &candidate,
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
-  if (candidate.accRead && candidate.accWrite)
+  if ((candidate.accRead || candidate.accConstInit) && candidate.accWrite)
     return; // Nothing to do.
 
   auto accTy = cast<VectorType>(candidate.dot.getC().getType());
@@ -467,11 +476,13 @@ void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   Value padding = arith::ConstantOp::create(
       rewriter, loc, rewriter.getZeroAttr(accTy.getElementType()));
 
-  candidate.accInit = vector::TransferWriteOp::create(
-      rewriter, loc, operand->get(), candidate.accBuffer, zeroIndices);
-  candidate.accRead = vector::TransferReadOp::create(
-      rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
-  operand->set(candidate.accRead);
+  if (!candidate.accConstInit) {
+    candidate.accInit = vector::TransferWriteOp::create(
+        rewriter, loc, operand->get(), candidate.accBuffer, zeroIndices);
+    candidate.accRead = vector::TransferReadOp::create(
+        rewriter, loc, accTy, candidate.accBuffer, zeroIndices, padding);
+    operand->set(candidate.accRead);
+  }
 
   // After dot or loop...
   rewriter.setInsertionPointAfter(candidate.accLoop ? candidate.accLoop
@@ -594,7 +605,8 @@ void moveIndicesToSubview(DotOpCandidate &candidate,
                           PatternRewriter &rewriter) {
   moveIndicesToSubview(candidate.lhsRead, rewriter);
   moveIndicesToSubview(candidate.rhsRead, rewriter);
-  moveIndicesToSubview(candidate.accRead, rewriter);
+  if (candidate.accRead)
+    moveIndicesToSubview(candidate.accRead, rewriter);
   moveIndicesToSubview(candidate.accWrite, rewriter);
 }
 
@@ -660,14 +672,19 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   } else
     llvm_unreachable("Unexpected target ISA for looping the nanokernel");
 
-  Type accElemTy = candidate.accRead.getType().getElementType();
+  Value accInitVal = candidate.accRead
+                         ? static_cast<Value>(candidate.accRead)
+                         : static_cast<Value>(candidate.accConstInit);
+  Type accElemTy = cast<VectorType>(accInitVal.getType()).getElementType();
   Type inpElemTy = candidate.lhsRead.getType().getElementType();
 
   VectorType accRegTileTy = VectorType::get({regTileM, regTileN}, accElemTy);
   VectorType lhsRegTileTy = VectorType::get({regTileM, 1, vnni}, inpElemTy);
   VectorType rhsRegTileTy = VectorType::get({1, regTileN, vnni}, inpElemTy);
 
-  rewriter.setInsertionPoint(candidate.accLoop);
+  // Construct after the loop, to ensure that all tensor descriptors and their
+  // extracted memrefs are defined.
+  rewriter.setInsertionPoint(candidate.accWrite);
   auto loc = candidate.accLoop.getLoc();
 
   // Set up loop bounds.
@@ -749,44 +766,49 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
             [&](OpBuilder &b, Location loc, Value ivN, ValueRange iterArgs) {
               // We know that accRead/accWrite operate on a 2D vector shaped as
               // the block sizes, hence we can modify the last two indices to
-              // select the smaller register tiles.
-              SmallVector<Value> indices{candidate.accRead.getIndices()};
+              // select the smaller register tiles. The candidate selection
+              // enforces the same indices for accRead (if present) and
+              // accWrite, so we can use the latter one's.
+              SmallVector<Value> indices{candidate.accWrite.getIndices()};
               Value &idxM = indices[indices.size() - 2];
               Value &idxN = indices[indices.size() - 1];
               idxM = arith::AddIOp::create(b, loc, idxM, ivM);
               idxN = arith::AddIOp::create(b, loc, idxN, ivN);
 
-              auto accRead = vector::TransferReadOp::create(
-                  b, candidate.accRead.getLoc(), accRegTileTy,
-                  candidate.accRead.getBase(), indices,
-                  arith::ConstantOp::create(b, loc, b.getZeroAttr(accElemTy)),
-                  candidate.accRead.getInBoundsValues());
+              if (candidate.accRead) {
+                candidate.accRead = vector::TransferReadOp::create(
+                    b, candidate.accRead.getLoc(), accRegTileTy,
+                    candidate.accRead.getBase(), indices,
+                    arith::ConstantOp::create(b, loc, b.getZeroAttr(accElemTy)),
+                    candidate.accRead.getInBoundsValues());
+                accInitVal = candidate.accRead;
+              } else {
+                candidate.accConstInit = arith::ConstantOp::create(
+                    b, loc, b.getZeroAttr(accRegTileTy));
+                accInitVal = candidate.accConstInit;
+              }
 
-              auto accLoop = scf::ForOp::create(
-                  b, loc, lbK, ubK, stepK, ValueRange{accRead},
+              candidate.accLoop = scf::ForOp::create(
+                  b, loc, lbK, ubK, stepK, ValueRange{accInitVal},
                   [&](OpBuilder &b, Location loc, Value ivK,
                       ValueRange iterArgs) {
                     loopKBodyBuilder(b, loc, ivM, ivN, ivK, iterArgs);
                   });
 
-              // The candidate selection enforces the same indices for accRead
-              // and accWrite, so we can reuse the indices vector.
-              auto accWrite = vector::TransferWriteOp::create(
-                  b, candidate.accWrite.getLoc(), accLoop.getResult(0),
-                  candidate.accWrite.getBase(), indices,
-                  candidate.accWrite.getInBoundsValues());
+              candidate.accWrite = vector::TransferWriteOp::create(
+                  b, candidate.accWrite.getLoc(),
+                  candidate.accLoop.getResult(0), candidate.accWrite.getBase(),
+                  indices, candidate.accWrite.getInBoundsValues());
               scf::YieldOp::create(b, loc);
-
-              candidate.accRead = accRead;
-              candidate.accLoop = accLoop;
-              candidate.accWrite = accWrite;
             });
         scf::YieldOp::create(b, loc);
       });
 
   rewriter.eraseOp(oldAccWrite);
   rewriter.eraseOp(oldAccLoop);
-  rewriter.eraseOp(oldAccRead);
+  if (oldAccRead)
+    rewriter.eraseOp(oldAccRead);
+  // Don't bother erasing the old constant.
 
   LDBG("  Inserted register-tiled contraction: " << candidate.contract);
 }
@@ -818,8 +840,9 @@ void performRegisterTiling(DotOpCandidate &candidate,
                                : rewriter.getI64ArrayAttr({k * vnniFactor, n}));
   };
   auto setAccShape = [&](int64_t m, int64_t n) {
-    candidate.accRead->setAttr(unrollShapeAttrName,
-                               rewriter.getI64ArrayAttr({m, n}));
+    Operation *accInitOp =
+        candidate.accRead ? candidate.accRead : candidate.accConstInit;
+    accInitOp->setAttr(unrollShapeAttrName, rewriter.getI64ArrayAttr({m, n}));
     candidate.accWrite->setAttr(unrollShapeAttrName,
                                 rewriter.getI64ArrayAttr({m, n}));
   };
@@ -1180,7 +1203,8 @@ struct ElideSelfCopyPattern : public OpRewritePattern<vector::StoreOp> {
 // If the accumulation buffer is only set to zero once, and read from otherwise,
 // we can replace loads and transfer_reads from it with constants.
 void elideZeroAcc(DotOpCandidate &candidate, PatternRewriter &rewriter) {
-  if (!isZeroConst(candidate.accInit.getValueToStore()))
+  if (candidate.accConstInit ||
+      !isZeroConst(candidate.accInit.getValueToStore()))
     return;
 
   // Bail out if there's an unexpected user of the accumulation buffer.

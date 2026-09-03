@@ -88,9 +88,10 @@ def block_transpose_pack_kernel(a_in_ptr, a_out_ptr, a_sfc_map_ptr, b_in_ptr, b_
 #    [ ik * (BLOCKS_K // BLOCKING_FACTOR_K), (ik + 1) * (BLOCKS_K // BLOCKING_FACTOR_K) )
 #
 @triton.jit
-def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
-               BLOCK_SIZE_K: tl.constexpr, DTYPE: tl.constexpr, ACC_DTYPE: tl.constexpr,
-               BLOCKING_FACTOR_K: tl.constexpr):
+def sfc_kernel(a_ptr, b_ptr, c_ptr, c_tmp_ptr, sfc_map_ptr, M, N, K, ik,
+            BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+            DTYPE: tl.constexpr, ACC_DTYPE: tl.constexpr,
+            BLOCKING_FACTOR_K: tl.constexpr, IS_FIRST_K_BLOCK: tl.constexpr, IS_LAST_K_BLOCK: tl.constexpr,):
     VNNI: tl.constexpr = 32 // b_ptr.type.element_ty.primitive_bitwidth
 
     BLOCKS_M = M // BLOCK_SIZE_M
@@ -116,11 +117,12 @@ def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik, BLOCK_SIZE_M: tl.c
                                        strides=(BLOCK_SIZE_M * N, BLOCK_SIZE_N, N, 1),
                                        block_shape=(1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
 
-    if ik == 0:
-        c0 = tl.zeros((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=DTYPE)
-        c_desc.store([block_m, block_n, 0, 0], c0)
+    if BLOCKING_FACTOR_K > 1:
+        c_tmp_desc = tl.make_tensor_descriptor(base=c_tmp_ptr, shape=(BLOCKS_M, BLOCKS_N, BLOCK_SIZE_M, BLOCK_SIZE_N),
+                                               strides=(BLOCK_SIZE_M * N, BLOCK_SIZE_M * BLOCK_SIZE_N, BLOCK_SIZE_N, 1),
+                                               block_shape=(1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
 
-    c = c_desc.load([block_m, block_n, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_N)).to(ACC_DTYPE)
+    c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=ACC_DTYPE)
 
     for block_ki in range(block_k, block_k + BLOCKS_K_PER_PROG):
         a = a_desc.load([block_m, block_ki, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_K))
@@ -129,6 +131,15 @@ def sfc_kernel(a_ptr, b_ptr, c_ptr, sfc_map_ptr, M, N, K, ik, BLOCK_SIZE_M: tl.c
         b = tl.extra.cpu.vnni_decode(b)
 
         c = tl.dot(a, b, acc=c, out_dtype=ACC_DTYPE)
+
+    if not IS_FIRST_K_BLOCK:
+        c_tmp = c_tmp_desc.load([block_m, block_n, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_N))
+        c += c_tmp
+
+    if not IS_LAST_K_BLOCK:
+        c = c.reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
+        c_tmp_desc.store([block_m, block_n, 0, 0], c)
+        return
 
     c = c.to(DTYPE).reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
     c_desc.store([block_m, block_n, 0, 0], c)
@@ -140,8 +151,9 @@ def make_sfc_tensor(x, y, dtype=torch.int32, device='cpu'):
     return torch.tensor([c for xy in gilbert for c in xy], dtype=dtype, device=device)
 
 
-def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ap: torch.Tensor, bp: torch.Tensor, M, N, K,
-           blocking_factor_k=1):
+def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
+           ap: torch.Tensor, bp: torch.Tensor, ctmp: torch.Tensor,
+           M, N, K, blocking_factor_k=1):
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (K % BLOCK_SIZE_K == 0), \
            "Masking currently not supported, matrix dimensions must be multiples of block size"
 
@@ -162,11 +174,13 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ap: torch.Tensor, 
                                                 BLOCK_SIZE_K=BLOCK_SIZE_K, assume_in_bounds=True)
 
     for ik in range(blocking_factor_k):
-        sfc_kernel[((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )](ap, bp, c, sfc_map_mn, M, N, K, ik,
+        sfc_kernel[((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )](ap, bp, c, ctmp, sfc_map_mn, M, N, K, ik,
                                                                   BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
                                                                   BLOCK_SIZE_K=BLOCK_SIZE_K, DTYPE=tt_dtype,
                                                                   ACC_DTYPE=tt_acc_dtype,
                                                                   BLOCKING_FACTOR_K=blocking_factor_k,
+                                                                  IS_FIRST_K_BLOCK=(ik == 0),
+                                                                  IS_LAST_K_BLOCK=(ik == blocking_factor_k - 1),
                                                                   assume_in_bounds=True)
     return c
 
@@ -179,9 +193,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--target', choices=['amx', 'avx512', 'avx_ne_convert', 'avx_vnni_int8'], default='amx')
 parser.add_argument('--dtype', choices=['bfloat16', 'int8'], default='bfloat16')
 parser.add_argument('--bench', action='store_true')
-parser.add_argument('-M', type=int, nargs='+', default=[512])
+parser.add_argument('-M', type=int, nargs='+', default=[1024])
 parser.add_argument('-N', type=int, nargs='+', default=[1024])
-parser.add_argument('-K', type=int, nargs='+', default=[256])
+parser.add_argument('-K', type=int, nargs='+', default=[1024])
 
 args = parser.parse_args()
 
@@ -237,11 +251,11 @@ print(f"Running unit test with "
       f"M={M}, N={N}, K={K} dtype={dtype_str} "
       f"BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}...")
 
-torch_output = torch.empty((M, N), device='cpu', dtype=dtype)
-torch.matmul(a, b, out=torch_output)
+torch_output = torch.matmul(a.to(acc_dtype), b.to(acc_dtype)).to(dtype)
 
 triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
-matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), M=M, N=N, K=K, blocking_factor_k=1)
+matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), torch.empty((M, N), device='cpu', dtype=acc_dtype),
+       M=M, N=N, K=K, blocking_factor_k=4)
 
 if torch.allclose(triton_output, torch_output, atol=1e-5, rtol=1e-2):
     print("✅ TritonCPU pre-packed SFC and TorchCPU match")
@@ -341,12 +355,14 @@ def benchmark(M, N, K, provider):
 
         ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, rep=10000)  # run for 10 seconds
     elif backend == 'triton-cpu':
-        ap = torch.empty((M, K), device=a.device, dtype=a.dtype)
-        bp = torch.empty((K, N), device=b.device, dtype=b.dtype)
+        ap = torch.empty((M, K), device=a.device, dtype=dtype)
+        bp = torch.empty((K, N), device=b.device, dtype=dtype)
+        ctmp = torch.empty((M, N), device=c.device, dtype=acc_dtype)
 
         def doit():
             for i in range(n_layers):
-                matmul(a[i % n_layers], b[i % n_layers], c[i % n_layers], ap, bp, M, N, K, blocking_factor_k=sfc_bfk)
+                matmul(a[i % n_layers], b[i % n_layers], c[i % n_layers],
+                       ap, bp, ctmp, M, N, K, blocking_factor_k=sfc_bfk)
 
         ms, min_ms, max_ms = triton.testing.do_bench(
             doit, quantiles=quantiles, measure_time_with_hooks=False,  # also capture potential Python loop overhead
