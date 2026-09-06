@@ -346,6 +346,8 @@ class Config:
     :ivar pre_hook: a function that will be called before the kernel is called. Parameters of this
                     function are args.
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
+    :ivar num_cpu_threads: number of threads to use for CPU backend kernels. 0 (default) means unset.
+    :type num_cpu_threads: int
     """
 
     def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, num_cpu_threads=0, maxnreg=None, pre_hook=None,
@@ -392,7 +394,8 @@ class Config:
         res.append(f"num_warps: {self.num_warps}")
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
-        res.append(f"num_cpu_threads: {self.num_cpu_threads}")
+        if self.num_cpu_threads:
+            res.append(f"num_cpu_threads: {self.num_cpu_threads}")
         res.append(f"maxnreg: {self.maxnreg}")
         return ", ".join(res)
 
