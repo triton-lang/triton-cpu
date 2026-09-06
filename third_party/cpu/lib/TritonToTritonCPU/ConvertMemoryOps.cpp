@@ -420,8 +420,10 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
       }
 
       auto scatterBase = triton::cpu::PtrToMemRefOp::create(
-          rewriter, loc, MemRefType::get({}, vecTy.getElementType()), basePtr);
-      auto scatterIndices = SmallVector<Value>();
+          rewriter, loc,
+          MemRefType::get(vecTy.getShape(), vecTy.getElementType()), basePtr);
+      auto scatterIndices = SmallVector<Value>(
+          vecTy.getRank(), arith::ConstantIndexOp::create(rewriter, loc, 0));
 
       vector::ScatterOp::create(rewriter, loc, TypeRange{}, scatterBase,
                                 scatterIndices, indexVec, scatterMask, val,

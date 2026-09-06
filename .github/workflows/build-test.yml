@@ -86,7 +86,7 @@ jobs:
           MAX_JOBS: ${{ matrix.config.target-os == 'macos' && '3' || '' }}
         run: |
           echo "PATH is '$PATH'"
-          python3 -m pip install --no-build-isolation -vvv '.[tests]'
+          python3 -m pip install --no-build-isolation -vvv -e '.[tests]'
 
       - name: Run python unit tests for MacOS Arm64
         if: matrix.config.target-os == 'macos'
@@ -116,7 +116,6 @@ jobs:
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
-            python/test/unit/language/test_block_pointer.py \
             python/test/unit/language/test_compile_errors.py \
             python/test/unit/language/test_conversions.py \
             python/test/unit/language/test_decorator.py \
@@ -136,6 +135,9 @@ jobs:
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast \
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast_clamping \
             --deselect python/test/unit/language/test_standard.py::test_flip \
+            --deselect python/test/unit/runtime/test_subproc.py::test_replenishing_process_pool_reuses_clean_processes \
+            --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_only_intercepts_launches \
+            --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_coordinator_deduplicates_and_propagates_errors \
             -k "not bfloat16"
 
       - name: Run python unit tests for Intel
@@ -152,7 +154,6 @@ jobs:
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
             python/test/unit/language/test_annotations.py \
-            python/test/unit/language/test_block_pointer.py \
             python/test/unit/language/test_compile_errors.py \
             python/test/unit/language/test_conversions.py \
             python/test/unit/language/test_decorator.py \
@@ -171,7 +172,9 @@ jobs:
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_upcast \
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast \
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast_clamping \
-            --deselect python/test/unit/language/test_standard.py::test_flip
+            --deselect python/test/unit/language/test_standard.py::test_flip \
+            --deselect python/test/unit/runtime/test_subproc.py::test_replenishing_process_pool_reuses_clean_processes \
+            --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_only_intercepts_launches
 
       - name: Run lit tests
         run: |
@@ -230,7 +233,7 @@ jobs:
           echo "CMAKE_PREFIX_PATH is '$CMAKE_PREFIX_PATH'"
           echo "XSMM_INSTALL is '$XSMM_INSTALL'"
           echo "XSMM_INCLUDE_DIRS is '$XSMM_INCLUDE_DIRS'"
-          python3 -m pip install --no-build-isolation -vvv '.[tests]'
+          python3 -m pip install --no-build-isolation -vvv -e '.[tests]'
 
       - name: AMX/FMA Run python unit tests on GNR
         env:

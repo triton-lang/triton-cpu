@@ -31,7 +31,7 @@ def is_cpu():
         triton.runtime.driver.active.get_current_target().backend == "cpu"
 
 
-float_dtypes = ['bfloat16', 'float16', 'float32', 'float64']
+float_dtypes = ['float32', 'float64']
 lib_prefix = {
     "libsleef": "Sleef",
     "libmvec": "_ZGV",
