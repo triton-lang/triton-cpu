@@ -262,7 +262,10 @@ print(f"Running unit test with "
       f"M={M}, N={N}, K={K} dtype={dtype_str} "
       f"BLOCK_SIZE_M={BLOCK_SIZE_M}, BLOCK_SIZE_N={BLOCK_SIZE_N}, BLOCK_SIZE_K={BLOCK_SIZE_K}...")
 
-torch_output = torch.matmul(a.to(acc_dtype), b.to(acc_dtype)).to(dtype)
+if dtype.is_floating_point:
+    torch_output = torch.mm(a, b)
+else:
+    torch_output = torch._int_mm(a, b).to(dtype=dtype)  # type: ignore
 
 triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
 matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), torch.empty(
@@ -379,12 +382,21 @@ def benchmark(M, N, K, provider):
 
     quantiles = [0.5, 0.2, 0.8]
     if backend == 'torch-cpu-native':
+        ctmp = torch.empty((M, N), device='cpu', dtype=acc_dtype)
 
-        def doit():
+        def doit_fp():
             for i in range(n_layers):
-                torch.matmul(a[i % n_layers], b[i % n_layers], out=c[i % n_layers])
+                torch.mm(a[i % n_layers], b[i % n_layers], out=c[i % n_layers])
 
-        ms, min_ms, max_ms = triton.testing.do_bench(doit, quantiles=quantiles, rep=10000)  # run for 10 seconds
+        def doit_int():
+            for i in range(n_layers):
+                torch._int_mm(a[i % n_layers], b[i % n_layers], out=ctmp)
+                c[i % n_layers].copy_(ctmp.to(dtype=dtype))
+
+        if dtype.is_floating_point:
+            ms, min_ms, max_ms = triton.testing.do_bench(doit_fp, quantiles=quantiles, rep=10000)  # run for 10 seconds
+        else:
+            ms, min_ms, max_ms = triton.testing.do_bench(doit_int, quantiles=quantiles, rep=10000)  # run for 10 seconds
     elif backend == 'triton-cpu':
         ap = torch.empty((M, K), device=a.device, dtype=dtype)
         bp = torch.empty((K, N), device=b.device, dtype=dtype)
