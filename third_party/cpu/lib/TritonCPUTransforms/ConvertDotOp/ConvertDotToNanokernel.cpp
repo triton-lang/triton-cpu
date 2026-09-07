@@ -355,11 +355,12 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     accWrite = nullptr;
   }
 
-  if (candidate.isAccumulationLoop && accWrite &&
+  if (candidate.isLoopedNanokernel && accWrite &&
       accLoop->getBlock() != accWrite->getBlock()) {
-    // NB: This filters out conditional writes after the loop. We don't need the
-    // same check for the read, because if that were wrapped in an `scf.if`,
-    // then we wouldn't have detected it in the first place.
+    // NB: This filters out conditional writes after the loop, which
+    // `insertLoops` currently doesn't handle. We don't need the same check for
+    // the read, because if that were wrapped in an `scf.if`, then we wouldn't
+    // have detected it in the first place.
     LDBG("  Cannot use existing vector.transfer_write because it is in a "
          "different block than the accumulation loop.");
     accWrite = nullptr;

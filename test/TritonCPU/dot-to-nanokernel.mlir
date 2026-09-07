@@ -1303,3 +1303,49 @@ tt.func public @gemm_amx_bf16_blocked(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>
   vector.transfer_write %28, %20[%21, %22, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<1x1x32x32xbf16>, memref<?x?x32x32xbf16, strided<[?, 32, ?, 1]>>
   tt.return
 }
+
+// -----
+
+// Nanokernel application with a conditional write.
+
+// ALL-LABEL: @gemm_avx_vnni_int8_int8_cond
+
+// AVX_VNNI_INT8-COUNT-8:  x86.avx.dot.i8
+// AVX_VNNI_INT8:          scf.if
+// AVX_VNNI_INT8-COUNT-8:  vector.transfer_write
+
+tt.func public @gemm_avx_vnni_int8_int8_cond(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt.ptr<i32>, %arg3: i32, %arg4: i32, %arg5: i32) {
+  %c0_i8 = arith.constant 0 : i8
+  %c4_i32 = arith.constant 4 : i32
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i64 = arith.constant 1 : i64
+  %c32_i32 = arith.constant 32 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %zero = arith.constant dense<0> : vector<2x32xi32>
+  %0 = tt.get_program_id x : i32
+  %1 = arith.muli %0, %c2_i32 : i32
+  %2 = tt.get_program_id y : i32
+  %3 = arith.muli %2, %c32_i32 : i32
+  %4 = arith.extsi %arg5 : i32 to i64
+  %5 = tt.make_tensor_descriptor %arg0, [%arg3, %arg5], [%4, %c1_i64] : <i8>, <2x4xsi8>
+  %6 = arith.extsi %arg4 : i32 to i64
+  %7 = tt.make_tensor_descriptor %arg1, [%arg5, %arg4], [%6, %c1_i64] : <i8>, <4x32xsi8>
+  %8 = tt.make_tensor_descriptor %arg2, [%arg3, %arg4], [%6, %c1_i64] : <i32>, <2x32xsi32>
+  %10 = arith.index_cast %1 : i32 to index
+  %11 = arith.index_cast %3 : i32 to index
+  %13 = scf.for %arg6 = %c0_i32 to %arg5 step %c4_i32 iter_args(%arg7 = %zero) -> (vector<2x32xi32>)  : i32 {
+    %14 = triton_cpu.extract_memref %5 : <2x4xsi8> -> memref<?x?xi8, strided<[?, 1]>>
+    %15 = arith.index_cast %arg6 : i32 to index
+    %16 = vector.transfer_read %14[%10, %15], %c0_i8 {in_bounds = [true, true]} : memref<?x?xi8, strided<[?, 1]>>, vector<2x4xi8>
+    %17 = triton_cpu.extract_memref %7 : <4x32xsi8> -> memref<?x?xi8, strided<[?, 1]>>
+    %18 = vector.transfer_read %17[%15, %11], %c0_i8 {in_bounds = [true, true]} : memref<?x?xi8, strided<[?, 1]>>, vector<4x32xi8>
+    %19 = triton_cpu.dot %16, %18, %arg7, inputPrecision = tf32 : vector<2x4xi8> * vector<4x32xi8> -> vector<2x32xi32>
+    scf.yield %19 : vector<2x32xi32>
+  }
+  %cmp = arith.cmpi eq, %arg5, %c0_i32 : i32
+  scf.if %cmp {
+    %20 = triton_cpu.extract_memref %8 : <2x32xsi32> -> memref<?x?xi32, strided<[?, 1]>>
+    vector.transfer_write %13, %20[%10, %11] {in_bounds = [true, true]} : vector<2x32xi32>, memref<?x?xi32, strided<[?, 1]>>
+  }
+  tt.return
+}
