@@ -112,7 +112,7 @@ def sfc_kernel(
     BLOCKS_M = M // BLOCK_SIZE_M
     BLOCKS_N = N // BLOCK_SIZE_N
     BLOCKS_K = K // BLOCK_SIZE_K
-    BLOCKS_K_PER_PROG = BLOCKS_K // BLOCKING_FACTOR_K
+    BLOCKS_K_PER_PROG = tl.cdiv(BLOCKS_K, BLOCKING_FACTOR_K)
 
     pid = tl.program_id(axis=0)
     block_m = tl.load(sfc_map_ptr + 2 * pid)
@@ -139,7 +139,7 @@ def sfc_kernel(
 
     c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=ACC_DTYPE)
 
-    for block_ki in range(block_k, block_k + BLOCKS_K_PER_PROG):
+    for block_ki in range(block_k, min(block_k + BLOCKS_K_PER_PROG, BLOCKS_K)):
         a = a_desc.load([block_m, block_ki, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_K))
         b = b_desc.load([block_n, block_ki, 0, 0]).reshape((BLOCK_SIZE_K // VNNI, BLOCK_SIZE_N * VNNI))
 
@@ -265,12 +265,32 @@ torch_output = torch.matmul(a.to(acc_dtype), b.to(acc_dtype)).to(dtype)
 
 triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
 matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), torch.empty(
-    (M, N), device='cpu', dtype=acc_dtype), M=M, N=N, K=K, blocking_factor_k=4)
+    (M, N), device='cpu', dtype=acc_dtype), M=M, N=N, K=K, blocking_factor_k=1)
 
 if torch.allclose(triton_output, torch_output, atol=1e-5, rtol=1e-2):
     print("✅ TritonCPU pre-packed SFC and TorchCPU match")
 else:
     print("⚠️ TritonCPU pre-packed SFC and TorchCPU differ, the maximum difference is "
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
+
+triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
+matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), torch.empty(
+    (M, N), device='cpu', dtype=acc_dtype), M=M, N=N, K=K, blocking_factor_k=4)
+
+if torch.allclose(triton_output, torch_output, atol=1e-5, rtol=1e-2):
+    print("✅ TritonCPU pre-packed SFC (kbf=4) and TorchCPU match")
+else:
+    print("⚠️ TritonCPU pre-packed SFC (kbf=4) and TorchCPU differ, the maximum difference is "
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
+
+triton_output = torch.empty((M, N), device='cpu', dtype=dtype)
+matmul(a, b, triton_output, torch.empty_like(a), torch.empty_like(b), torch.empty(
+    (M, N), device='cpu', dtype=acc_dtype), M=M, N=N, K=K, blocking_factor_k=7)
+
+if torch.allclose(triton_output, torch_output, atol=1e-5, rtol=1e-2):
+    print("✅ TritonCPU pre-packed SFC (kbf=7) and TorchCPU match")
+else:
+    print("⚠️ TritonCPU pre-packed SFC (kbf=7) and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
 
 # %%
