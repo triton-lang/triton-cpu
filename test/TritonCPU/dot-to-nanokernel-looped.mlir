@@ -1,15 +1,12 @@
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
 
-// Lowering to AVX512 target. Accumulator is zero-initialized, hence we currently need to insert a temporary buffer.
-
 // ALL-LABEL: gemm_looped_avx512
-// AVX512:       %[[ZERO:.+]] = arith.constant dense<0.000000e+00> : vector<32x64xf32>
-// AVX512:       %[[BUFFER:.+]] = memref.alloca() : memref<32x64xf32>
-// AVX512:       vector.transfer_write %[[ZERO]], %[[BUFFER]][%c0, %c0] {in_bounds = [true, true]} : vector<32x64xf32>, memref<32x64xf32>
+// AVX512:       %[[ZERO:.+]] = arith.constant dense<0.000000e+00> : vector<16xf32>
 // AVX512:       scf.for %{{.+}} = %c0 to %c32 step %c4
 // AVX512:         scf.for %{{.+}} = %c0 to %c64 step %c64
 // AVX512:           %{{.+}}:16 = scf.for %{{.+}} = %{{.+}} to %{{.+}} step %c1
+// AVX512-SAME:          iter_args(%{{.+}} = %[[ZERO]],
 // AVX512-COUNT-16:    x86.avx512.dot
 // AVX512:             scf.yield
 // AVX512-COUNT-16:  vector.transfer_write
@@ -79,8 +76,6 @@ tt.func public @gemm_looped_avx512(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %
 }
 
 // -----
-
-// Lowering to AVX_NE_CONVERT target. The accumulator reads/writes can be used directly by the nanokernel patterns.
 
 // ALL-LABEL: gemm_looped_avx_ne_convert
 
