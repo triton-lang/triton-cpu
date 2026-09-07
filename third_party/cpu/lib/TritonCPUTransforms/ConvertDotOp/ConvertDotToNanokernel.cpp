@@ -8,6 +8,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
 
 namespace mlir {
@@ -682,9 +683,26 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   VectorType lhsRegTileTy = VectorType::get({regTileM, 1, vnni}, inpElemTy);
   VectorType rhsRegTileTy = VectorType::get({1, regTileN, vnni}, inpElemTy);
 
-  // Construct after the loop, to ensure that all tensor descriptors and their
-  // extracted memrefs are defined.
-  rewriter.setInsertionPoint(candidate.accWrite);
+  rewriter.setInsertionPoint(candidate.accLoop);
+
+  // We'll recreate a register-tiled version of `candidate.accWrite` inside the
+  // new loops. Hence we must ensure its operands are defined at
+  // `candidate.accLoop`, the current insertion point.
+  auto ensureBeforeLoop = [&](Value val) {
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      return; // Block argument, so it's already before the loop.
+    if (defOp->isBeforeInBlock(candidate.accLoop))
+      return; // Already before the loop.
+    [[maybe_unused]] auto res =
+        moveOperationDependencies(rewriter, defOp, candidate.accLoop);
+    assert(succeeded(res));
+    defOp->moveBefore(candidate.accLoop);
+  };
+  ensureBeforeLoop(candidate.accWrite.getBase());
+  for (Value idx : candidate.accWrite.getIndices())
+    ensureBeforeLoop(idx);
+
   auto loc = candidate.accLoop.getLoc();
 
   // Set up loop bounds.
