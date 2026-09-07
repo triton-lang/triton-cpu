@@ -355,6 +355,16 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     accWrite = nullptr;
   }
 
+  if (candidate.isAccumulationLoop && accWrite &&
+      accLoop->getBlock() != accWrite->getBlock()) {
+    // NB: This filters out conditional writes after the loop. We don't need the
+    // same check for the read, because if that were wrapped in an `scf.if`,
+    // then we wouldn't have detected it in the first place.
+    LDBG("  Cannot use existing vector.transfer_write because it is in a "
+         "different block than the accumulation loop.");
+    accWrite = nullptr;
+  }
+
   auto checkTransferOp = [&](auto transferOp,
                              bool expectBlockBasedIndexing = false) {
     if (!transferOp)
@@ -690,10 +700,15 @@ void insertLoops(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   // `candidate.accLoop`, the current insertion point.
   auto ensureBeforeLoop = [&](Value val) {
     Operation *defOp = val.getDefiningOp();
-    if (!defOp)
-      return; // Block argument, so it's already before the loop.
-    if (defOp->isBeforeInBlock(candidate.accLoop))
-      return; // Already before the loop.
+    if (!defOp || defOp->getBlock() != candidate.accLoop->getBlock() ||
+        defOp->isBeforeInBlock(candidate.accLoop)) {
+      // No need to move because the value is either:
+      // 1) a block argument,
+      // 2) defined in a different block (which must dominate the block that
+      //    accLoop and accWrite are in), or
+      // 3) in same block but already before accLoop.
+      return;
+    }
     [[maybe_unused]] auto res =
         moveOperationDependencies(rewriter, defOp, candidate.accLoop);
     assert(succeeded(res));
