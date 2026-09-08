@@ -2,6 +2,7 @@
 
 #include "cpu/include/TritonCPUTransforms/Passes.h"
 
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/Dialect/X86/Transforms.h"
 #include "mlir/Dialect/X86/X86Dialect.h"
@@ -1344,9 +1345,16 @@ LogicalResult convertCandidate(DotOpCandidate &candidate,
     elideZeroAcc(candidate, rewriter);
   }
 
+  if (candidate.isLoopedNanokernel) {
+    // TODO: Need heuristics.
+    (void)loopUnrollByFactor(candidate.splicedAccLoop, 4);
+  }
+
   // Flatten transfer ops to prevent inefficient lowering of VNNI-encoded reads,
   // e.g. `vector.transfer_read ... vector<1x16x2xbf16>` shall become a single
   // 32-element load instead of unrolling it to 16 2-element loads.
+  //
+  // NB: This comes last as it may replace candidate.splicedAccLoop.
   flattenTransferOps(candidate, rewriter);
 
   return success();

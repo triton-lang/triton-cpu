@@ -5,7 +5,7 @@
 // AVX512:       %[[ZERO:.+]] = arith.constant dense<0.000000e+00> : vector<16xf32>
 // AVX512:       scf.for %{{.+}} = %c0 to %c32 step %c4
 // AVX512:         scf.for %{{.+}} = %c0 to %c64 step %c64
-// AVX512:           %{{.+}}:16 = scf.for %{{.+}} = %{{.+}} to %{{.+}} step %c1
+// AVX512:           %{{.+}}:16 = scf.for %{{.+}} = %{{.+}} to %{{.+}} step %c4
 // AVX512-SAME:          iter_args(%{{.+}} = %[[ZERO]],
 // AVX512-COUNT-16:    x86.avx512.dot
 // AVX512:             scf.yield
@@ -82,7 +82,7 @@ tt.func public @gemm_looped_avx512(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %
 // AVX_NE_CONVERT-NOT:   memref.alloca
 // AVX_NE_CONVERT:       scf.for %{{.+}} = %c0 to %c32 step %c4
 // AVX_NE_CONVERT:         scf.for %{{.+}} = %c0 to %c32 step %c16
-// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %{{.+}} = %{{.+}} to %{{.+}} step %c1
+// AVX_NE_CONVERT:           %{{.+}}:8 = scf.for %{{.+}} = %{{.+}} to %{{.+}} step %c4
 // AVX_NE_CONVERT:             x86.avx.bcst_to_f32.packed
 // AVX_NE_CONVERT:             x86.avx.cvt.packed.odd.indexed_to_f32
 // AVX_NE_CONVERT:             x86.avx.bcst_to_f32.packed

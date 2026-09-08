@@ -239,7 +239,7 @@ class CPUBackend(BaseBackend):
         promote_lib_math_to_fp32 = True
         cpu.passes.ttcpuir.add_convert_unsupported_ops(pm, promote_bf16_to_fp32, convert_mixed_precision_matmul,
                                                        promote_lib_math_to_fp32)
-        decompose_bf16_conv = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
+        decompose_bf16_conv = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features and "avxneconvert" not in self.cpu_features
         decompose_fp8_conv = True
         cpu.passes.ttcpuir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
         if os.getenv("TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS", "0") == "1":
