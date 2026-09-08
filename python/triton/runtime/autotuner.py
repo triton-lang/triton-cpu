@@ -295,7 +295,7 @@ class Autotuner(KernelInterface):
                 # set rounds down to zero, which would prune everything and crash
                 # the later min() on an empty set. early_config_prune already
                 # guarantees at least one config; mirror that here.
-                top_k = max(1, int(len(self.configs) * top_k))
+                top_k = max(1, int(len(pruned_configs) * top_k))
             elif not isinstance(top_k, int):
                 # Slice index must be an integer
                 raise TypeError("Error while pruning configs, top_k must be either 1) a float <= 1.0 or 2) an int")
@@ -346,13 +346,17 @@ class Config:
     :ivar pre_hook: a function that will be called before the kernel is called. Parameters of this
                     function are args.
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
+    :ivar num_cpu_threads: number of threads to use for CPU backend kernels. 0 (default) means unset.
+    :type num_cpu_threads: int
     """
 
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None):
+    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, num_cpu_threads=0, maxnreg=None, pre_hook=None,
+                 ir_override=None):
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas
         self.num_stages = num_stages
+        self.num_cpu_threads = num_cpu_threads
         self.maxnreg = maxnreg
         self.pre_hook = pre_hook
         self.ir_override = ir_override
@@ -362,6 +366,7 @@ class Config:
         self.num_warps = state.get("num_warps", 4)
         self.num_stages = state.get("num_stages", 3)
         self.num_ctas = state.get("num_ctas", 1)
+        self.num_cpu_threads = state.get("num_cpu_threads", 0)
         self.maxnreg = state.get("maxnreg", None)
         self.pre_hook = state.get("pre_hook", None)
         self.ir_override = state.get("ir_override", None)
@@ -374,6 +379,8 @@ class Config:
                     ("num_warps", self.num_warps),
                     ("num_ctas", self.num_ctas),
                     ("num_stages", self.num_stages),
+                    # Omit when 0: unknown to GPU options and rejected by _pack_args.
+                    ("num_cpu_threads", self.num_cpu_threads or None),
                     ("maxnreg", self.maxnreg),
                     ("ir_override", self.ir_override),
                 ) if v is not None
@@ -387,7 +394,10 @@ class Config:
         res.append(f"num_warps: {self.num_warps}")
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
+        if self.num_cpu_threads:
+            res.append(f"num_cpu_threads: {self.num_cpu_threads}")
         res.append(f"maxnreg: {self.maxnreg}")
+        res.append(f"ir_override: {self.ir_override}")
         return ", ".join(res)
 
     def __hash__(self):

@@ -82,10 +82,8 @@ createHostTargetMachine(llvm::Module &module, bool enableFpFusion,
   llvm::TargetOptions options;
   if (enableFpFusion)
     options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
-  if (enableFastMath) {
+  if (enableFastMath)
     options.NoTrappingFPMath = true;
-    options.NoSignedZerosFPMath = true;
-  }
   options.TrapUnreachable = true;
   options.MCOptions.AsmVerbose = true;
   options.MCOptions.PreserveAsmComments = true;

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
+from triton import knobs
 from triton._C.libtriton import cpu, ir, llvm, passes, getenv_bool
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.backends.cpu.build import build_kernel_from_asm
@@ -52,6 +53,7 @@ class CPUOptions:
     # TODO: Try to enable it.
     sanitize_overflow: bool = False
     instrumentation_mode: str = ""
+    fpsan_homomorphic_casts: bool = False
 
     # TODO: We may introduce CPU-specific options like # of cores.
     ukernels: str = None
@@ -314,6 +316,10 @@ class CPUBackend(BaseBackend):
         # Get some metadata
         metadata["shared"] = 0
         metadata["name"] = kernel_names[0]
+
+        # Add Triton and LLVM versions to the dumped IR.
+        if knobs.compilation.dump_ir:
+            llvm.add_version_info(llvm_mod)
         ret = str(llvm_mod)
         del llvm_mod
         del context

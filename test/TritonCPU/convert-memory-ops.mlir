@@ -31,8 +31,9 @@ module {
 // Convert strided masked stores to scatter.
 
 // CHECK-LABEL: @strided_masked_stores
-// CHECK:       %[[PTR:.+]] = triton_cpu.ptr_to_memref %[[BASE:.+]] : <i32> -> memref<i32>
-// CHECK:       vector.scatter %[[PTR]][] [%[[INDEX_VEC:.+]]], %[[MASK:.+]], %[[VALS:.+]] : memref<i32>, vector<32xi32>, vector<32xi1>, vector<32xi32>
+// CHECK:       %[[PTR:.+]] = triton_cpu.ptr_to_memref %[[BASE:.+]] : <i32> -> memref<32xi32>
+// CHECK:       %[[NO_OFFSET:.+]] = arith.constant 0 : index
+// CHECK:       vector.scatter %[[PTR]][%[[NO_OFFSET]]] [%[[INDEX_VEC:.+]]], %[[MASK:.+]], %[[VALS:.+]] : memref<32xi32>, vector<32xi32>, vector<32xi1>, vector<32xi32>
 
 module {
   tt.func public @strided_masked_stores(%arg0: !tt.ptr<i32> {tt.divisibility = 16 : i32} ) {
