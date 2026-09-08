@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         config:
-        - {runs_on: ['self-hosted', 'GNR'], arch: 'x86_64'}
+        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
         - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
 
 
