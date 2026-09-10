@@ -278,15 +278,15 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
                                  : nullptr;
     auto ptrTy =
         dyn_cast<RankedTensorType>(loadOp.getPtr().getType()).getElementType();
-    auto cache = loadOp.getCache();
-    auto evict = loadOp.getEvict();
+    auto cachePolicy = loadOp.getCachePolicyAttr();
     auto isVolatile = loadOp.getIsVolatile();
 
     auto loadOne = [=, &rewriter](ArrayRef<int64_t> indices, Value dst) {
       Value ptr = vector::ExtractOp::create(rewriter, loc, ptrs, indices);
       ptr = IntToPtrOp::create(rewriter, loc, ptrTy, ptr);
       Value val =
-          triton::LoadOp::create(rewriter, loc, ptr, cache, evict, isVolatile);
+          triton::LoadOp::create(rewriter, loc, ptr, /*mask=*/Value{},
+                                 /*other=*/Value{}, cachePolicy, isVolatile);
       return vector::InsertOp::create(rewriter, loc, val, dst, indices);
     };
 
@@ -447,14 +447,14 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
                                   : nullptr;
     auto vals = rewriter.getRemappedValue(storeOp.getValue());
     auto ptrTy = tensorTy.getElementType();
-    auto cache = storeOp.getCache();
-    auto evict = storeOp.getEvict();
+    auto cachePolicy = storeOp.getCachePolicyAttr();
 
     auto storeOne = [=, &rewriter](ArrayRef<int64_t> indices) {
       Value ptr = vector::ExtractOp::create(rewriter, loc, ptrs, indices);
       ptr = IntToPtrOp::create(rewriter, loc, ptrTy, ptr);
       Value val = vector::ExtractOp::create(rewriter, loc, vals, indices);
-      triton::StoreOp::create(rewriter, loc, ptr, val, cache, evict);
+      triton::StoreOp::create(rewriter, loc, ptr, val, /*mask=*/Value{},
+                              cachePolicy);
     };
 
     int64_t numElems = tensorTy.getNumElements();
@@ -528,12 +528,15 @@ struct DescriptorLoadOpConversion
   LogicalResult
   matchAndRewrite(DescriptorLoadOp descLoadOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (descLoadOp.getCache() != CacheModifier::NONE)
-      return rewriter.notifyMatchFailure(
-          descLoadOp, "Non-default cache modifier not yet supported");
-    if (descLoadOp.getEvict() != EvictionPolicy::NORMAL)
-      return rewriter.notifyMatchFailure(
-          descLoadOp, "Non-default eviction policy not yet supported");
+    if (auto cachePolicy = dyn_cast_if_present<CachePolicyAttr>(
+            descLoadOp.getCachePolicyAttr())) {
+      if (cachePolicy.getCacheModifier() != CacheModifier::NONE)
+        return rewriter.notifyMatchFailure(
+            descLoadOp, "Non-default cache modifier not yet supported");
+      if (cachePolicy.getEvictionPolicy() != EvictionPolicy::NORMAL)
+        return rewriter.notifyMatchFailure(
+            descLoadOp, "Non-default eviction policy not yet supported");
+    }
 
     auto makeDescOp = descLoadOp.getDesc().getDefiningOp<MakeTensorDescOp>();
     if (!makeDescOp)

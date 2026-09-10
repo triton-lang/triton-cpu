@@ -1,12 +1,40 @@
 import numpy as np
+import pytest
+import itertools
 
 from triton._C.libtriton import interpreter as _interpreter
+import triton.language as tl
+from triton.runtime import interpreter
 
 
 def _element_ptrs(array: np.ndarray) -> np.ndarray:
     base = np.uint64(array.ctypes.data)
     offsets = np.arange(array.size, dtype=np.uint64) * np.uint64(array.itemsize)
     return (base + offsets).reshape(array.shape)
+
+
+def test_atomic_poll_tensor_shares_timeout(monkeypatch) -> None:
+    builder = interpreter.InterpreterBuilder()
+    data = np.array([0, 0, 1], dtype=np.int32)
+    addresses = _element_ptrs(data)
+    ptr = interpreter.TensorHandle(addresses, tl.pointer_type(tl.int32))
+    expected = interpreter.TensorHandle(np.ones(3, dtype=np.int32), tl.int32)
+    timeout = interpreter.TensorHandle(np.array(2, dtype=np.uint64), tl.uint64)
+    clock = itertools.count()
+    monkeypatch.setattr(interpreter.time, "perf_counter_ns", lambda: next(clock))
+    loads = []
+    original_load = builder.create_load
+
+    def load(element_ptr, *args):
+        loads.append(element_ptr.data.item())
+        return original_load(element_ptr, *args)
+
+    monkeypatch.setattr(builder, "create_load", load)
+    result = builder.create_atomic_poll(ptr, expected, timeout, None, None)
+
+    np.testing.assert_array_equal(result.data, [False, False, True])
+    # The first element exhausts the budget; later elements still get one load.
+    assert loads == [addresses[0], addresses[0], addresses[1], addresses[2]]
 
 
 def test_load_accepts_non_contiguous_ndarray_views() -> None:
@@ -59,3 +87,15 @@ def test_atomic_cas_accepts_non_contiguous_ndarray_views() -> None:
     np.testing.assert_array_equal(old, original[:, ::2])
     original[:, ::2] = desired
     np.testing.assert_array_equal(dst, original)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_fma_broadcast_and_strides(dtype):
+    x = np.arange(12, dtype=dtype).reshape(3, 4)[:, ::2]
+    y = np.array(2, dtype=dtype)
+    z = np.arange(2, dtype=dtype)
+    handles = [interpreter.TensorHandle(value, getattr(tl, dtype)) for value in (x, y, z)]
+    result = interpreter.InterpreterBuilder().create_fma(*handles)
+    assert result.data.shape == x.shape
+    assert result.data.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(result.data, x * y + z)
