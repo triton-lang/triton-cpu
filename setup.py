@@ -574,14 +574,19 @@ def get_git_version_suffix():
 
 
 def get_triton_version_suffix():
-    # Either "" or "+<githash>", "<githash>" itself does not contain any plus-characters.
-    git_sfx = get_git_version_suffix()
-    # Should start with "+" that will replaced with "-" if needed
+    # PEP 440 local version: single "+" prefix, dot-separated segments after it.
+    # "cpu" always leads so wheels built from this fork are identifiable.
+    parts = ["cpu"]
+
+    git_sfx = get_git_version_suffix()  # "" or "+<githash>"
+    if git_sfx:
+        parts.append(git_sfx.lstrip("+"))
+
     env_sfx = os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
-    # version suffix can only contain one plus-character
-    if "+" in git_sfx and "+" in env_sfx:
-        env_sfx = env_sfx.replace("+", "-")
-    return git_sfx + env_sfx
+    if env_sfx:
+        parts.append(env_sfx.lstrip("+"))
+
+    return "+" + ".".join(parts)
 
 
 # keep it separate for easy substitution
