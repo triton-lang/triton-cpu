@@ -26,3 +26,45 @@ module {
     tt.return
   }
 }
+
+// -----
+
+// Flatten a fully in-bounds contiguous read to a rank-1 wide read.
+
+// CHECK-LABEL: @flatten_contiguous_transfer_read
+// CHECK: %[[WIDE:.+]] = vector.transfer_read %{{.+}}[%{{.+}}, %{{.+}}, %{{.+}}], %{{.+}} {in_bounds = [true]} : memref<1x64x2xbf16, strided<[?, 2, 1], offset: ?>>, vector<32xbf16>
+// CHECK-NOT: vector.shape_cast
+// CHECK: vector.store %[[WIDE]]
+module {
+  tt.func public @flatten_contiguous_transfer_read(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<bf16> {tt.divisibility = 16 : i32}) {
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c0 = arith.constant 0 : index
+    %src = triton_cpu.ptr_to_memref %arg0 : <bf16> -> memref<1x64x2xbf16, strided<[?, 2, 1], offset: ?>>
+    %read = vector.transfer_read %src[%c0, %c0, %c0], %cst {in_bounds = [true, true, true]} : memref<1x64x2xbf16, strided<[?, 2, 1], offset: ?>>, vector<1x16x2xbf16>
+    %flat = vector.shape_cast %read : vector<1x16x2xbf16> to vector<32xbf16>
+    %dst = triton_cpu.ptr_to_memref %arg1 : <bf16> -> memref<32xbf16>
+    vector.store %flat, %dst[%c0] : memref<32xbf16>, vector<32xbf16>
+    tt.return
+  }
+}
+
+// -----
+
+// Do not flatten a read whose row stride contains gaps.
+
+// CHECK-LABEL: @keep_noncontiguous_transfer_read
+// CHECK: %[[READ:.+]] = vector.transfer_read %{{.+}}[%{{.+}}, %{{.+}}, %{{.+}}], %{{.+}} {in_bounds = [true, true, true]} : memref<1x16x2xbf16, strided<[64, 4, 1]>>, vector<1x16x2xbf16>
+// CHECK: %[[FLAT:.+]] = vector.shape_cast %[[READ]] : vector<1x16x2xbf16> to vector<32xbf16>
+// CHECK: vector.store %[[FLAT]]
+module {
+  tt.func public @keep_noncontiguous_transfer_read(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<bf16> {tt.divisibility = 16 : i32}) {
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c0 = arith.constant 0 : index
+    %src = triton_cpu.ptr_to_memref %arg0 : <bf16> -> memref<1x16x2xbf16, strided<[64, 4, 1]>>
+    %read = vector.transfer_read %src[%c0, %c0, %c0], %cst {in_bounds = [true, true, true]} : memref<1x16x2xbf16, strided<[64, 4, 1]>>, vector<1x16x2xbf16>
+    %flat = vector.shape_cast %read : vector<1x16x2xbf16> to vector<32xbf16>
+    %dst = triton_cpu.ptr_to_memref %arg1 : <bf16> -> memref<32xbf16>
+    vector.store %flat, %dst[%c0] : memref<32xbf16>, vector<32xbf16>
+    tt.return
+  }
+}
