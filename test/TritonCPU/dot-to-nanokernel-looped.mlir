@@ -1,5 +1,5 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
 
 // ALL-LABEL: gemm_looped_avx512
 // AVX512:       %[[ZERO:.+]] = arith.constant dense<0.000000e+00> : vector<16xf32>
