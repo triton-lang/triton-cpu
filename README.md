@@ -14,7 +14,6 @@ gets off the ground!
 The recommended way to set up a development environment is via [`uv`](https://docs.astral.sh/uv/):
 
 ```shell
-git submodule update --init
 uv venv --python 3.12 ; source .venv/bin/activate
 uv pip install -r python/requirements.txt \
                -r python/test-requirements.txt \

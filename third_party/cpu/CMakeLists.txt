@@ -89,11 +89,27 @@ add_library(TritonCPURuntime SHARED ${TRITON_CPU_RUNTIME_SOURCES})
 target_link_libraries(TritonCPURuntime PRIVATE ${TRITON_CPU_RUNTIME_LIBS})
 
 # Build and link sleef
+include(FetchContent)
+
+set(TRITON_SLEEF_SOURCE_DIR "" CACHE PATH "Use a local SLEEF source checkout")
+if(TRITON_SLEEF_SOURCE_DIR)
+  set(FETCHCONTENT_SOURCE_DIR_SLEEF "${TRITON_SLEEF_SOURCE_DIR}")
+elseif(TRITON_OFFLINE_BUILD)
+  message(FATAL_ERROR
+    "The CPU backend requires SLEEF. Set TRITON_SLEEF_SOURCE_DIR when "
+    "TRITON_OFFLINE_BUILD is enabled.")
+endif()
+
 set(SLEEF_BUILD_SHARED_LIBS ON CACHE BOOL "Build sleef shared lib" FORCE)
 set(SLEEF_BUILD_DFT OFF CACHE BOOL "Don't build sleef DFT lib" FORCE)
 set(SLEEF_BUILD_GNUABI_LIBS OFF CACHE BOOL "Don't build sleef gnuabi libs" FORCE)
 set(SLEEF_BUILD_TESTS OFF CACHE BOOL "Don't build sleef tests" FORCE)
 set(SLEEF_BUILD_SCALAR_LIB OFF CACHE BOOL "libsleefscalar will not be built." FORCE)
-add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/sleef" sleef)
+FetchContent_Declare(
+  sleef
+  GIT_REPOSITORY https://github.com/shibatch/sleef.git
+  GIT_TAG 93f04d869471ce4d007abaebb8c6a7bc62749f61
+)
+FetchContent_MakeAvailable(sleef)
 # Override sleef's output directory with our own
 set_target_properties(sleef PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
