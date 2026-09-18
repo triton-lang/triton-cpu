@@ -107,7 +107,7 @@ jobs:
           # This is only for Clang15, works OK for Clang16
           # TODO - fix this using driver flags.
           python -m pytest -s -n 3 --device cpu \
-            python/test/unit/language/test_core.py -m cpu -k "not bfloat16"
+            python/test/unit/language/test_core.py -k "not bfloat16"
           python -m pytest -s -n 3 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
@@ -143,7 +143,7 @@ jobs:
       - name: Run python unit tests for Intel
         if: matrix.config.target-os == 'ubuntu'
         run: |
-          python -m pytest -s -n 32 --device cpu -m cpu \
+          python -m pytest -s -n 32 --device cpu \
             python/test/unit/language/test_core.py \
             python/test/unit/cpu/test_cpu_tensor_descriptor.py
           python -m pytest -s -n 32 --device cpu \
@@ -239,7 +239,7 @@ jobs:
         env:
           TRITON_CPU_UKERNELS_LIB: "None"
         run: |
-          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py
           DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py
@@ -256,7 +256,7 @@ jobs:
         env:
           TRITON_CPU_UKERNELS_LIB: "OneDNN"
         run: |
-          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py
           DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py
@@ -265,7 +265,7 @@ jobs:
         env:
           TRITON_CPU_UKERNELS_LIB: "XSMM"
         run: |
-          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py -m cpu
+          python -m pytest -s -n 32 --device cpu python/test/unit/language/test_core.py
           DTYPE=bfloat16 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float32 python  python/tutorials/cpu/04-blocked-matmul.py
           DTYPE=float16 python  python/tutorials/cpu/04-blocked-matmul.py
