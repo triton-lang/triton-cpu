@@ -57,8 +57,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Python ${{ env.python-version }}
         id: install-python
@@ -193,8 +191,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Python ${{ env.python-version }}
         uses: actions/setup-python@v5
