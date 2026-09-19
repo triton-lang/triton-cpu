@@ -47,7 +47,7 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotToNanokernel(std::string cpuFeatures = "");
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createUnrollAndReorderElementwiseOps(std::string cpuFeatures = "");
+createRetileElementwiseOps(std::string cpuFeatures = "");
 
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 
