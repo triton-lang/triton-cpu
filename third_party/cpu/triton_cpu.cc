@@ -24,6 +24,13 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#if defined(__linux__) && defined(__aarch64__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+#include <sys/sysctl.h>
+#endif
+
 #if defined(__x86_64__) || defined(__i386__)
 #include <asm/prctl.h>
 #endif
@@ -54,6 +61,20 @@ namespace py = nanobind;
 void init_triton_cpu_llvm(py::module_ &m);
 
 namespace {
+
+bool hasArmFeatBF16() {
+#if defined(__linux__) && defined(__aarch64__)
+  return (getauxval(AT_HWCAP2) & HWCAP2_BF16) != 0;
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  int value = 0;
+  size_t size = sizeof(value);
+  return sysctlbyname("hw.optional.arm.FEAT_BF16", &value, &size, nullptr, 0) ==
+             0 &&
+         size == sizeof(value) && value == 1;
+#else
+  return false;
+#endif
+}
 
 template <typename OpTy>
 mlir::Value createUnaryMathOp(TritonOpBuilder &builder, mlir::Value &value) {
@@ -282,6 +303,8 @@ void init_triton_cpu(py::module_ &m) {
   auto passes = m.def_submodule("passes");
   auto ttcpuir = passes.def_submodule("ttcpuir");
   init_triton_cpu_passes_ttcpuir(ttcpuir);
+
+  m.def("has_arm_feat_bf16", &hasArmFeatBF16);
 
   m.def("enable_amx", []() -> bool {
 #if defined(__linux__) && defined(ARCH_REQ_XCOMP_PERM)

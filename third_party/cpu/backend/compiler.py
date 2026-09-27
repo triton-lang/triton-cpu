@@ -128,6 +128,9 @@ class CPUBackend(BaseBackend):
         self.cpu_arch = cpu.llvm.get_cpu_triple().split("-")[0]
         self.cpu_name = cpu.llvm.get_cpu_name()
         self.cpu_features = cpu.llvm.get_cpu_features()
+        if self.cpu_arch in ("aarch64", "arm64") and "bf16" not in self.cpu_features:
+            if cpu.has_arm_feat_bf16():
+                self.cpu_features.add("bf16")
         if 'amx-tile' in self.cpu_features:
             if not cpu.enable_amx():
                 import warnings
