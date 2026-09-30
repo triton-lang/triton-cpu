@@ -10,7 +10,7 @@ add_triton_library(TritonCPUTransforms
     ConvertUnsupportedOps.cpp
     DecomposeFpConversions.cpp
     OptimizeMasks.cpp
-    UnrollAndReorderElementwiseOps.cpp
+    RetileElementwiseOps.cpp
 
     DEPENDS
     TritonCPUTransformsPassIncGen
