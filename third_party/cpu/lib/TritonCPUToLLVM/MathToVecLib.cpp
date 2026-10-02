@@ -206,7 +206,10 @@ using GetVecFnNameFn = std::function<std::string(
 
 class MvecNameGenerator {
 public:
-  explicit MvecNameGenerator(StringRef baseName) : baseName(baseName) {}
+  // The ulp and useSve parameters are accepted for API compatibility with
+  // SleefNameGenerator but are not used by Mvec.
+  explicit MvecNameGenerator(StringRef baseName, unsigned ulp, bool useSve)
+      : baseName(baseName) {}
 
   std::string operator()(unsigned bitwidth, unsigned numel,
                          ValueRange operands) const {
@@ -235,8 +238,8 @@ private:
 
 class SleefNameGenerator {
 public:
-  SleefNameGenerator(StringRef baseName, unsigned ulp = 10)
-      : baseName(baseName), ulpSuffix(4, '\0') {
+  SleefNameGenerator(StringRef baseName, unsigned ulp, bool useSve)
+      : baseName(baseName), ulpSuffix(4, '\0'), useSve(useSve) {
     if (ulp == 0) {
       ulpSuffix = "";
     } else {
@@ -253,6 +256,16 @@ public:
     unsigned vecSize = numel * bitwidth;
     if (vecSize < 128)
       return "";
+    if (useSve) {
+      // SLEEF SVE functions use a different naming convention:
+      //   Sleef_<baseName>dx_u<ulp>sve  (double, bitwidth 64, ulp > 0)
+      //   Sleef_<baseName>fx_u<ulp>sve  (float, bitwidth 32, ulp > 0)
+      //   Sleef_<baseName>dx_sve        (double, bitwidth 64, ulp == 0)
+      //   Sleef_<baseName>fx_sve        (float, bitwidth 32, ulp == 0)
+      // No element count is included because SVE is a VLA ISA.
+      std::string sveSuffix = ulpSuffix.empty() ? "_sve" : ulpSuffix + "sve";
+      return "Sleef_" + baseName + (bitwidth == 32 ? "fx" : "dx") + sveSuffix;
+    }
     return "Sleef_" + baseName + (bitwidth == 32 ? "f" : "d") +
            std::to_string(numel) + ulpSuffix;
   }
@@ -260,6 +273,7 @@ public:
 private:
   std::string baseName;
   std::string ulpSuffix;
+  bool useSve;
 };
 
 template <typename OpT>
@@ -352,6 +366,11 @@ struct MathToVecLibPass
 
   explicit MathToVecLibPass(VecLib lib, std::set<std::string> cpu_features) {
     this->lib = lib;
+    // Store cpu_features in the base class member so that runOnOperation
+    // can access them for SVE detection.
+    this->cpu_features.clear();
+    for (const auto &f : cpu_features)
+      this->cpu_features.push_back(f);
     update_vec_size(cpu_features);
   }
 
@@ -367,6 +386,18 @@ struct MathToVecLibPass
         vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 256);
       } else if (feature == "sse") {
         vec_size_in_bits = std::max<size_t>(vec_size_in_bits, 128);
+      } else if (feature == "sve" || feature == "sve2") {
+        // Arm SVE is a VLA ISA.  The actual vector size is vscale * 128 bits,
+        // determined at runtime.  We use 128 bits (the SVE minimum) as the
+        // compile-time decomposition width so that DecomposeToNativeVecs
+        // produces fixed-width sub-vectors that are then passed to SLEEF SVE
+        // functions, which accept scalable vector types and handle the VLA
+        // aspect internally.  Using a larger fixed width here would be
+        // incorrect because the actual runtime vector size may be smaller.
+        // TODO: Generate true VLA code using vector.vscale instead of
+        // decomposing to fixed-width sub-vectors.
+        vec_size_in_bits = 128;
+        break;
       } else if (feature == "neon") {
         // Arm NEON is fixed 128-bit SIMD ISA.
         vec_size_in_bits = 128;
@@ -387,21 +418,36 @@ struct MathToVecLibPass
       update_vec_size(cpu_features_set);
     }
 
+    // Check whether SVE is available to select the appropriate SLEEF naming
+    // convention.  SLEEF provides SVE-specific functions with the "sve"
+    // suffix that use scalable vector types (VLA).
+    bool useSve = false;
+    if (!cpu_features.empty()) {
+      std::set<std::string> cpu_features_set{cpu_features.begin(),
+                                             cpu_features.end()};
+      useSve = cpu_features_set.count("sve") > 0 ||
+               cpu_features_set.count("sve2") > 0;
+    }
+
     switch (lib) {
     case VecLib::Mvec: {
       populateCommonPatterns<MvecNameGenerator>(patterns);
       break;
     }
     case VecLib::Sleef: {
-      populateCommonPatterns<SleefNameGenerator>(patterns);
+      populateCommonPatterns<SleefNameGenerator>(patterns, /*ulp=*/10, useSve);
       populatePatternsForOp<math::ExpM1Op>(
-          patterns, SleefNameGenerator("expm1"), vec_size_in_bits);
+          patterns, SleefNameGenerator("expm1", /*ulp=*/10, useSve),
+          vec_size_in_bits);
       populatePatternsForOp<math::FloorOp>(
-          patterns, SleefNameGenerator("floor", /*ulp=*/0), vec_size_in_bits);
+          patterns, SleefNameGenerator("floor", /*ulp=*/0, useSve),
+          vec_size_in_bits);
       populatePatternsForOp<math::SqrtOp>(
-          patterns, SleefNameGenerator("sqrt", /*ulp=*/5), vec_size_in_bits);
+          patterns, SleefNameGenerator("sqrt", /*ulp=*/5, useSve),
+          vec_size_in_bits);
       populatePatternsForOp<math::TruncOp>(
-          patterns, SleefNameGenerator("trunc", /*ulp=*/0), vec_size_in_bits);
+          patterns, SleefNameGenerator("trunc", /*ulp=*/0, useSve),
+          vec_size_in_bits);
       break;
     }
     }
@@ -416,47 +462,48 @@ struct MathToVecLibPass
   }
 
   template <typename VecFnNameGenerator>
-  void populateCommonPatterns(RewritePatternSet &patterns) const {
-    populatePatternsForOp<math::AcosOp>(patterns, VecFnNameGenerator("acos"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::AcoshOp>(patterns, VecFnNameGenerator("acosh"),
-                                         vec_size_in_bits);
-    populatePatternsForOp<math::AsinOp>(patterns, VecFnNameGenerator("asin"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::AsinhOp>(patterns, VecFnNameGenerator("asinh"),
-                                         vec_size_in_bits);
-    populatePatternsForOp<math::AtanOp>(patterns, VecFnNameGenerator("atan"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::AtanhOp>(patterns, VecFnNameGenerator("atanh"),
-                                         vec_size_in_bits);
-    populatePatternsForOp<math::CbrtOp>(patterns, VecFnNameGenerator("cbrt"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::CosOp>(patterns, VecFnNameGenerator("cos"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::CoshOp>(patterns, VecFnNameGenerator("cosh"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::ErfOp>(patterns, VecFnNameGenerator("erf"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::ExpOp>(patterns, VecFnNameGenerator("exp"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::Exp2Op>(patterns, VecFnNameGenerator("exp2"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::LogOp>(patterns, VecFnNameGenerator("log"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::Log2Op>(patterns, VecFnNameGenerator("log2"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::Log10Op>(patterns, VecFnNameGenerator("log10"),
-                                         vec_size_in_bits);
-    populatePatternsForOp<math::Log1pOp>(patterns, VecFnNameGenerator("log1p"),
-                                         vec_size_in_bits);
-    populatePatternsForOp<math::SinOp>(patterns, VecFnNameGenerator("sin"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::SinhOp>(patterns, VecFnNameGenerator("sinh"),
-                                        vec_size_in_bits);
-    populatePatternsForOp<math::TanOp>(patterns, VecFnNameGenerator("tan"),
-                                       vec_size_in_bits);
-    populatePatternsForOp<math::TanhOp>(patterns, VecFnNameGenerator("tanh"),
-                                        vec_size_in_bits);
+  void populateCommonPatterns(RewritePatternSet &patterns, unsigned ulp = 10,
+                              bool useSve = false) const {
+    populatePatternsForOp<math::AcosOp>(
+        patterns, VecFnNameGenerator("acos", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::AcoshOp>(
+        patterns, VecFnNameGenerator("acosh", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::AsinOp>(
+        patterns, VecFnNameGenerator("asin", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::AsinhOp>(
+        patterns, VecFnNameGenerator("asinh", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::AtanOp>(
+        patterns, VecFnNameGenerator("atan", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::AtanhOp>(
+        patterns, VecFnNameGenerator("atanh", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::CbrtOp>(
+        patterns, VecFnNameGenerator("cbrt", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::CosOp>(
+        patterns, VecFnNameGenerator("cos", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::CoshOp>(
+        patterns, VecFnNameGenerator("cosh", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::ErfOp>(
+        patterns, VecFnNameGenerator("erf", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::ExpOp>(
+        patterns, VecFnNameGenerator("exp", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::Exp2Op>(
+        patterns, VecFnNameGenerator("exp2", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::LogOp>(
+        patterns, VecFnNameGenerator("log", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::Log2Op>(
+        patterns, VecFnNameGenerator("log2", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::Log10Op>(
+        patterns, VecFnNameGenerator("log10", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::Log1pOp>(
+        patterns, VecFnNameGenerator("log1p", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::SinOp>(
+        patterns, VecFnNameGenerator("sin", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::SinhOp>(
+        patterns, VecFnNameGenerator("sinh", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::TanOp>(
+        patterns, VecFnNameGenerator("tan", ulp, useSve), vec_size_in_bits);
+    populatePatternsForOp<math::TanhOp>(
+        patterns, VecFnNameGenerator("tanh", ulp, useSve), vec_size_in_bits);
   }
 };
 
