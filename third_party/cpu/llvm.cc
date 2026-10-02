@@ -70,6 +70,21 @@ void setLLVMBooleanOption(const std::string &name, bool value) {
   it->second->addOccurrence(1, name, value ? "true" : "false");
 }
 
+// Build a comma-separated feature string (e.g. "+sve,+sve2,+neon") suitable
+// for passing to TargetMachine::createTargetMachine.  llvm::sys::
+// getHostCPUFeatures() returns a StringMap<bool>, which we convert here.
+std::string getCPUFeaturesString() {
+  auto features = llvm::sys::getHostCPUFeatures();
+  std::string result;
+  for (const auto &feature : features) {
+    if (!result.empty())
+      result += ",";
+    result += (feature.second ? "+" : "-");
+    result += feature.first().str();
+  }
+  return result;
+}
+
 std::unique_ptr<llvm::TargetMachine>
 createHostTargetMachine(llvm::Module &module, bool enableFpFusion,
                         bool enableFastMath) {
@@ -88,12 +103,38 @@ createHostTargetMachine(llvm::Module &module, bool enableFpFusion,
   options.MCOptions.AsmVerbose = true;
   options.MCOptions.PreserveAsmComments = true;
 
+  // Propagate host CPU features to the target machine so that SVE and other
+  // ISA extensions are available during code generation.  This is required
+  // for SVE VLA codegen where the compiler needs to know that scalable
+  // vectors are supported by the target.
+  std::string cpuFeatures = getCPUFeaturesString();
+
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
   return std::unique_ptr<llvm::TargetMachine>{target->createTargetMachine(
-      module.getTargetTriple(), llvm::sys::getHostCPUName(), "", options,
-      llvm::Reloc::PIC_, std::nullopt,
+      module.getTargetTriple(), llvm::sys::getHostCPUName(), cpuFeatures,
+      options, llvm::Reloc::PIC_, std::nullopt,
       disableLLVMOpt ? llvm::CodeGenOptLevel::None
                      : llvm::CodeGenOptLevel::Aggressive)};
+}
+
+// Set the vscale_range function attribute on all functions in the module when
+// SVE is available.  This tells LLVM that the function may use scalable
+// vectors and that the runtime vscale value is within the given range.
+// For SVE, the vector length is vscale * 128 bits, and on common AArch64
+// implementations vscale is 1 (128-bit) or 2 (256-bit).  We use a conservative
+// range of [1, 16] to cover all SVE implementations (up to 2048-bit).
+void setVscaleRangeForSVE(llvm::Module &module) {
+  std::string features = getCPUFeaturesString();
+  bool hasSVE = features.find("+sve") != std::string::npos;
+  if (!hasSVE)
+    return;
+
+  for (llvm::Function &function : module.functions()) {
+    if (function.isIntrinsic())
+      continue;
+    function.addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(
+        function.getContext(), /*Min=*/1, /*Max=*/16));
+  }
 }
 
 std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
@@ -138,6 +179,9 @@ std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
   }
 
   module.setTargetTriple(llvm::Triple(getHostTargetTriple()));
+  // Set vscale_range attribute on functions when SVE is available so that
+  // scalable vector code generation is enabled.
+  setVscaleRangeForSVE(module);
   auto machine =
       createHostTargetMachine(module, enableFpFusion, enableFastMath);
   module.setDataLayout(machine->createDataLayout());
@@ -164,14 +208,21 @@ void setHostTarget(llvm::Module &module) {
   initializeHostTarget();
   module.setTargetTriple(llvm::Triple(getHostTargetTriple()));
 
+  // Set vscale_range attribute on functions when SVE is available so that
+  // scalable vector code generation is enabled.
+  setVscaleRangeForSVE(module);
+
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
   if (!target)
     throw std::runtime_error("target lookup error: " + error);
 
+  // Propagate host CPU features so that SVE and other ISA extensions are
+  // available during code generation.
+  std::string cpuFeatures = getCPUFeaturesString();
   std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
-      module.getTargetTriple(), llvm::sys::getHostCPUName(), "", {},
+      module.getTargetTriple(), llvm::sys::getHostCPUName(), cpuFeatures, {},
       llvm::Reloc::PIC_)};
   module.setDataLayout(machine->createDataLayout());
 }
