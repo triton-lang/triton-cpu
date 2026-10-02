@@ -1,5 +1,6 @@
 import tempfile
 import time
+from _ctypes import dlclose
 
 import triton
 from triton.backends.driver import DriverBase
@@ -34,8 +35,9 @@ class CPUUtils(object):
             return (lib, fn_ptr_as_void_p, 0, 0, 0)
 
     def unload_module(self, mod):
-        # TODO: implement
-        pass
+        if mod._handle:
+            dlclose(mod._handle)
+            mod._handle = 0
 
     def get_device_properties(self, *args):
         return {"max_shared_mem": 0}

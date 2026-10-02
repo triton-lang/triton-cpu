@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import textwrap
 from collections import Counter
 
 import pytest
@@ -212,3 +213,59 @@ def _check_cpu_print(actual, func_type, data_type, N, SCALAR_VAL):
 
     assert actual.endswith("\n")
     assert actual[:-1] == expected
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("unload_order", [(0, 1), (1, 0)])
+def test_cpu_module_unload_releases_library(device, tmp_path, unload_order):
+    if device != "cpu":
+        pytest.skip("CPU module unloading requires --device cpu.")
+
+    from triton.runtime.build import _find_compiler
+
+    source = tmp_path / "unload.c"
+    binary = tmp_path / "unload.so"
+    marker = tmp_path / "unloaded.txt"
+    source.write_text(textwrap.dedent("""\
+        #include <stdio.h>
+        #include <stdlib.h>
+
+        int unload_test_kernel(void) { return 42; }
+
+        __attribute__((destructor)) static void record_unload(void) {
+            FILE *file = fopen(getenv("TRITON_CPU_UNLOAD_TEST_MARKER"), "a");
+            if (file) {
+                fputs("unloaded\\n", file);
+                fclose(file);
+            }
+        }
+    """))
+    subprocess.run([_find_compiler("c"), "-shared", "-fPIC", str(source), "-o", str(binary)], check=True)
+
+    script = textwrap.dedent("""\
+        import ctypes
+        import sys
+        from pathlib import Path
+        from triton.backends.cpu.driver import CPUUtils
+
+        binary, marker, first, second = sys.argv[1:]
+        marker = Path(marker)
+        utils = CPUUtils()
+        modules = [utils.load_binary("unload_test_kernel", Path(binary).read_bytes(), 0, 0) for _ in range(2)]
+        first, second = int(first), int(second)
+        for module, pointer, *_ in modules:
+            assert ctypes.CFUNCTYPE(ctypes.c_int)(pointer)() == 42
+        utils.unload_module(modules[first][0])
+        assert marker.read_text().splitlines() == ["unloaded"]
+        assert ctypes.CFUNCTYPE(ctypes.c_int)(modules[second][1])() == 42
+        utils.unload_module(modules[second][0])
+        assert marker.read_text().splitlines() == ["unloaded", "unloaded"]
+        for module, *_ in modules:
+            utils.unload_module(module)
+        assert marker.read_text().splitlines() == ["unloaded", "unloaded"]
+    """)
+    env = os.environ.copy()
+    env["TRITON_CPU_UNLOAD_TEST_MARKER"] = str(marker)
+    proc = subprocess.run([sys.executable, "-c", script, str(binary), str(marker), *map(str, unload_order)],
+                          capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
