@@ -277,7 +277,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_debug_ops_to_llvmir(pm)
 
         vec_lib_requirements = {
-            VecLib.libsleef: {"neon", "sse", "avx"},
+            VecLib.libsleef: {"neon", "sve", "sve2", "sse", "avx"},
             VecLib.libmvec: {"avx512f"},
         }
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
