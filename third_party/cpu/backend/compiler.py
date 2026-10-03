@@ -246,6 +246,10 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_unroll_and_reorder_elementwise_ops(pm, ",".join(self.cpu_features))
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
+        # Nanokernel lowering can introduce contiguous multi-dimensional
+        # transfer reads followed by flattening shape casts. Run the CPU
+        # canonicalizations again before generic cleanup and LLVM lowering.
+        cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         passes.common.add_canonicalizer(pm)
         pm.run(mod, "make_tttcir")
         return mod
