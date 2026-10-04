@@ -40,6 +40,20 @@
 // RUN:   | FileCheck %t/pipeline.mlir --check-prefixes=MAPS,FALLBACK \
 // RUN:     --implicit-check-not=vector.transpose --implicit-check-not=triton_cpu.dot \
 // RUN:     --implicit-check-not=arm_neon.intr.bfmmla --implicit-check-not=arith.extf
+// RUN: triton-opt %t/pipeline.mlir -verify-each -triton-cpu-convert-dot-generic \
+// RUN:   -triton-cpu-add-casts-for-unsupported-ops="promote-bf16-to-fp32=false convert-mixed-precision-matmul=true" \
+// RUN:   | FileCheck %t/pipeline.mlir --check-prefixes=MAPS,DISABLED \
+// RUN:     --implicit-check-not=vector.transpose --implicit-check-not=triton_cpu.dot \
+// RUN:     --implicit-check-not=arm_neon.intr.bfmmla
+// RUN: triton-opt %t/production-emitter.mlir -verify-each -verify-diagnostics \
+// RUN:   -triton-cpu-convert-dot-generic \
+// RUN:   -triton-cpu-convert-vector-contract-to-arm-neon-bfmmla \
+// RUN:   | triton-opt -verify-each \
+// RUN:   | FileCheck %t/production-emitter.mlir \
+// RUN:     --implicit-check-not=vector.contract --implicit-check-not=triton_cpu.dot \
+// RUN:     --implicit-check-not=vector.transpose --implicit-check-not=arm_neon.intr.bfmmla \
+// RUN:     --implicit-check-not=arith.extf --implicit-check-not=scf.for \
+// RUN:     --implicit-check-not=llvm.
 
 // Candidate rejection reasons use the pass's debug logging; pattern failures
 // use the rewrite driver's debug logging. Neither emits ordinary
@@ -520,6 +534,7 @@ tt.func public @reject_mask(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vect
 // MAPS-DAG: #[[$LHS_MAP:[a-zA-Z0-9_]+]] = affine_map<(d0, d1, d2) -> (d0, d2)>
 // MAPS-DAG: #[[$MM_MAP:[a-zA-Z0-9_]+]] = affine_map<(d0, d1, d2) -> (d2, d1)>
 // MAPS-DAG: #[[$ACC_MAP:[a-zA-Z0-9_]+]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+// DISABLED-DAG: #[[$MMT_MAP:[a-zA-Z0-9_]+]] = affine_map<(d0, d1, d2) -> (d1, d2)>
 
 // PIPELINE-LABEL: @mixed_dots(
 // PIPELINE-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<8x6xbf16>, %[[X:.*]]: vector<4x6xbf16>, %[[Y:.*]]: vector<6x6xbf16>, %[[C:.*]]: vector<4x6xf32>
@@ -539,6 +554,16 @@ tt.func public @reject_mask(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vect
 // FALLBACK-NEXT: %[[REJECTED:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MM_MAP]], #[[$ACC_MAP]]]{{.*}} %[[XF]], %[[YF]], %[[C]] : vector<4x6xf32>, vector<6x6xf32> into vector<4x6xf32>
 // FALLBACK-NEXT: tt.return %[[ACCEPTED]], %[[REJECTED]] : vector<4x6xf32>, vector<4x6xf32>
 
+// When the hardware-gated pass is not scheduled, both dots use FP32 fallback.
+// DISABLED-LABEL: @mixed_dots(
+// DISABLED-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<8x6xbf16>, %[[X:.*]]: vector<4x6xbf16>, %[[Y:.*]]: vector<6x6xbf16>, %[[C:.*]]: vector<4x6xf32>
+// DISABLED-NEXT: %[[AF:.*]] = arith.extf %[[A]] : vector<4x8xbf16> to vector<4x8xf32>
+// DISABLED-NEXT: %[[BF:.*]] = arith.extf %[[B]] : vector<8x6xbf16> to vector<8x6xf32>
+// DISABLED-NEXT: %[[ACCEPTED:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MM_MAP]], #[[$ACC_MAP]]]{{.*}} %[[AF]], %[[BF]], %[[C]] : vector<4x8xf32>, vector<8x6xf32> into vector<4x6xf32>
+// DISABLED-NEXT: %[[XF:.*]] = arith.extf %[[X]] : vector<4x6xbf16> to vector<4x6xf32>
+// DISABLED-NEXT: %[[YF:.*]] = arith.extf %[[Y]] : vector<6x6xbf16> to vector<6x6xf32>
+// DISABLED-NEXT: %[[REJECTED:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MM_MAP]], #[[$ACC_MAP]]]{{.*}} %[[XF]], %[[YF]], %[[C]] : vector<4x6xf32>, vector<6x6xf32> into vector<4x6xf32>
+// DISABLED-NEXT: tt.return %[[ACCEPTED]], %[[REJECTED]] : vector<4x6xf32>, vector<4x6xf32>
 tt.func public @mixed_dots(%a: vector<4x8xbf16>, %b: vector<8x6xbf16>, %x: vector<4x6xbf16>, %y: vector<6x6xbf16>, %c: vector<4x6xf32>) -> (vector<4x6xf32>, vector<4x6xf32>) {
   %0 = triton_cpu.dot %a, %b, %c, inputPrecision = ieee : vector<4x8xbf16> * vector<8x6xbf16> -> vector<4x6xf32>
   %1 = triton_cpu.dot %x, %y, %c, inputPrecision = ieee : vector<4x6xbf16> * vector<6x6xbf16> -> vector<4x6xf32>
@@ -562,6 +587,13 @@ tt.func public @mixed_dots(%a: vector<4x8xbf16>, %b: vector<8x6xbf16>, %x: vecto
 // FALLBACK-NEXT: tt.return %[[R]] : vector<2x2xf32>
 // FALLBACK-NEXT: }
 
+// DISABLED-LABEL: @mmt_k8(
+// DISABLED-SAME: %[[A:.*]]: vector<2x8xbf16>, %[[B:.*]]: vector<2x8xbf16>, %[[C:.*]]: vector<2x2xf32>
+// DISABLED-NEXT: %[[AF:.*]] = arith.extf %[[A]] : vector<2x8xbf16> to vector<2x8xf32>
+// DISABLED-NEXT: %[[BF:.*]] = arith.extf %[[B]] : vector<2x8xbf16> to vector<2x8xf32>
+// DISABLED-NEXT: %[[R:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MMT_MAP]], #[[$ACC_MAP]]]{{.*}} %[[AF]], %[[BF]], %[[C]] : vector<2x8xf32>, vector<2x8xf32> into vector<2x2xf32>
+// DISABLED-NEXT: tt.return %[[R]] : vector<2x2xf32>
+// DISABLED-NEXT: }
 tt.func public @mmt_k8(%a: vector<2x8xbf16>, %b: vector<2x8xbf16>, %c: vector<2x2xf32>) -> vector<2x2xf32> {
   %0 = vector.contract {
     indexing_maps = [affine_map<(m, n, k) -> (m, k)>,
@@ -572,10 +604,10 @@ tt.func public @mmt_k8(%a: vector<2x8xbf16>, %b: vector<2x8xbf16>, %c: vector<2x
   tt.return %0 : vector<2x2xf32>
 }
 
-//--- pending-emitter.mlir
+//--- production-emitter.mlir
 
-// Additional production checks below are not referenced by RUN lines yet.
-// The active checks above already exercise combined-pass lowering.
+// Exercise normalization, emission, and replacement through the public pass.
+// Reparse its output to check ArmNeon registration without scheduling the pass.
 // Greedy folding removes the full-size tile insert for these 2x2 results.
 
 // Ordinary MM needs one RHS transpose and one native 2x2x4 BFMMLA update.
@@ -655,4 +687,34 @@ tt.func public @mmt_k8(%a: vector<2x8xbf16>, %b: vector<2x8xbf16>, %c: vector<2x
 tt.func public @dot(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vector<2x2xf32>) -> vector<2x2xf32> {
   %0 = triton_cpu.dot %a, %b, %c, inputPrecision = ieee : vector<2x4xbf16> * vector<4x2xbf16> -> vector<2x2xf32>
   tt.return %0 : vector<2x2xf32>
+}
+
+// A loop-carried accumulator must be packed from the current iteration's
+// argument, not reset to zero or to the loop's nonzero initial value.
+// CHECK-LABEL: @loop_carried_accumulator(
+// CHECK-SAME: %[[A:.*]]: vector<2x4xbf16>, %[[B:.*]]: vector<2x4xbf16>, %[[COUNT:.*]]: i32
+// CHECK: %[[INITIAL:.*]] = arith.constant dense<1.000000e+00> : vector<2x2xf32>
+// CHECK: %[[RESULT:.*]] = scf.for %{{.*}} = %{{.*}} to %[[COUNT]] step %{{.*}} iter_args(%[[ACC:.*]] = %[[INITIAL]]) -> (vector<2x2xf32>)
+// CHECK-DAG: %[[C0:.*]] = vector.extract %[[ACC]][0] : vector<2xf32> from vector<2x2xf32>
+// CHECK-DAG: %[[C1:.*]] = vector.extract %[[ACC]][1] : vector<2xf32> from vector<2x2xf32>
+// CHECK: %[[PACKED:.*]] = vector.shuffle %[[C0]], %[[C1]] [0, 1, 2, 3] : vector<2xf32>, vector<2xf32>
+// CHECK: %[[UPDATED:.*]] = arm_neon.intr.bfmmla %[[PACKED]], %{{.*}}, %{{.*}} : vector<8xbf16> to vector<4xf32>
+// CHECK-NEXT: %[[TILE:.*]] = vector.shape_cast %[[UPDATED]] : vector<4xf32> to vector<2x2xf32>
+// CHECK-NEXT: scf.yield %[[TILE]] : vector<2x2xf32>
+// CHECK-NEXT: }
+// CHECK-NEXT: tt.return %[[RESULT]] : vector<2x2xf32>
+tt.func public @loop_carried_accumulator(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %count: i32) -> vector<2x2xf32> {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %initial = arith.constant dense<1.0> : vector<2x2xf32>
+  %result = scf.for %i = %zero to %count step %one iter_args(%acc = %initial) -> (vector<2x2xf32>) : i32 {
+    %next = vector.contract {
+      indexing_maps = [affine_map<(m, n, k) -> (m, k)>,
+                       affine_map<(m, n, k) -> (n, k)>,
+                       affine_map<(m, n, k) -> (m, n)>],
+      iterator_types = ["parallel", "parallel", "reduction"]
+    } %a, %b, %acc : vector<2x4xbf16>, vector<2x4xbf16> into vector<2x2xf32>
+    scf.yield %next : vector<2x2xf32>
+  }
+  tt.return %result : vector<2x2xf32>
 }
