@@ -226,7 +226,8 @@ def test_cpu_module_unload_releases_library(device, tmp_path, unload_order):
     source = tmp_path / "unload.c"
     binary = tmp_path / "unload.so"
     marker = tmp_path / "unloaded.txt"
-    source.write_text(textwrap.dedent("""\
+    source.write_text(
+        textwrap.dedent("""\
         #include <stdio.h>
         #include <stdlib.h>
 
@@ -266,6 +267,6 @@ def test_cpu_module_unload_releases_library(device, tmp_path, unload_order):
     """)
     env = os.environ.copy()
     env["TRITON_CPU_UNLOAD_TEST_MARKER"] = str(marker)
-    proc = subprocess.run([sys.executable, "-c", script, str(binary), str(marker), *map(str, unload_order)],
-                          capture_output=True, text=True, env=env)
+    proc = subprocess.run([sys.executable, "-c", script,
+                           str(binary), str(marker), *map(str, unload_order)], capture_output=True, text=True, env=env)
     assert proc.returncode == 0, proc.stderr
