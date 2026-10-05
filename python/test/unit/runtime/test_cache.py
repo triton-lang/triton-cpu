@@ -15,7 +15,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.runtime.jit import get_device_key
-from triton._internal_testing import is_hip, is_cpu
+from triton._internal_testing import is_hip
 from triton.runtime.cache import FileCacheManager, RemoteCacheManager
 
 
@@ -1155,6 +1155,7 @@ def test_preload_higher_order_kernels(device, fresh_triton_cache) -> None:
 
 
 def test_module_load_unload(device, fresh_knobs):
+
     @triton.jit
     def kernel(out_ptr, val) -> None:
         tl.store(out_ptr, val)
