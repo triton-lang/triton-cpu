@@ -40,13 +40,6 @@ namespace py = nanobind;
 
 namespace {
 
-std::string getDefaultTargetOrProcessTriple() {
-  std::string triple = llvm::sys::getDefaultTargetTriple();
-  if (triple.empty())
-    triple = llvm::sys::getProcessTriple();
-  return triple;
-}
-
 void initializeHostTarget() {
   static std::once_flag initFlag;
   std::call_once(initFlag, []() {
@@ -72,7 +65,7 @@ void setLLVMBooleanOption(const std::string &name, bool value) {
 
 // Return true if the CPU triple is AArch64.  Used by the NEON fallback below.
 static bool isAArch64() {
-  std::string triple = getDefaultTargetOrProcessTriple();
+  std::string triple = llvm::sys::getProcessTriple();
   std::size_t separator = triple.find('-');
   if (separator == std::string::npos)
     return false;
@@ -198,7 +191,7 @@ std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
     timePassesStr.clear();
   }
 
-  module.setTargetTriple(llvm::Triple(getDefaultTargetOrProcessTriple()));
+  module.setTargetTriple(llvm::Triple(llvm::sys::getProcessTriple()));
   // Propagate host CPU features to the target machine and set vscale_range
   // attribute on functions when SVE is available so that scalable vector
   // code generation is enabled.
@@ -228,7 +221,7 @@ std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
 
 void setHostTarget(llvm::Module &module) {
   initializeHostTarget();
-  module.setTargetTriple(llvm::Triple(getDefaultTargetOrProcessTriple()));
+  module.setTargetTriple(llvm::Triple(llvm::sys::getProcessTriple()));
 
   // Propagate host CPU features to the target machine and set vscale_range
   // attribute on functions when SVE is available so that scalable vector
@@ -251,7 +244,7 @@ void setHostTarget(llvm::Module &module) {
 } // namespace
 
 void init_triton_cpu_llvm(py::module_ &m) {
-  m.def("get_cpu_triple", &getDefaultTargetOrProcessTriple);
+  m.def("get_cpu_triple", &llvm::sys::getProcessTriple);
   m.def("get_cpu_name", []() { return llvm::sys::getHostCPUName().str(); });
   m.def("get_cpu_features", &getCPUFeatures);
   m.def("set_host_target",
