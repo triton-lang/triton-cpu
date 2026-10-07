@@ -36,6 +36,13 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__linux__) && defined(__aarch64__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+#include <sys/sysctl.h>
+#endif
+
 namespace py = nanobind;
 
 namespace {
@@ -73,11 +80,26 @@ static bool isAArch64() {
   return arch == "aarch64" || arch == "arm64";
 }
 
-// Return the set of enabled host CPU features (e.g. "sve", "neon").
-// NEON is mandatory on AArch64, so it is used as a safe fallback when LLVM
-// feature detection unexpectedly returns an empty set.  This is used by the
-// CPU backend driver (third_party/cpu/backend/compiler.py) to control
-// code generation and by getCPUFeatureString() below.
+namespace arm {
+
+bool osSupportsBF16() {
+#if defined(__linux__) && defined(__aarch64__)
+  return (getauxval(AT_HWCAP2) & HWCAP2_BF16) != 0;
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  int value = 0;
+  size_t size = sizeof(value);
+  return sysctlbyname("hw.optional.arm.FEAT_BF16", &value, &size, nullptr, 0) ==
+             0 &&
+         size == sizeof(value) && value == 1;
+#else
+  return false;
+#endif
+}
+
+} // namespace arm
+
+// Share Arm feature fallbacks between the Python backend and LLVM target
+// machines. LLVM may omit BF16 even when the operating system reports it.
 std::set<std::string> getCPUFeatures() {
   auto features = llvm::sys::getHostCPUFeatures();
 
@@ -86,8 +108,14 @@ std::set<std::string> getCPUFeatures() {
     if (feature.second)
       result.insert(feature.first().str());
 
-  if (result.empty() && isAArch64())
-    result.insert("neon");
+  if (isAArch64()) {
+    // Apply this before BF16 so an empty LLVM result still gets mandatory NEON.
+    if (result.empty())
+      result.insert("neon");
+    // Only query the OS when LLVM has not already reported BF16.
+    if (!result.count("bf16") && arm::osSupportsBF16())
+      result.insert("bf16");
+  }
 
   return result;
 }

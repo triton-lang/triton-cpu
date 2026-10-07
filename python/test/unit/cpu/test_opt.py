@@ -107,5 +107,9 @@ def test_cpu_triple_matches_compiled_target(device):
     assert target is not None
     assert target.group(1) == triple
     machine = platform.machine().lower()
-    expected_arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
-    assert triple.split("-")[0] == expected_arch
+    # On macOS, both Python and LLVM can report arm64. Apply aliases to both
+    # values to avoid comparing aarch64 with arm64 and failing incorrectly.
+    arch_aliases = {"arm64": "aarch64", "amd64": "x86_64"}
+    expected_arch = arch_aliases.get(machine, machine)
+    reported_arch = triple.split("-")[0]
+    assert arch_aliases.get(reported_arch, reported_arch) == expected_arch
