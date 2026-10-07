@@ -5,21 +5,24 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._C.libtriton import cpu
+from triton._C.libtriton import cpu, ir
 from triton.language.extra import libdevice
 from itertools import chain, product
 
 
 def get_native_vector_size_in_bits():
     """
-    Returns the native vector size of the CPU.
+    Returns the fixed vector size used by external SLEEF calls and fallbacks.
     Assuming x86 always uses "auto dispatch" with 512-bit vectors for Sleef.
     """
     cpu_features = cpu.llvm.get_cpu_features()
-    # TODO support for arm sve w/ VLA
     if "neon" in cpu_features:
         return 128
     return 512
+
+
+def has_sve():
+    return bool({"sve", "sve2"} & cpu.llvm.get_cpu_features())
 
 
 def is_interpreter():
@@ -51,7 +54,11 @@ def check_num_vec_calls(meta, vec_lib, dtype_str, size, is_always_extern=False):
     vec_size = get_native_vector_size_in_bits() / 8  # bytes
     # 128-bit vector is the smallest supported by Sleef for both x86 and arm
     smallest_vec_size = 128 / 8  # bytes
-    if data_size > vec_size:
+    if vec_lib == "libsleef" and has_sve() and not is_always_extern and data_size >= smallest_vec_size:
+        # The scalable loop has one static call site, regardless of how many
+        # hardware vectors it processes at runtime.
+        num_vec_calls = 1
+    elif data_size > vec_size:
         num_vec_calls = data_size // vec_size
     elif data_size >= smallest_vec_size:
         num_vec_calls = 1
@@ -161,3 +168,170 @@ def test_libdevice_math_fn(vec_lib, dtype_str, math_fn, size, device):
         check_num_vec_calls(meta, vec_lib, dtype_str, size, is_always_extern=math_fn in always_extern)
     else:
         assert meta.asm["asm"].count(lib_prefix[vec_lib]) == 0
+
+
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16", "float32", "float64"])
+@pytest.mark.parametrize("size", [4, 16, 64, 256])
+@pytest.mark.parametrize("math_fn, ulp_suffix", [("sin", "_u10"), ("sqrt", "_u05"), ("floor", "_")])
+def test_sleef_sve_vscale_reshaped_math(dtype_str, size, math_fn, ulp_suffix, device):
+    if not is_cpu() or not has_sve():
+        pytest.skip("This test requires an SVE CPU")
+
+    @triton.jit
+    def kernel(src, dst, MATH_FN: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        x = tl.reshape(tl.load(src + idxs), (2, BLOCK_SIZE // 2))
+        y = getattr(libdevice, MATH_FN)(x)
+        tl.store(dst + idxs, tl.reshape(y, (BLOCK_SIZE, )))
+
+    # Distinct values across the entire block catch incorrect loop strides or
+    # shape restoration, including a final partial hardware vector.
+    src = torch.linspace(0.125, 3.125, size, device=device).to(getattr(torch, dtype_str))
+    res = torch.empty_like(src)
+    meta = kernel[(1, )](src, res, MATH_FN=math_fn, BLOCK_SIZE=size, vec_lib="libsleef")
+    ref = getattr(src, math_fn)()
+    torch.testing.assert_close(res, ref)
+
+    # Half and bfloat16 math is promoted before calling the SVE library.
+    is_double = dtype_str == "float64"
+    lanes, llvm_dtype, precision = (2, "double", "dx") if is_double else (4, "float", "fx")
+    llir = meta.asm["llir"]
+    assert "llvm.vscale" in llir
+    assert f"<vscale x {lanes} x {llvm_dtype}>" in llir
+    assert f"Sleef_{math_fn}{precision}{ulp_suffix}sve" in llir
+    check_num_vec_calls(meta, "libsleef", dtype_str, size)
+
+
+@pytest.mark.parametrize("dtype_str, size", [("float32", 1), ("float32", 2), ("float64", 1)])
+def test_sleef_sve_small_vector_fallback(dtype_str, size, device):
+    if not is_cpu() or not has_sve():
+        pytest.skip("This test requires an SVE CPU")
+
+    @triton.jit
+    def kernel(src, dst, BLOCK_SIZE: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        tl.store(dst + idxs, tl.sin(tl.load(src + idxs)))
+
+    src = torch.linspace(0.125, 1.125, size, device=device).to(getattr(torch, dtype_str))
+    res = torch.empty_like(src)
+    meta = kernel[(1, )](src, res, BLOCK_SIZE=size, vec_lib="libsleef")
+    torch.testing.assert_close(res, src.sin())
+    assert "llvm.vscale" not in meta.asm["llir"]
+    assert "Sleef_" not in meta.asm["llir"]
+
+
+def run_math_to_vec_lib_pass(tmp_path, source, features):
+    context = ir.context()
+    ir.load_dialects(context)
+    cpu.load_dialects(context)
+    path = tmp_path / "math.mlir"
+    path.write_text(source)
+    module = ir.parse_mlir_module(str(path), context)
+    pm = ir.pass_manager(context)
+    cpu.passes.ttcpuir.add_math_to_vec_lib(pm, cpu.passes.ttcpuir.VecLib.libsleef, set(features))
+    pm.run(module, "math_to_vec_lib_test")
+    return str(module)
+
+
+def math_vector_ir(math_fn, dtype, shape):
+    count = 1
+    for dim in shape.split("x"):
+        count *= int(dim)
+    flat_type = f"vector<{count}x{dtype}>"
+    vec_type = f"vector<{shape}x{dtype}>"
+    return f"""
+module {{
+  llvm.func @math_kernel(%arg: {flat_type}) -> {flat_type} {{
+    %x = vector.shape_cast %arg : {flat_type} to {vec_type}
+    %y = math.{math_fn} %x : {vec_type}
+    %result = vector.shape_cast %y : {vec_type} to {flat_type}
+    llvm.return %result : {flat_type}
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("features", [("sve", ), ("neon", "sve"), ("sve2", )])
+@pytest.mark.parametrize("dtype, shape", [("f32", "5"), ("f64", "3"), ("f32", "2x4"), ("f64", "2x3"), ("f16", "2x4"),
+                                          ("bf16", "2x4")])
+def test_sleef_sve_vscale_lowering(features, dtype, shape, tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    # Feature overrides exercise the compiler on hosts without SVE. Odd fixed
+    # vector lengths require a mask even at the minimum SVE vector length.
+    result = run_math_to_vec_lib_pass(tmp_path, math_vector_ir("sin", dtype, shape), features)
+    promoted_dtype = "f64" if dtype == "f64" else "f32"
+    lanes, precision = (2, "dx") if dtype == "f64" else (4, "fx")
+    scalable_type = f"vector<[{lanes}]x{promoted_dtype}>"
+    symbol = f"Sleef_sin{precision}_u10sve"
+    assert f"@{symbol}({scalable_type}) -> {scalable_type}" in result
+    assert result.count(f"call @{symbol}") == 1
+    assert "vector.vscale" in result
+    assert "scf.for" in result
+    assert "vector.create_mask" in result
+    assert "vector.maskedload" in result
+    assert "vector.maskedstore" in result
+    assert "math.sin" not in result
+    if dtype in {"f16", "bf16"}:
+        assert "arith.extf" in result
+        assert "arith.truncf" in result
+
+
+@pytest.mark.parametrize("math_fn, suffix", [("sqrt", "_u05sve"), ("floor", "_sve"), ("expm1", "_u10sve"),
+                                             ("trunc", "_sve")])
+def test_sleef_sve_additional_math_lowering(math_fn, suffix, tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    result = run_math_to_vec_lib_pass(tmp_path, math_vector_ir(math_fn, "f32", "5"), {"neon", "sve"})
+    assert f"@Sleef_{math_fn}fx{suffix}(vector<[4]xf32>) -> vector<[4]xf32>" in result
+    assert "vector.vscale" in result
+    assert f"math.{math_fn}" not in result
+
+
+@pytest.mark.parametrize("features, bits", [(("neon", ), 128), (("avx", ), 256)])
+@pytest.mark.parametrize("dtype, precision, elem_bits", [("f32", "f", 32), ("f64", "d", 64)])
+def test_sleef_fixed_vector_fallback_lowering(features, bits, dtype, precision, elem_bits, tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    result = run_math_to_vec_lib_pass(tmp_path, math_vector_ir("sin", dtype, "16"), features)
+    lanes = bits // elem_bits
+    symbol = f"Sleef_sin{precision}{lanes}_u10"
+    assert f"@{symbol}(vector<{lanes}x{dtype}>) -> vector<{lanes}x{dtype}>" in result
+    assert result.count(f"call @{symbol}") == 16 // lanes
+    assert "vector.vscale" not in result
+    assert "scf.for" not in result
+    assert "sve(" not in result
+
+
+@pytest.mark.parametrize("dtype, shape", [("f32", "1"), ("f32", "2"), ("f64", "1")])
+def test_sleef_sve_small_vector_lowering(dtype, shape, tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    result = run_math_to_vec_lib_pass(tmp_path, math_vector_ir("sin", dtype, shape), {"neon", "sve"})
+    assert "math.sin" in result
+    assert "vector.vscale" not in result
+    assert "Sleef_" not in result
+
+
+def test_sleef_sve_explicit_extern_fixed_abi(tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    source = """
+module {
+  llvm.func @math_kernel(%arg: vector<16xf32>) -> vector<16xf32> {
+    %result = triton_cpu.extern_elementwise %arg {symbol = "Sleef_ceilf%(numel)", pure = true}
+      : (vector<16xf32>) -> vector<16xf32>
+    llvm.return %result : vector<16xf32>
+  }
+}
+"""
+    result = run_math_to_vec_lib_pass(tmp_path, source, {"neon", "sve"})
+    assert "@Sleef_ceilf4(vector<4xf32>) -> vector<4xf32>" in result
+    assert result.count("call @Sleef_ceilf4") == 4
+    assert "vector.vscale" not in result
+    assert "sve(" not in result
