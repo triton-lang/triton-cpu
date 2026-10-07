@@ -70,9 +70,52 @@ void setLLVMBooleanOption(const std::string &name, bool value) {
   it->second->addOccurrence(1, name, value ? "true" : "false");
 }
 
+// Return true if the CPU triple is AArch64.  Used by the NEON fallback below.
+static bool isAArch64() {
+  std::string triple = llvm::sys::getProcessTriple();
+  std::size_t separator = triple.find('-');
+  if (separator == std::string::npos)
+    return false;
+  std::string arch = triple.substr(0, separator);
+  return arch == "aarch64" || arch == "arm64";
+}
+
+// Return the set of enabled host CPU features (e.g. "sve", "neon").
+// NEON is mandatory on AArch64, so it is used as a safe fallback when LLVM
+// feature detection unexpectedly returns an empty set.  This is used by the
+// CPU backend driver (third_party/cpu/backend/compiler.py) to control
+// code generation and by getCPUFeatureString() below.
+std::set<std::string> getCPUFeatures() {
+  auto features = llvm::sys::getHostCPUFeatures();
+
+  std::set<std::string> result;
+  for (const auto &feature : features)
+    if (feature.second)
+      result.insert(feature.first().str());
+
+  if (result.empty() && isAArch64())
+    result.insert("neon");
+
+  return result;
+}
+
+// Build a comma-separated feature string (e.g. "+sve,+sve2,+neon") suitable
+// for passing to TargetMachine::createTargetMachine, derived from
+// getCPUFeatures() so both share the same NEON fallback logic.
+static std::string getCPUFeaturesString() {
+  std::string result;
+  for (const auto &feature : getCPUFeatures()) {
+    if (!result.empty())
+      result += ",";
+    result += "+";
+    result += feature;
+  }
+  return result;
+}
+
 std::unique_ptr<llvm::TargetMachine>
-createHostTargetMachine(llvm::Module &module, bool enableFpFusion,
-                        bool enableFastMath) {
+createHostTargetMachine(llvm::Module &module, const std::string &cpuFeatures,
+                        bool enableFpFusion, bool enableFastMath) {
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
@@ -90,10 +133,28 @@ createHostTargetMachine(llvm::Module &module, bool enableFpFusion,
 
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
   return std::unique_ptr<llvm::TargetMachine>{target->createTargetMachine(
-      module.getTargetTriple(), llvm::sys::getHostCPUName(), "", options,
-      llvm::Reloc::PIC_, std::nullopt,
+      module.getTargetTriple(), llvm::sys::getHostCPUName(), cpuFeatures,
+      options, llvm::Reloc::PIC_, std::nullopt,
       disableLLVMOpt ? llvm::CodeGenOptLevel::None
                      : llvm::CodeGenOptLevel::Aggressive)};
+}
+
+// Set the vscale_range function attribute on all functions in the module when
+// SVE is available.  This tells LLVM that the function may use scalable
+// vectors and that the runtime vscale value is within the given range.
+// For SVE, the vector length is vscale * 128 bits, and on common AArch64
+// implementations vscale is 1 (128-bit) or 2 (256-bit).  We use a conservative
+// range of [1, 16] to cover all SVE implementations (up to 2048-bit).
+void setVscaleRangeForSVE(llvm::Module &module, llvm::StringRef cpuFeatures) {
+  if (cpuFeatures.find("+sve") == std::string::npos)
+    return;
+
+  for (llvm::Function &function : module.functions()) {
+    if (function.isIntrinsic())
+      continue;
+    function.addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(
+        function.getContext(), /*Min=*/1, /*Max=*/16));
+  }
 }
 
 std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
@@ -138,8 +199,13 @@ std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
   }
 
   module.setTargetTriple(llvm::Triple(getHostTargetTriple()));
-  auto machine =
-      createHostTargetMachine(module, enableFpFusion, enableFastMath);
+  // Propagate host CPU features to the target machine and set vscale_range
+  // attribute on functions when SVE is available so that scalable vector
+  // code generation is enabled.
+  const std::string cpuFeatures = getCPUFeaturesString();
+  setVscaleRangeForSVE(module, cpuFeatures);
+  auto machine = createHostTargetMachine(module, cpuFeatures, enableFpFusion,
+                                         enableFastMath);
   module.setDataLayout(machine->createDataLayout());
 
   std::string result;
@@ -164,6 +230,12 @@ void setHostTarget(llvm::Module &module) {
   initializeHostTarget();
   module.setTargetTriple(llvm::Triple(getHostTargetTriple()));
 
+  // Propagate host CPU features to the target machine and set vscale_range
+  // attribute on functions when SVE is available so that scalable vector
+  // code generation is enabled.
+  const std::string cpuFeatures = getCPUFeaturesString();
+  setVscaleRangeForSVE(module, cpuFeatures);
+
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
@@ -171,32 +243,9 @@ void setHostTarget(llvm::Module &module) {
     throw std::runtime_error("target lookup error: " + error);
 
   std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
-      module.getTargetTriple(), llvm::sys::getHostCPUName(), "", {},
+      module.getTargetTriple(), llvm::sys::getHostCPUName(), cpuFeatures, {},
       llvm::Reloc::PIC_)};
   module.setDataLayout(machine->createDataLayout());
-}
-
-std::set<std::string> getCPUFeatures() {
-  auto features = llvm::sys::getHostCPUFeatures();
-
-  std::set<std::string> result;
-  for (const auto &feature : features)
-    if (feature.second)
-      result.insert(feature.first().str());
-
-  // NEON is mandatory on AArch64. Use it as a safe fallback if LLVM feature
-  // detection unexpectedly returns an empty set.
-  if (result.empty()) {
-    std::string triple = llvm::sys::getProcessTriple();
-    std::size_t separator = triple.find('-');
-    if (separator != std::string::npos) {
-      std::string arch = triple.substr(0, separator);
-      if (arch == "aarch64" || arch == "arm64")
-        result.insert("neon");
-    }
-  }
-
-  return result;
 }
 
 } // namespace
