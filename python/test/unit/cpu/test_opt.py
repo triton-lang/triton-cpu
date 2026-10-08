@@ -106,6 +106,4 @@ def test_cpu_triple_matches_compiled_target(device):
     target = re.search(r'target triple = "([^"]+)"', compiled.asm["llir"])
     assert target is not None
     assert target.group(1) == triple
-    machine = platform.machine().lower()
-    expected_arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
-    assert triple.split("-")[0] == expected_arch
+    assert triple.split("-")[0] == platform.machine().lower()
