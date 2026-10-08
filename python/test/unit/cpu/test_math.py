@@ -1,5 +1,6 @@
 import inspect
 import os
+import re
 import pytest
 import torch
 
@@ -220,6 +221,86 @@ def test_sleef_sve_small_vector_fallback(dtype_str, size, device):
     assert "Sleef_" not in meta.asm["llir"]
 
 
+def test_sleef_sve_chained_math_stack_usage(device):
+    if not is_cpu() or not has_sve():
+        pytest.skip("This test requires an SVE CPU")
+
+    @triton.jit
+    def kernel(src, dst, BLOCK_SIZE: tl.constexpr, DEPTH: tl.constexpr):
+        offsets = tl.arange(0, BLOCK_SIZE)
+        first = tl.sin(tl.load(src + offsets))
+        result = first
+        for _ in tl.static_range(DEPTH - 1):
+            result = tl.sin(result)
+        # Keep the first result live across the remaining math operations.
+        tl.store(dst + offsets, result + first)
+
+    size = 256
+    src = torch.linspace(0.125, 3.125, size, dtype=torch.float32, device=device)
+    res = torch.empty_like(src)
+    frames = []
+    for depth in (1, 8):
+        meta = kernel[(1, )](src, res, BLOCK_SIZE=size, DEPTH=depth, vec_lib="libsleef")
+        first = src.sin()
+        ref = first
+        for _ in range(depth - 1):
+            ref = ref.sin()
+        torch.testing.assert_close(res, ref + first)
+
+        llir = meta.asm["llir"]
+        if depth > 1:
+            # LLVM can turn the single entry-block scope into static allocas.
+            assert "llvm.stacksave" in llir
+            assert "llvm.stackrestore" in llir
+        assert meta.asm["asm"].count("Sleef_sinfx_u10sve") == depth
+        assembly = meta.asm["asm"]
+        assert ".cfi_def_cfa" in assembly, "Expected AArch64 stack-frame unwind information"
+        prologue = assembly.split(".cfi_def_cfa", 1)[0]
+        frame_bytes = sum(map(int, re.findall(r"\[sp,\s*#-(\d+)\]!", prologue)))
+        for amount, shift in re.findall(r"sub\s+sp,\s*sp,\s*#(\d+)(?:,\s*lsl\s*#(\d+))?", prologue):
+            frame_bytes += int(amount) << int(shift or 0)
+        assert frame_bytes > 0
+        frames.append(frame_bytes)
+
+    # Dynamic scopes add at most one scratch pair at a time. The fixed frame
+    # can spill a live earlier result, but must not grow by a full input/output
+    # buffer pair for every added math operation.
+    buffer_pair_bytes = 2 * size * src.element_size()
+    assert frames[1] <= frames[0] + buffer_pair_bytes, frames
+
+
+@pytest.mark.parametrize("mode", [0, 1])
+def test_sleef_sve_scratch_scopes_in_loop_branch(mode, device):
+    if not is_cpu() or not has_sve():
+        pytest.skip("This test requires an SVE CPU")
+
+    @triton.jit(do_not_specialize=["count", "mode"])
+    def kernel(src, dst, count, mode, BLOCK_SIZE: tl.constexpr):
+        offsets = tl.arange(0, BLOCK_SIZE)
+        initial = tl.load(src + offsets)
+        result = initial
+        for _ in range(count):
+            if mode == 0:
+                result = tl.sin(result)
+            else:
+                result = tl.cos(result)
+            result = tl.sqrt(result * result + 1.0)
+        tl.store(dst + offsets, result + initial)
+
+    size = 256
+    count = 5
+    src = torch.linspace(0.125, 3.125, size, dtype=torch.float32, device=device)
+    res = torch.empty_like(src)
+    meta = kernel[(1, )](src, res, count, mode, BLOCK_SIZE=size, vec_lib="libsleef")
+    ref = src
+    for _ in range(count):
+        ref = ref.sin() if mode == 0 else ref.cos()
+        ref = (ref * ref + 1.0).sqrt()
+    torch.testing.assert_close(res, ref + src)
+    assert "llvm.stacksave" in meta.asm["llir"]
+    assert "llvm.stackrestore" in meta.asm["llir"]
+
+
 def run_math_to_vec_lib_pass(tmp_path, source, features):
     context = ir.context()
     ir.load_dialects(context)
@@ -276,6 +357,64 @@ def test_sleef_sve_vscale_lowering(features, dtype, shape, tmp_path):
     if dtype in {"f16", "bf16"}:
         assert "arith.extf" in result
         assert "arith.truncf" in result
+
+
+def test_sleef_sve_scratch_scopes_lowering(tmp_path):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    source = """
+module {
+  llvm.func @math_kernel(%arg: vector<16xf32>) -> vector<16xf32> {
+    %first = math.sin %arg : vector<16xf32>
+    %second = math.cos %first : vector<16xf32>
+    %result = arith.addf %first, %second : vector<16xf32>
+    llvm.return %result : vector<16xf32>
+  }
+}
+"""
+    result = run_math_to_vec_lib_pass(tmp_path, source, {"neon", "sve"})
+    lines = result.splitlines()
+    # Scratch allocation and all buffer accesses must lie inside the
+    # corresponding stack scope.
+    allocas = set(re.findall(r"(%\w+) = memref.alloca", result))
+    saves = {
+        pointer: i
+        for i, line in enumerate(lines)
+        for pointer in re.findall(r"(%\w+) = llvm.intr.stacksave : !llvm.ptr", line)
+    }
+    restores = {
+        pointer: i
+        for i, line in enumerate(lines)
+        for pointer in re.findall(r"llvm.intr.stackrestore (%\w+) : !llvm.ptr", line)
+    }
+    assert len(saves) == 2
+    assert saves.keys() == restores.keys()
+    covered_allocas = set()
+    intervals = []
+    for saved, start in saves.items():
+        end = restores[saved]
+        allocations = [(pointer, i) for i, line in enumerate(lines) if start < i < end
+                       for pointer in re.findall(r"(%\w+) = memref.alloca", line)]
+        assert len(allocations) == 2
+        for buffer, allocation in allocations:
+            accesses = [
+                i for i, line in enumerate(lines)
+                if re.search(r"vector\.(?:masked)?(?:load|store) .*" + re.escape(buffer) + r"\[", line)
+            ]
+            assert accesses, buffer
+            assert allocation < min(accesses) <= max(accesses) < end
+            covered_allocas.add(buffer)
+        intervals.append((start, end))
+    assert covered_allocas == allocas
+
+    # The scratch scope of the first math evaluation must finish before
+    # the second evaluation starts, even while its SSA result remains live.
+    intervals.sort()
+    assert intervals[0][1] < intervals[1][0]
+    loads = re.findall(r"(%\w+) = vector.load", result)
+    assert len(loads) == 2
+    assert f"arith.addf {loads[0]}, {loads[1]}" in result
 
 
 @pytest.mark.parametrize("math_fn, suffix", [("sqrt", "_u05sve"), ("floor", "_sve"), ("expm1", "_u10sve"),

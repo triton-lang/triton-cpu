@@ -2,6 +2,7 @@
 
 #include "cpu/include/TritonCPUToLLVM/Passes.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -334,17 +335,14 @@ public:
       auto flatTy = VectorType::get({numElems}, vecTy.getElementType());
       auto bufferTy = MemRefType::get({numElems}, vecTy.getElementType());
       SmallVector<Value> inputBuffers;
-      Value resultBuffer;
-      {
-        // Allocate once per function invocation, including when the math op is
-        // nested in a loop, so repeated evaluations cannot grow the stack.
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(&func.getFunctionBody().front());
-        for (unsigned i = 0; i < op->getNumOperands(); ++i)
-          inputBuffers.push_back(
-              memref::AllocaOp::create(rewriter, loc, bufferTy));
-        resultBuffer = memref::AllocaOp::create(rewriter, loc, bufferTy);
-      }
+      auto pointerTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+      // Restore the stack after each evaluation, including inside loops, so
+      // scratch storage cannot accumulate across operations or iterations.
+      Value stack = LLVM::StackSaveOp::create(rewriter, loc, pointerTy);
+      for (unsigned i = 0; i < op->getNumOperands(); ++i)
+        inputBuffers.push_back(
+            memref::AllocaOp::create(rewriter, loc, bufferTy));
+      Value resultBuffer = memref::AllocaOp::create(rewriter, loc, bufferTy);
 
       Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
       Value upper = arith::ConstantIndexOp::create(rewriter, loc, numElems);
@@ -385,6 +383,8 @@ public:
       }
       Value result = vector::LoadOp::create(rewriter, loc, flatTy, resultBuffer,
                                             ValueRange{zero});
+      // The loaded SSA value remains valid after its scratch storage is freed.
+      LLVM::StackRestoreOp::create(rewriter, loc, stack);
       rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(op, vecTy, result);
       return success();
     }
