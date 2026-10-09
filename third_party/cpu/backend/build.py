@@ -94,8 +94,8 @@ def _build_cpu_shared_object(name, src, srcdir, libraries, ccflags, source_kind)
     elif source_kind == "assembly":
         # Preserve .file directives in generated host assembly.
         cpu_flags.append("-g")
-        if system == "Linux" and machine in ("aarch64", "arm64"):
-            # Some Arm CPUs, such as Neoverse V2, require an explicit target.
+        if system in ("Linux", "Darwin") and machine in ("aarch64", "arm64"):
+            # Arm assembly may need an explicit target to enable host features.
             cpu_flags.append("-mcpu=native")
     else:
         raise ValueError(f"Unexpected CPU source kind: {source_kind}")
