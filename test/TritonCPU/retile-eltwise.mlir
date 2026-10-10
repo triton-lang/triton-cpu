@@ -1,18 +1,21 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-unroll-and-reorder-elementwise-ops=cpu-features=avx512 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX512
-// RUN: triton-opt %s -split-input-file -triton-cpu-unroll-and-reorder-elementwise-ops=cpu-features=avx2 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX2
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-retile-elementwise-ops=cpu-features=avx512 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX512
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-retile-elementwise-ops=cpu-features=avx2 -canonicalize -cse  | FileCheck %s --check-prefixes=CHECK,AVX2
 
 // CHECK-LABEL: eltwise_kernel
-// CHECK:         vector.transfer_read
-// CHECK-SAME:    vector<32xbf16>
+// AVX512:      scf.for %{{.+}} = %c0 to %c32 step %c8
+// AVX2:        scf.for %{{.+}} = %c0 to %c32 step %c2
 // CHECK:         vector.transfer_read
 // AVX512-SAME:   vector<8x32xbf16>
 // AVX2-SAME:     vector<2x32xbf16>
 // CHECK:         arith.extf
 // AVX512-SAME:   vector<8x32xbf16> to vector<8x32xf32>
 // AVX2-SAME:     vector<2x32xbf16> to vector<2x32xf32>
-// CHECK:         vector.broadcast
-// AVX512-SAME:   vector<32xf32> to vector<8x32xf32>
-// AVX2-SAME:     vector<32xf32> to vector<2x32xf32>
+// CHECK:         vector.transfer_read
+// AVX512-SAME:   vector<8x32xbf16>
+// AVX2-SAME:     vector<2x32xbf16>
+// CHECK:         arith.extf
+// AVX512-SAME:   vector<8x32xbf16> to vector<8x32xf32>
+// AVX2-SAME:     vector<2x32xbf16> to vector<2x32xf32>
 // CHECK:         arith.addf
 // AVX512-SAME:   vector<8x32xf32>
 // AVX2-SAME:     vector<2x32xf32>
@@ -64,6 +67,8 @@ tt.func public @eltwise_kernel(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2
 // -----
 
 // CHECK-LABEL: eltwise_kernel2
+// AVX512:      scf.for %{{.+}} = %c0 to %c4096 step %c256
+// AVX2:        scf.for %{{.+}} = %c0 to %c4096 step %c64
 // CHECK:         vector.transfer_read
 // AVX512-SAME:   vector<256xf32>
 // AVX2-SAME:     vector<64xf32>
@@ -170,6 +175,8 @@ tt.func public @negative_eltwise_kernel4(%arg0: !tt.ptr<bf16>, %arg2: !tt.ptr<bf
 // Check reordering in the presence of multiple vector.transfer_read ops.
 
 // CHECK-LABEL: eltwise_kernel5
+// AVX512:      scf.for %{{.+}} = %c0 to %c32 step %c8
+// AVX2:        scf.for %{{.+}} = %c0 to %c32 step %c2
 // CHECK:         vector.transfer_read
 // AVX512-SAME:   vector<8x32xbf16>
 // AVX2-SAME:     vector<2x32xbf16>
@@ -191,16 +198,6 @@ tt.func public @negative_eltwise_kernel4(%arg0: !tt.ptr<bf16>, %arg2: !tt.ptr<bf
 // CHECK:         vector.transfer_write
 // AVX512-SAME:   vector<8x32xbf16>
 // AVX2-SAME:     vector<2x32xbf16>
-
-// Pattern shall repeat.
-
-// CHECK:         vector.transfer_read
-// CHECK:         arith.extf
-// CHECK:         vector.transfer_read
-// CHECK:         arith.extf
-// CHECK:         arith.addf
-// CHECK:         arith.truncf
-// CHECK:         vector.transfer_write
 
 tt.func public @eltwise_kernel5(%arg0: !tt.ptr<bf16>, %arg1: !tt.ptr<bf16>, %arg2: !tt.ptr<bf16>, %arg3: i32, %arg4: i32) {
   %cst = arith.constant 0.000000e+00 : bf16
