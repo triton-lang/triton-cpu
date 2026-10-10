@@ -1,8 +1,8 @@
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=amx-bf16,amx-int8,amx-fp8 -cse  | FileCheck %s --check-prefixes=AMX,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx10.2 -cse  | FileCheck %s --check-prefixes=AVX10_2,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
-// RUN: triton-opt %s -split-input-file -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxvnniint8 -cse  | FileCheck %s --check-prefixes=AVX_VNNI_INT8,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=amx-bf16,amx-int8,amx-fp8 -cse  | FileCheck %s --check-prefixes=AMX,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx512bf16 -cse  | FileCheck %s --check-prefixes=AVX512,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avx10.2 -cse  | FileCheck %s --check-prefixes=AVX10_2,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxneconvert -cse  | FileCheck %s --check-prefixes=AVX_NE_CONVERT,ALL
+// RUN: triton-opt %s -split-input-file -triton-cpu-canonicalize -triton-cpu-convert-dot-to-nanokernel=cpu-features=avxvnniint8 -cse  | FileCheck %s --check-prefixes=AVX_VNNI_INT8,ALL
 
 // AMX bf16 flat/online-packing vector.contract inside of an accumulator loop
 
