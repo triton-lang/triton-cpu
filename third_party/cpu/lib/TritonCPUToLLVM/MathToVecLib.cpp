@@ -283,14 +283,20 @@ public:
 
   virtual std::string getVecFnName(OpT op, unsigned bitwidth,
                                    unsigned numel) const = 0;
+  virtual std::string getScalarFnName(OpT op, unsigned bitwidth) const {
+    return {};
+  };
 
   LogicalResult matchAndRewrite(OpT op, PatternRewriter &rewriter) const {
-    VectorType vecTy = dyn_cast<VectorType>(op.getType());
-    if (!vecTy || vecTy.getRank() > 1)
-      return failure();
+    Type ty = op.getType();
+    std::string fnName;
 
-    auto fnName = getVecFnName(op, vecTy.getElementTypeBitWidth(),
-                               vecTy.getNumElements());
+    if (auto vecTy = dyn_cast<VectorType>(ty); vecTy && vecTy.getRank() == 1)
+      fnName = getVecFnName(op, vecTy.getElementTypeBitWidth(),
+                            vecTy.getNumElements());
+    else if (ty.isF32() || ty.isF64())
+      fnName = getScalarFnName(op, ty.getIntOrFloatBitWidth());
+
     if (fnName.empty())
       return failure();
 
@@ -310,7 +316,7 @@ public:
                       UnitAttr::get(rewriter.getContext()));
     }
 
-    rewriter.replaceOpWithNewOp<func::CallOp>(op, fnName, op.getType(),
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, fnName, ty,
                                               op->getOperands());
     return success();
   }
@@ -343,6 +349,19 @@ struct ExternElementwiseOpConversion
       return fnName.str();
     return (fnName.take_front(numelIdx) + Twine(numel) +
             fnName.drop_front(numelIdx + 8))
+        .str();
+  }
+
+  std::string getScalarFnName(triton::cpu::ExternElementwiseOp op,
+                              unsigned bitwidth) const override {
+    auto fnName = op.getSymbol();
+    auto numelIdx =
+        bitwidth == 64 ? fnName.find("d%(numel)") : fnName.find("f%(numel)");
+    if (numelIdx == StringRef::npos)
+      return fnName.str();
+    // Scalar 64-bit functions don't have a 'd' infix in their name.
+    return (fnName.take_front(numelIdx) + Twine(bitwidth == 64 ? "" : "f") +
+            fnName.drop_front(numelIdx + 9))
         .str();
   }
 };
