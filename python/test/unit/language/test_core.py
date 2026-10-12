@@ -3883,7 +3883,7 @@ def get_test_dot_base_cases():
 
 # M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dtype, out_dtype, kpack, mma_nonk_size
 def get_test_dot_cpu_bf16_cases():
-    if not is_cpu():
+    if not is_cpu() or triton.runtime.driver.active.get_current_target().arch not in ("aarch64", "arm64"):
         return []
     # Stay within the default CPU limits so each shape is tested as specified.
     # K=2 exercises FP32 fallback; 2x2x4 is the smallest BFMMLA tile.
