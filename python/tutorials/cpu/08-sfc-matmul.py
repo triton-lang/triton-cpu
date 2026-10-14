@@ -107,6 +107,7 @@ def sfc_kernel(
     BLOCKING_FACTOR_K: tl.constexpr,
     IS_FIRST_K_BLOCK: tl.constexpr,
     IS_LAST_K_BLOCK: tl.constexpr,
+    CHUNK_SIZE: tl.constexpr,
 ):
     VNNI: tl.constexpr = 32 // b_ptr.type.element_ty.primitive_bitwidth
 
@@ -115,9 +116,7 @@ def sfc_kernel(
     BLOCKS_K = K // BLOCK_SIZE_K
     BLOCKS_K_PER_PROG = tl.cdiv(BLOCKS_K, BLOCKING_FACTOR_K)
 
-    pid = tl.program_id(axis=0)
-    block_m = tl.load(sfc_map_ptr + 2 * pid)
-    block_n = tl.load(sfc_map_ptr + 2 * pid + 1)
+    BLOCKS_TOTAL = BLOCKS_M * BLOCKS_N
     block_k = ik * BLOCKS_K_PER_PROG
 
     a_desc = tl.make_tensor_descriptor(base=a_ptr, shape=(BLOCKS_M, BLOCKS_K, BLOCK_SIZE_M, BLOCK_SIZE_K),
@@ -138,27 +137,31 @@ def sfc_kernel(
                                                strides=(BLOCK_SIZE_M * N, BLOCK_SIZE_M * BLOCK_SIZE_N, BLOCK_SIZE_N, 1),
                                                block_shape=(1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
 
-    c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=ACC_DTYPE)
+    chunk_id = tl.program_id(axis=0) * CHUNK_SIZE
+    for pid in range(chunk_id, min(chunk_id + CHUNK_SIZE, BLOCKS_TOTAL)):
+        block_m = tl.load(sfc_map_ptr + 2 * pid)
+        block_n = tl.load(sfc_map_ptr + 2 * pid + 1)
 
-    for block_ki in range(block_k, min(block_k + BLOCKS_K_PER_PROG, BLOCKS_K)):
-        a = a_desc.load([block_m, block_ki, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_K))
-        b = b_desc.load([block_n, block_ki, 0, 0]).reshape((BLOCK_SIZE_K // VNNI, BLOCK_SIZE_N * VNNI))
+        c = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=ACC_DTYPE)
 
-        b = tl.extra.cpu.vnni_decode(b)
+        for block_ki in range(block_k, min(block_k + BLOCKS_K_PER_PROG, BLOCKS_K)):
+            a = a_desc.load([block_m, block_ki, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_K))
+            b = b_desc.load([block_n, block_ki, 0, 0]).reshape((BLOCK_SIZE_K // VNNI, BLOCK_SIZE_N * VNNI))
 
-        c = tl.dot(a, b, acc=c, out_dtype=ACC_DTYPE)
+            b = tl.extra.cpu.vnni_decode(b)
 
-    if not IS_FIRST_K_BLOCK:
-        c_tmp = c_tmp_desc.load([block_m, block_n, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_N))
-        c += c_tmp
+            c = tl.dot(a, b, acc=c, out_dtype=ACC_DTYPE)
 
-    if not IS_LAST_K_BLOCK:
-        c = c.reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
-        c_tmp_desc.store([block_m, block_n, 0, 0], c)
-        return
+        if not IS_FIRST_K_BLOCK:
+            c_tmp = c_tmp_desc.load([block_m, block_n, 0, 0]).reshape((BLOCK_SIZE_M, BLOCK_SIZE_N))
+            c += c_tmp
 
-    c = c.to(DTYPE).reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
-    c_desc.store([block_m, block_n, 0, 0], c)
+        if not IS_LAST_K_BLOCK:
+            c = c.reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
+            c_tmp_desc.store([block_m, block_n, 0, 0], c)
+        else:
+            c = c.to(DTYPE).reshape((1, 1, BLOCK_SIZE_M, BLOCK_SIZE_N))
+            c_desc.store([block_m, block_n, 0, 0], c)
 
 
 @functools.lru_cache
@@ -168,7 +171,7 @@ def make_sfc_tensor(x, y, dtype=torch.int32, device='cpu'):
 
 
 def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ap: torch.Tensor, bp: torch.Tensor, ctmp: torch.Tensor, M,
-           N, K, blocking_factor_k=1):
+           N, K, blocking_factor_k=1, chunk_size=1):
     assert (M % BLOCK_SIZE_M == 0) and (N % BLOCK_SIZE_N == 0) and (K % BLOCK_SIZE_K == 0), \
            "Masking currently not supported, matrix dimensions must be multiples of block size"
 
@@ -188,11 +191,19 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, ap: torch.Tensor, 
                                                 BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
                                                 BLOCK_SIZE_K=BLOCK_SIZE_K, assume_in_bounds=True)
 
+    num_blocks = BLOCKS_M * BLOCKS_N
+    num_progs = torch.get_num_threads()
+    chunk_size = max(1, triton.cdiv(BLOCKS_M * BLOCKS_N, num_progs))
+    while chunk_size > 128:
+        num_progs *= 2
+        chunk_size = max(1, triton.cdiv(BLOCKS_M * BLOCKS_N, num_progs))
+
     for ik in range(blocking_factor_k):
-        sfc_kernel[((M // BLOCK_SIZE_M) * (N // BLOCK_SIZE_N), )](
-            ap, bp, c, ctmp, sfc_map_mn, M, N, K, ik, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K, DTYPE=tt_dtype, ACC_DTYPE=tt_acc_dtype, BLOCKING_FACTOR_K=blocking_factor_k,
-            IS_FIRST_K_BLOCK=(ik == 0), IS_LAST_K_BLOCK=(ik == blocking_factor_k - 1), assume_in_bounds=True)
+        sfc_kernel[(num_progs, )](ap, bp, c, ctmp, sfc_map_mn, M, N, K, ik, BLOCK_SIZE_M=BLOCK_SIZE_M,
+                                  BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, DTYPE=tt_dtype,
+                                  ACC_DTYPE=tt_acc_dtype, BLOCKING_FACTOR_K=blocking_factor_k,
+                                  IS_FIRST_K_BLOCK=(ik == 0), IS_LAST_K_BLOCK=(ik == blocking_factor_k - 1),
+                                  CHUNK_SIZE=chunk_size, assume_in_bounds=True)
     return c
 
 
