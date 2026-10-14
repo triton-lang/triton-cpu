@@ -121,10 +121,6 @@ struct DotOpCandidate {
 
   // Has block sizes that require looping the nanokernel (experimental).
   bool isLoopedNanokernel;
-
-  // Indicates whether an unsqueezing shape cast can be fused into the
-  // accumulator write.
-  bool hasUnsqueezingShapeCast;
 };
 
 unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
@@ -151,28 +147,6 @@ unsigned checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
 
   LDBG("  Drop candidate. Unsupported type combination");
   return 0;
-}
-
-bool isUnsqueezingShapeCast(Operation *op) {
-  auto castOp = dyn_cast<vector::ShapeCastOp>(op);
-  if (!castOp)
-    return false;
-
-  VectorType srcType = castOp.getSourceVectorType();
-  VectorType dstType = castOp.getResultVectorType();
-
-  if (dstType.getRank() <= srcType.getRank())
-    return false;
-
-  ArrayRef<int64_t> srcShape = srcType.getShape();
-  ArrayRef<int64_t> dstShape = dstType.getShape();
-
-  unsigned added = dstType.getRank() - srcType.getRank();
-  for (unsigned i = 0; i < added; ++i)
-    if (dstShape[i] != 1)
-      return false;
-
-  return dstShape.take_back(srcShape.size()).equals(srcShape);
 }
 
 unsigned checkInputShapes(VectorType lhsTy, VectorType resTy,
@@ -316,19 +290,13 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
     accConstInit = accInitValue.getDefiningOp<arith::ConstantOp>();
   }
 
-  vector::TransferWriteOp accWrite;
   OpResult accRes = candidate.isAccumulationLoop
                         ? accLoop.getTiedLoopResult(accIterArg)
                         : op->getOpResult(0);
-
-  candidate.hasUnsqueezingShapeCast = false;
+  vector::TransferWriteOp accWrite;
   if (accRes.hasOneUse()) {
     Operation *user = *accRes.getUsers().begin();
     accWrite = dyn_cast<vector::TransferWriteOp>(user);
-    if (!accWrite && user->hasOneUse() && isUnsqueezingShapeCast(user)) {
-      candidate.hasUnsqueezingShapeCast = true;
-      accWrite = dyn_cast<vector::TransferWriteOp>(*user->getUsers().begin());
-    }
   }
 
   // Quirk in the patterns: they assume that the accumulator read and
@@ -437,24 +405,6 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   candidate.accWrite = accWrite;
 
   return true;
-}
-
-void fuseAccWriteShapeCast(DotOpCandidate &candidate,
-                           PatternRewriter &rewriter) {
-  if (!candidate.hasUnsqueezingShapeCast || !candidate.accWrite)
-    return;
-
-  auto shapeCast =
-      candidate.accWrite.getValueToStore().getDefiningOp<vector::ShapeCastOp>();
-
-  rewriter.setInsertionPoint(candidate.accWrite);
-  auto rank = shapeCast.getSourceVectorType().getRank();
-  candidate.accWrite = rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-      candidate.accWrite, shapeCast.getSource(), candidate.accWrite.getBase(),
-      candidate.accWrite.getIndices(),
-      ArrayRef<bool>(candidate.accWrite.getInBoundsValues()).take_back(rank));
-
-  rewriter.eraseOp(shapeCast);
 }
 
 void makeAccBuffer(DotOpCandidate &candidate, PatternRewriter &rewriter) {
@@ -1294,9 +1244,6 @@ void flattenTransferOps(DotOpCandidate &candidate, PatternRewriter &rewriter) {
 
 LogicalResult convertCandidate(DotOpCandidate &candidate,
                                PatternRewriter &rewriter) {
-  // Fuse shape cast into the accumulator write, if possible.
-  fuseAccWriteShapeCast(candidate, rewriter);
-
   // Introduce temporary buffer if needed.
   makeAccBuffer(candidate, rewriter);
 
