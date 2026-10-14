@@ -70,6 +70,7 @@ CPU_TEST_CORE_ALLOWLIST = frozenset([
     "test_generic_reduction",
     "test_histogram",
     "test_histogram_compare_mask",
+    "test_histogram_mask",
     "test_histogram_out_of_range",
     "test_histogram_silent_data_corruption",
     "test_if",
