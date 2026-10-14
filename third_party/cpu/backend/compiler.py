@@ -232,8 +232,11 @@ class CPUBackend(BaseBackend):
         if 'avx512f' in self.cpu_features:
             cpu.passes.ttcpuir.add_convert_dot_to_fma(pm)
         cpu.passes.ttcpuir.add_convert_dot_generic(pm)
+        if self.cpu_arch in ("aarch64", "arm64") and {"neon", "bf16"} <= self.cpu_features:
+            # Normalize eligible contracts to MMT and lower them to BFMMLA.
+            cpu.passes.ttcpuir.add_convert_vector_contract_to_arm_neon_bfmmla(pm)
         promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
-        # We don't have any lowering for mixed precision matmuls, so always use casts for now
+        # Always legalize mixed-precision matmuls left by specialized passes.
         convert_mixed_precision_matmul = True
         # We don't have math lib functions for FP8, FP16, BF16. Promote such operations to FP32.
         promote_lib_math_to_fp32 = True
@@ -282,6 +285,8 @@ class CPUBackend(BaseBackend):
         }
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
             cpu.passes.ttcpuir.add_math_to_vec_lib(pm, vec_lib, self.cpu_features)
+            # Scalable SLEEF calls introduce loops after the earlier SCF lowering.
+            passes.convert.add_scf_to_cf(pm)
 
         cpu.passes.ttcpuir.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
@@ -289,7 +294,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
         passes.convert.add_reconcile_unrealized_casts(pm)
         passes.convert.add_arith_to_llvmir(pm)
-        # passes.convert.add_cf_to_llvmir(pm)
+        passes.convert.add_cf_to_llvmir(pm)
         cpu.passes.ttcpuir.add_func_to_llvmir(pm)
         cpu.passes.ttcpuir.add_ub_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
