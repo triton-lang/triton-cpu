@@ -7,6 +7,7 @@ add_triton_library(TritonCPUToLLVM
     GetProgramIdOpToLLVM.cpp
     LowerMultiReduction.cpp
     MathToVecLib.cpp
+    MapElementwiseToLLVM.cpp
     MemoryOpToLLVM.cpp
     TypeConverter.cpp
     Utility.cpp
@@ -16,6 +17,8 @@ add_triton_library(TritonCPUToLLVM
 
     LINK_LIBS PUBLIC
     TritonCPUIR
+    TritonGPUToLLVM
+    MLIRControlFlowToLLVM
     MLIRMemRefDialect
     MLIRSCFDialect
     MLIRVectorToLLVMPass
