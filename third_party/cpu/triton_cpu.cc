@@ -201,6 +201,9 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
     pm.addNestedPass<mlir::triton::FuncOp>(
         mlir::triton::cpu::createLowerSVEPass());
   });
+  m.def("add_map_elementwise_to_llvmir", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createMapElementwiseToLLVMPass());
+  });
   m.def("add_func_op_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createFuncOpToLLVMPass());
   });
