@@ -35,6 +35,10 @@ static VRFInfo getVRFInfo(std::string cpuFeatures) {
   if (cpuFeatures.find("avx512") != std::string::npos)
     return {32, 512};
 
+  // VXE has 32 architectural vector registers, each 128 bits.
+  if (cpuFeatures.find("vxe") != std::string::npos)
+    return {32, 128};
+
   // Assume AVX2 if not AVX512.
   return {16, 256};
 }

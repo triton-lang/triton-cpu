@@ -18,6 +18,12 @@ add_triton_library(TritonToTritonCPU
     TritonToTritonCPUPassIncGen
     ScalarizeInterfaceIncGen
     MLIRDialectUtils
+    TritonGPUCGAAttrIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUOpsEnumsIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     TritonCPUIR

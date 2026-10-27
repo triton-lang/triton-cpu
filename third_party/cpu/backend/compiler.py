@@ -230,19 +230,27 @@ class CPUBackend(BaseBackend):
             amx_bf16 = 'amx-bf16' in self.cpu_features
             cpu.passes.ttcpuir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
         if 'avx512f' in self.cpu_features:
-            cpu.passes.ttcpuir.add_convert_dot_to_fma(pm)
+            # Width 0 keeps the existing full-row AVX-512 lowering.
+            cpu.passes.ttcpuir.add_convert_dot_to_fma(pm, 0)
+        elif 'vxe' in self.cpu_features:
+            # VXE vectors are 128 bits. Tile the dot so each FMA is one register.
+            cpu.passes.ttcpuir.add_convert_dot_to_fma(pm, 128)
         cpu.passes.ttcpuir.add_convert_dot_generic(pm)
         if self.cpu_arch in ("aarch64", "arm64") and {"neon", "bf16"} <= self.cpu_features:
             # Normalize eligible contracts to MMT and lower them to BFMMLA.
             cpu.passes.ttcpuir.add_convert_vector_contract_to_arm_neon_bfmmla(pm)
-        promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
+        # VXE has no vector BF16 arithmetic, so promote and decompose like x86
+        # without AVX512-BF16.
+        s390x = self.cpu_arch == "s390x"
+        promote_bf16_to_fp32 = s390x or (self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features)
         # Always legalize mixed-precision matmuls left by specialized passes.
         convert_mixed_precision_matmul = True
         # We don't have math lib functions for FP8, FP16, BF16. Promote such operations to FP32.
         promote_lib_math_to_fp32 = True
         cpu.passes.ttcpuir.add_convert_unsupported_ops(pm, promote_bf16_to_fp32, convert_mixed_precision_matmul,
                                                        promote_lib_math_to_fp32)
-        decompose_bf16_conv = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features and "avxneconvert" not in self.cpu_features
+        decompose_bf16_conv = s390x or (self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
+                                        and "avxneconvert" not in self.cpu_features)
         decompose_fp8_conv = True
         cpu.passes.ttcpuir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
         if os.getenv("TRITON_CPU_UNROLL_AND_REORDER_ELEMENTWISE_OPS", "0") == "1":
@@ -269,7 +277,22 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_ukernels_to_xsmm_llvmir(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
         cpu.passes.ttcpuir.add_expand_strided_metadata(pm)
-        cpu.passes.ttcpuir.add_vector_to_scf(pm, True, 1, False)
+        # Full unroll turns vLLM's large tiles into straight-line IR. On VXE
+        # that IR is split into 128-bit ops and takes minutes to compile.
+        # Leave the loops so LLVM can unroll only what the cost model likes.
+        full_unroll = self.cpu_arch != "s390x"
+        cpu.passes.ttcpuir.add_vector_to_scf(pm, full_unroll, 1, False)
+        if self.cpu_arch == "s390x":
+            # SystemZ has no masked loads/stores or gathers/scatters, so LLVM
+            # scalarizes them with a branch per lane. Do the wide ones in
+            # register-sized chunks, or BLOCK_SIZE=8192 kernels spill for
+            # minutes. Other wide vectors are left to SystemZ type
+            # legalization: splitting them here rebuilt each one with
+            # full-width shuffles, which made 8192-wide vLLM sampling kernels
+            # produce gigabytes of IR.
+            cpu.passes.ttcpuir.add_lower_wide_masked_memory_ops(pm, 128)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
         cpu.passes.ttcpuir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
@@ -280,7 +303,7 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_debug_ops_to_llvmir(pm)
 
         vec_lib_requirements = {
-            VecLib.libsleef: {"neon", "sve", "sve2", "sse", "avx"},
+            VecLib.libsleef: {"neon", "sve", "sve2", "sse", "avx", "vxe"},
             VecLib.libmvec: {"avx512f"},
         }
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
@@ -290,7 +313,10 @@ class CPUBackend(BaseBackend):
 
         cpu.passes.ttcpuir.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
-        cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math)
+        # X86 dialect patterns emit llvm.x86 intrinsics. Leave them on for the
+        # existing x86 and Arm paths; SystemZ cannot lower those intrinsics.
+        enable_x86_vector = self.cpu_arch != "s390x"
+        cpu.passes.ttcpuir.add_vector_to_llvmir(pm, options.enable_fast_math, enable_x86_vector)
         cpu.passes.ttcpuir.add_memref_to_llvmir(pm)
         passes.convert.add_reconcile_unrealized_casts(pm)
         passes.convert.add_arith_to_llvmir(pm)
@@ -300,7 +326,12 @@ class CPUBackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
-        if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
+        # Line info makes the already-large s390x assembly much bigger. Set
+        # TRITON_DISABLE_LINE_INFO=0 to force it back on.
+        disable_line_info = os.environ.get("TRITON_DISABLE_LINE_INFO")
+        if disable_line_info is None:
+            disable_line_info = "1" if self.cpu_arch == "s390x" else "0"
+        if disable_line_info == "0":
             passes.llvmir.add_di_scope(pm)
         pm.run(mod, "make_llir")
 
@@ -317,7 +348,14 @@ class CPUBackend(BaseBackend):
         #if options.extern_libs:
         #    paths = [path for (name, path) in options.extern_libs]
         #   llvm.link_extern_libs(llvm_mod, paths)
-        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+        if self.cpu_arch == "s390x":
+            # An empty target makes the vectorizer invent very wide vectors and
+            # disables libcalls. SystemZ then splits those vectors during
+            # codegen, which is the multi-minute prefill compile.
+            proc = self.cpu_name or "z15"
+            llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, proc, "", [], options.enable_fp_fusion)
+        else:
+            llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
         # Get some metadata
         metadata["shared"] = 0
         metadata["name"] = kernel_names[0]
@@ -355,7 +393,7 @@ class CPUBackend(BaseBackend):
     @functools.lru_cache()
     def hash(self):
         # TODO: Get more detailed CPU info like raw brand name with supported ISAs.
-        # Right now it would only return a simple string like "x86_64" or "aarch64".
+        # Right now it would only return a simple string like "x86_64", "aarch64", or "s390x".
         import platform
 
         return f"{platform.machine()}"
