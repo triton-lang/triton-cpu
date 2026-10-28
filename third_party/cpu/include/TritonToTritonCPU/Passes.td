@@ -51,6 +51,7 @@ def ConvertElemManipOps : Pass<"triton-cpu-convert-elem-manip-ops", "mlir::Modul
     let dependentDialects = ["mlir::arith::ArithDialect",
                              "mlir::memref::MemRefDialect",
                              "mlir::vector::VectorDialect",
+                             "mlir::ub::UBDialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
