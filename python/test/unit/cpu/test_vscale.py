@@ -66,6 +66,32 @@ def test_sve_transpose_correctness(reverse, device):
     assert intrinsic in meta.asm["llir"]
 
 
+@triton.jit
+def outer_reduction_kernel(x_ptr, y_ptr, M: tl.constexpr):
+    offsets = tl.arange(0, 2 * M)
+    x = tl.load(x_ptr + offsets)
+    x = tl.reshape(x, (M, 2))
+    result = tl.sum(x, axis=0)
+    tl.store(y_ptr + tl.arange(0, 2), result)
+
+
+def test_sve_outer_reduction_correctness(device):
+    """An outer reduction uses scalable SVE chunks and remains correct."""
+    if not has_sve():
+        pytest.skip("This test requires an SVE CPU")
+
+    M = 64
+    x = torch.arange(2 * M, dtype=torch.float32, device=device)
+    y = torch.empty(2, dtype=torch.float32, device=device)
+    meta = outer_reduction_kernel[(1, )](x, y, M=M)
+    expected = x.reshape(M, 2).sum(dim=0)
+
+    torch.testing.assert_close(y, expected)
+    assert "llvm.vscale" in meta.asm["llir"]
+    assert "llvm.vector.deinterleave2" in meta.asm["llir"]
+    assert "llvm.vector.reduce.fadd" in meta.asm["llir"]
+
+
 @pytest.mark.parametrize("vec_lib", ["libsleef", None])
 def test_vscale_range_attribute(vec_lib, device):
     """Verify that vscale_range is set on kernel functions when SVE is available.

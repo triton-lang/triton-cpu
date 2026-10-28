@@ -178,8 +178,7 @@ class CPUBackend(BaseBackend):
         pm.run(mod, "make_ttir")
         return mod
 
-    @staticmethod
-    def make_ttcir(mod, metadata, opt):
+    def make_ttcir(self, mod, metadata, opt):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -190,7 +189,8 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_convert_elem_manip_ops(pm)
         cpu.passes.ttcpuir.add_convert_dot_op(pm)
         cpu.passes.ttcpuir.add_convert_histogram_op(pm)
-        cpu.passes.ttcpuir.add_convert_reduction_op(pm, True, False)
+        use_sve_reductions = bool({"sve", "sve2"} & self.cpu_features)
+        cpu.passes.ttcpuir.add_convert_reduction_op(pm, True, use_sve_reductions)
         cpu.passes.ttcpuir.add_convert_scan_op(pm)
         cpu.passes.ttcpuir.add_convert_cf_ops(pm)
         cpu.passes.ttcpuir.add_convert_atomic_ops(pm)
