@@ -25,9 +25,12 @@ import triton.language as tl
 
 GPU_BLOCK_SIZE = 1024
 CPU_BLOCK_SIZE = 4096
+# On CPU, untiled kernel must use a smaller vector-friendly block size (e.g. 64)
+# to avoid massive LLVM IR expansion during code generation.
+CPU_UNTILED_BLOCK_SIZE = 64
 # Single Thread Threshold
 CPU_ST_THRESHOLD = 65536
-USE_GPU = True
+USE_GPU = False
 
 
 @triton.jit
@@ -130,7 +133,8 @@ def add(x: torch.Tensor, y: torch.Tensor, output: torch.Tensor, device):
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
     #  - Don't forget to pass meta-parameters as keywords arguments.
-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=CPU_BLOCK_SIZE if x.device.type == 'cpu' else GPU_BLOCK_SIZE,
+    add_kernel[grid](x, y, output, n_elements,
+                     BLOCK_SIZE=CPU_UNTILED_BLOCK_SIZE if x.device.type == 'cpu' else GPU_BLOCK_SIZE,
                      num_warps=1)
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
@@ -281,4 +285,4 @@ def benchmark(size, provider):
 # %%
 # We can now run the decorated function above. Pass `print_data=True` to see the performance number, `show_plots=True` to plot them, and/or
 # `save_path='/path/to/results/' to save them to disk along with raw CSV data:
-benchmark.run(print_data=True, show_plots=True)
+benchmark.run(print_data=True, show_plots=False)
