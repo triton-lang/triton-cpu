@@ -101,6 +101,13 @@ elseif(TRITON_OFFLINE_BUILD)
     "TRITON_OFFLINE_BUILD is enabled.")
 endif()
 
+# s390x builds use SLEEF's VXE vector math. Fail configuration if the
+# compiler cannot build it, instead of producing a libsleef with no symbols.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(s390x|S390X)$")
+  set(SLEEF_ENFORCE_VXE ON CACHE BOOL "Require SLEEF VXE on s390x" FORCE)
+  set(SLEEF_ENFORCE_VXE2 ON CACHE BOOL "Require SLEEF VXE2 (z15) on s390x" FORCE)
+endif()
+
 set(SLEEF_BUILD_SHARED_LIBS ON CACHE BOOL "Build sleef shared lib" FORCE)
 set(SLEEF_BUILD_DFT OFF CACHE BOOL "Don't build sleef DFT lib" FORCE)
 set(SLEEF_BUILD_GNUABI_LIBS OFF CACHE BOOL "Don't build sleef gnuabi libs" FORCE)
@@ -114,3 +121,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(sleef)
 # Override sleef's output directory with our own
 set_target_properties(sleef PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+
+# SLEEF's s390x dispatcher searches ${CMAKE_BINARY_DIR}/include for sleef.h.
+# That path is the SLEEF build tree only when SLEEF is the top-level project.
+# FetchContent generates the header in ${sleef_BINARY_DIR}/include.
+if(TARGET disps390x_128_obj)
+  target_include_directories(disps390x_128_obj PRIVATE "${sleef_BINARY_DIR}/include")
+endif()

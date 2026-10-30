@@ -127,10 +127,20 @@ def ConvertDotToAMX : Pass<"triton-cpu-convert-dot-to-amx", "mlir::ModuleOp"> {
 
 def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
     let summary = "Decompose dot product op to a series of FMA operations.";
-    let description = [{ }];
+    let description = [{
+        Tile to `native-vector-bit-width` when that option is non-zero.
+        Zero keeps the full-row lowering used for AVX-512.
+    }];
+
+    let options = [
+        Option<"nativeVectorBitWidth", "native-vector-bit-width",
+               "unsigned", /*default*/"0",
+               "Tile FMAs to this vector width in bits. Zero keeps full-row lowering.">,
+    ];
 
     let constructor = "mlir::triton::cpu::createConvertDotToFMA()";
     let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::scf::SCFDialect",
                              "mlir::vector::VectorDialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::cpu::TritonCPUDialect"];
