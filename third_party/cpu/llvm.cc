@@ -8,6 +8,7 @@
 #include "llvm/IR/PassTimingInfo.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
@@ -29,12 +30,15 @@
 #include <nanobind/stl/set.h>
 #include <nanobind/stl/string.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #if defined(__linux__) && defined(__aarch64__)
 #include <asm/hwcap.h>
@@ -55,11 +59,34 @@ void initializeHostTarget() {
     if (llvm::InitializeNativeTargetAsmPrinter())
       throw std::runtime_error("LLVM native target assembly printer is not "
                                "available");
+    // SystemZ schedules legacy codegen passes (EarlyIfConverter, IfConverter,
+    // MachineCombiner) that InitializeNativeTarget does not register. With
+    // assertions enabled, the legacy pass manager aborts if they are missing.
+    llvm::PassRegistry &registry = *llvm::PassRegistry::getPassRegistry();
+    llvm::initializeCore(registry);
+    llvm::initializeCodeGen(registry);
+    llvm::initializeLoopStrengthReducePass(registry);
+    llvm::initializeUnreachableBlockElimLegacyPassPass(registry);
+    llvm::initializeConstantHoistingLegacyPassPass(registry);
+    llvm::initializeScalarOpts(registry);
+    llvm::initializeIPO(registry);
+    llvm::initializeVectorization(registry);
+    llvm::initializeScalarizeMaskedMemIntrinLegacyPassPass(registry);
+    llvm::initializeTransformUtils(registry);
   });
 
-  // LLVM's global thread pool is not fork-safe. Triton kernels are small, so
-  // disabling LLVM's internal parallelism also avoids unnecessary overhead.
-  llvm::parallel::strategy = llvm::hardware_concurrency(1);
+  // LLVM's global thread pool is not fork-safe, so other targets stay
+  // single-threaded. s390x vLLM kernels are large enough that a small pool
+  // pays off, and it starts at compile time inside the already-spawned worker.
+  unsigned threads = 1;
+  if (llvm::Triple(llvm::sys::getProcessTriple()).isSystemZ())
+    threads = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+  if (const char *override = std::getenv("TRITON_CPU_LLVM_THREADS")) {
+    unsigned parsed = std::atoi(override);
+    if (parsed > 0)
+      threads = parsed;
+  }
+  llvm::parallel::strategy = llvm::hardware_concurrency(threads);
 }
 
 void setLLVMBooleanOption(const std::string &name, bool value) {
@@ -115,6 +142,14 @@ std::set<std::string> getCPUFeatures() {
     // Only query the OS when LLVM has not already reported BF16.
     if (!result.count("bf16") && arm::osSupportsBF16())
       result.insert("bf16");
+  } else if (result.empty()) {
+    // VXE is mandatory on the s390x hosts this backend targets, and LLVM
+    // feature detection can return an empty set there as well.
+    std::string processTriple = llvm::sys::getProcessTriple();
+    std::size_t separator = processTriple.find('-');
+    if (separator != std::string::npos &&
+        processTriple.substr(0, separator) == "s390x")
+      result.insert("vxe");
   }
 
   return result;
@@ -129,7 +164,9 @@ static std::string getCPUFeaturesString() {
     if (!result.empty())
       result += ",";
     result += "+";
-    result += feature;
+    // "vxe" is the backend's name for the s390x vector facility; LLVM's
+    // SystemZ target calls it "vector" and warns on anything else.
+    result += feature == "vxe" ? "vector" : feature;
   }
   return result;
 }
@@ -149,8 +186,11 @@ createHostTargetMachine(llvm::Module &module, const std::string &cpuFeatures,
   if (enableFastMath)
     options.NoTrappingFPMath = true;
   options.TrapUnreachable = true;
-  options.MCOptions.AsmVerbose = true;
-  options.MCOptions.PreserveAsmComments = true;
+  // Verbose assembly comments dominate compile time on the large kernels
+  // vLLM emits. The integrated assembler does not need them.
+  bool verboseAsm = !llvm::Triple(module.getTargetTriple()).isSystemZ();
+  options.MCOptions.AsmVerbose = verboseAsm;
+  options.MCOptions.PreserveAsmComments = verboseAsm;
 
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
   return std::unique_ptr<llvm::TargetMachine>{target->createTargetMachine(

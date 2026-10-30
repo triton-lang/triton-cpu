@@ -205,6 +205,65 @@ struct ConvertBf16TransferWriteOp
   }
 };
 
+struct ConvertBf16GatherOp : public OpRewritePattern<vector::GatherOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::GatherOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isBf16(op.getType()))
+      return failure();
+
+    Location loc = op.getLoc();
+    Value newBase = convertMemRefToI16(op.getBase(), rewriter);
+    Value newPassThru = arith::BitcastOp::create(
+        rewriter, loc, toInt16(op.getPassThru().getType()), op.getPassThru());
+    Value intVal = vector::GatherOp::create(
+        rewriter, loc, toInt16(op.getType()), newBase, op.getOffsets(),
+        op.getIndices(), op.getMask(), newPassThru, op.getAlignmentAttr());
+    Value res = arith::BitcastOp::create(rewriter, loc, op.getType(), intVal);
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
+struct ConvertBf16ScatterOp : public OpRewritePattern<vector::ScatterOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ScatterOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isBf16(op.getValueToStore().getType()))
+      return failure();
+
+    Location loc = op.getLoc();
+    Value newBase = convertMemRefToI16(op.getBase(), rewriter);
+    Value intVal = arith::BitcastOp::create(
+        rewriter, loc, toInt16(op.getValueToStore().getType()),
+        op.getValueToStore());
+    rewriter.replaceOpWithNewOp<vector::ScatterOp>(
+        op, TypeRange{}, newBase, op.getOffsets(), op.getIndices(),
+        op.getMask(), intVal, op.getAlignmentAttr());
+    return success();
+  }
+};
+
+struct ConvertBf16CmpF : public OpRewritePattern<arith::CmpFOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::CmpFOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isBf16(op.getLhs().getType()))
+      return failure();
+
+    Location loc = op.getLoc();
+    Type fp32Ty = toFp32(op.getLhs().getType());
+    Value lhs = arith::ExtFOp::create(rewriter, loc, fp32Ty, op.getLhs());
+    Value rhs = arith::ExtFOp::create(rewriter, loc, fp32Ty, op.getRhs());
+    rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, op.getPredicateAttr(), lhs,
+                                               rhs, op.getFastmathAttr());
+    return success();
+  }
+};
+
 struct ConvertBf16LoadOp : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -399,6 +458,9 @@ struct ConvertUnsupportedOps
       patterns.add<ConvertBf16MaskedStoreOp>(context);
       patterns.add<ConvertBf16TransferReadOp>(context);
       patterns.add<ConvertBf16TransferWriteOp>(context);
+      patterns.add<ConvertBf16GatherOp>(context);
+      patterns.add<ConvertBf16ScatterOp>(context);
+      patterns.add<ConvertBf16CmpF>(context);
       patterns.add<ConvertBf16Abs>(context);
       patterns.add<ConvertBf16LoadOp>(context);
       patterns.add<ConvertBf16StoreOp>(context);

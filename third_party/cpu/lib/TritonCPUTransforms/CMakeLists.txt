@@ -10,11 +10,18 @@ add_triton_library(TritonCPUTransforms
     ConvertUnsupportedOps.cpp
     ConvertVectorContractToArmNeonBFMMLA.cpp
     DecomposeFpConversions.cpp
+    LowerWideMaskedMemoryOps.cpp
     OptimizeMasks.cpp
     UnrollAndReorderElementwiseOps.cpp
 
     DEPENDS
     TritonCPUTransformsPassIncGen
+    TritonGPUCGAAttrIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUOpsEnumsIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     TritonCPUIR

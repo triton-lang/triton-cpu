@@ -157,9 +157,13 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
         convertInt8, convertFp16, convertBf16));
   });
-  m.def("add_convert_dot_to_fma", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::cpu::createConvertDotToFMA());
-  });
+  m.def(
+      "add_convert_dot_to_fma",
+      [](mlir::PassManager &pm, unsigned nativeVectorBitWidth) {
+        pm.addPass(
+            mlir::triton::cpu::createConvertDotToFMA(nativeVectorBitWidth));
+      },
+      py::arg("pm"), py::arg("native_vector_bit_width") = 0);
   m.def("add_convert_dot_generic", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotGeneric());
   });
@@ -190,6 +194,13 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
           pm.addPass(mlir::triton::cpu::createDecomposeFpConversions(
               decomposeBf16Conversions, decomposeFp8Conversions));
         });
+  m.def(
+      "add_lower_wide_masked_memory_ops",
+      [](mlir::PassManager &pm, unsigned nativeVectorBitWidth) {
+        pm.addPass(mlir::triton::cpu::createLowerWideMaskedMemoryOps(
+            nativeVectorBitWidth));
+      },
+      py::arg("pm"), py::arg("native_vector_bit_width"));
   m.def("add_vector_to_scf", [](mlir::PassManager &pm, bool full_unroll,
                                 unsigned target_rank, bool lower_tensors) {
     mlir::VectorTransferToSCFOptions opts;
@@ -230,36 +241,42 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
   m.def("add_expand_strided_metadata", [](mlir::PassManager &pm) {
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
   });
-  m.def("add_vector_to_llvmir",
-        [](mlir::PassManager &pm, bool reassoc_fp_reduction) {
-          mlir::ConvertVectorToLLVMPassOptions opts;
-          opts.reassociateFPReductions = reassoc_fp_reduction;
-          // opts.force32BitVectorIndices = true;
-          // Preserve emitted Neon intrinsics; keep upstream armBF16 lowering
-          // off.
-          opts.armNeon = true;
-          // opts.armSVE = false;
-          opts.x86 = true;
-          // opts.vectorTransformsOptions();
-          // TODO: Check whether we need these parameters.
-          // Somehow it helps arm.
-          //
-          // VectorContractLowering::Dot is default and fine, but it takes too
-          // long to compile on arm. I guess it generated too many ir ops.
-          // (!WA!)
-          //
-          // VectorContractLowering::Matmul generates error: "Do not know
-          // how to split the result of this operator!" with
-          // "llvm.matrix.multiply". On those ops no progress for some time, so
-          // it can be replaced with `vector.matmul`.
-          //
-          // VectorContractLowering::OuterProduct somehow
-          // works, but it might not be the most performant way. It's most
-          // widely used path for this lowering in CPU case.
-          opts.vectorContractLowering =
-              mlir::vector::VectorContractLowering::OuterProduct;
-          pm.addPass(mlir::createConvertVectorToLLVMPass(opts));
-        });
+  m.def(
+      "add_vector_to_llvmir",
+      [](mlir::PassManager &pm, bool reassoc_fp_reduction,
+         bool enable_x86_vector) {
+        mlir::ConvertVectorToLLVMPassOptions opts;
+        opts.reassociateFPReductions = reassoc_fp_reduction;
+        // opts.force32BitVectorIndices = true;
+        // Preserve emitted Neon intrinsics; keep upstream armBF16 lowering
+        // off.
+        opts.armNeon = true;
+        // opts.armSVE = false;
+        // X86 patterns lower some vector ops to llvm.x86 intrinsics. That is
+        // useful on x86 and the existing Arm path, and illegal on SystemZ.
+        opts.x86 = enable_x86_vector;
+        // opts.vectorTransformsOptions();
+        // TODO: Check whether we need these parameters.
+        // Somehow it helps arm.
+        //
+        // VectorContractLowering::Dot is default and fine, but it takes too
+        // long to compile on arm. I guess it generated too many ir ops.
+        // (!WA!)
+        //
+        // VectorContractLowering::Matmul generates error: "Do not know
+        // how to split the result of this operator!" with
+        // "llvm.matrix.multiply". On those ops no progress for some time, so
+        // it can be replaced with `vector.matmul`.
+        //
+        // VectorContractLowering::OuterProduct somehow
+        // works, but it might not be the most performant way. It's most
+        // widely used path for this lowering in CPU case.
+        opts.vectorContractLowering =
+            mlir::vector::VectorContractLowering::OuterProduct;
+        pm.addPass(mlir::createConvertVectorToLLVMPass(opts));
+      },
+      py::arg("pm"), py::arg("reassoc_fp_reduction"),
+      py::arg("enable_x86_vector") = true);
   m.def("add_lower_affine", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createLowerAffinePass());
   });

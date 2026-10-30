@@ -6,6 +6,12 @@ add_triton_library(TritonCPUIR
   DEPENDS
   TritonCPUTableGen
   TritonCPUAttrDefsIncGen
+  TritonGPUCGAAttrIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUOpsEnumsIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

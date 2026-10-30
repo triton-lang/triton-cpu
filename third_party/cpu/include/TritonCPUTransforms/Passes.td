@@ -127,10 +127,20 @@ def ConvertDotToAMX : Pass<"triton-cpu-convert-dot-to-amx", "mlir::ModuleOp"> {
 
 def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
     let summary = "Decompose dot product op to a series of FMA operations.";
-    let description = [{ }];
+    let description = [{
+        Tile to `native-vector-bit-width` when that option is non-zero.
+        Zero keeps the full-row lowering used for AVX-512.
+    }];
+
+    let options = [
+        Option<"nativeVectorBitWidth", "native-vector-bit-width",
+               "unsigned", /*default*/"0",
+               "Tile FMAs to this vector width in bits. Zero keeps full-row lowering.">,
+    ];
 
     let constructor = "mlir::triton::cpu::createConvertDotToFMA()";
     let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::scf::SCFDialect",
                              "mlir::vector::VectorDialect",
                              "mlir::triton::TritonDialect",
                              "mlir::triton::cpu::TritonCPUDialect"];
@@ -229,6 +239,46 @@ def UnrollAndReorderElementwiseOps : Pass<"triton-cpu-unroll-and-reorder-element
 
     let dependentDialects = ["mlir::vector::VectorDialect",
                              "mlir::scf::SCFDialect"];
+}
+
+def LowerWideMaskedMemoryOps : Pass<"triton-cpu-lower-wide-masked-memory-ops", "mlir::ModuleOp"> {
+    let summary = "Lower wide masked loads/stores, gathers and scatters to chunked loops.";
+    let description = [{
+        Targets with narrow vector registers (e.g. 128-bit VXE on SystemZ)
+        have no masked vector memory instructions or gather/scatter. LLVM
+        scalarizes a wide masked load/store into per-lane branches and expands
+        a wide gather/scatter into one conditional access per lane —
+        catastrophic for compile time when BLOCK_SIZE is large.
+
+        This pass rewrites each vector.maskedload / vector.maskedstore wider
+        than one native register into:
+          (a) a fast path that tests `vector.reduction <and>` over the mask
+              and emits a plain unmasked load or store (the common case for
+              full tiles), and
+          (b) a slow path that loops over register-width chunks doing one
+              small masked op per chunk. LLVM still scalarizes the small op
+              but only into a handful of branches inside a loop, not
+              thousands in straight-line code.
+
+        Vector gathers/scatters have no useful all-active fast path, so they
+        always take the chunked form. Their index vector is spilled to a stack
+        buffer and reloaded one register per iteration.
+
+        Ops that already fit in one native register are left alone.
+    }];
+
+    let options = [
+        Option<"nativeVectorBitWidth", "native-vector-bit-width",
+               "unsigned", /*default*/"128",
+               "Width of a native vector register in bits.">,
+    ];
+
+    let constructor = "mlir::triton::cpu::createLowerWideMaskedMemoryOps()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::memref::MemRefDialect",
+                             "mlir::scf::SCFDialect",
+                             "mlir::vector::VectorDialect"];
 }
 
 def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {

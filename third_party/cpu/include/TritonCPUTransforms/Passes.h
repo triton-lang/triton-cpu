@@ -42,6 +42,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToAMX();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotToAMX(bool convertInt8, bool convertFp16, bool convertBf16);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertDotToFMA(unsigned nativeVectorBitWidth);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertVectorContractToArmNeonBFMMLA();
@@ -50,6 +52,11 @@ createConvertDotToNanokernel(std::string cpuFeatures = "");
 
 std::unique_ptr<OperationPass<ModuleOp>>
 createUnrollAndReorderElementwiseOps(std::string cpuFeatures = "");
+
+// Lower wide masked loads/stores, gathers and scatters to register-sized
+// chunk loops for narrow-vector targets (e.g. 128-bit VXE on SystemZ).
+std::unique_ptr<OperationPass<ModuleOp>>
+createLowerWideMaskedMemoryOps(unsigned nativeVectorBitWidth = 128);
 
 std::unique_ptr<OperationPass<ModuleOp>> createCanonicalize();
 

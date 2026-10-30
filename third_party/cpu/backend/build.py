@@ -3,7 +3,10 @@ import importlib.resources
 import importlib.util
 import os
 import platform
+import re
+import shutil
 import subprocess
+import sysconfig
 import tempfile
 
 import triton
@@ -101,14 +104,59 @@ def _build_cpu_shared_object(name, src, srcdir, libraries, ccflags, source_kind)
         if system == "Linux" and machine in ("aarch64", "arm64"):
             # Arm assembly may need an explicit target to enable host features.
             cpu_flags.append("-mcpu=native")
+        elif system == "Linux" and machine == "s390x":
+            # gcc binutils does not recognize z15 opcodes LLVM emits
+            # (veval, lxah, lxag, lxaf). clang's integrated assembler does.
+            cpu_flags += ["-fintegrated-as", "-march=native"]
+            return _link_with_compiler(_s390x_clang(), name, src, srcdir, library_dirs, include_dirs, libraries,
+                                       cpu_flags + ccflags)
     else:
         raise ValueError(f"Unexpected CPU source kind: {source_kind}")
 
     return _upstream_build(name, src, srcdir, library_dirs, include_dirs, libraries, cpu_flags + ccflags)
 
 
+def _s390x_clang():
+    candidates = []
+    if override := os.environ.get("TRITON_S390X_CLANG"):
+        candidates.append(override)
+    candidates.append("/opt/triton-llvm/bin/clang")
+    if found := shutil.which("clang"):
+        candidates.append(found)
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise RuntimeError("Assembling s390x kernels requires clang's integrated assembler. "
+                       "gcc binutils does not recognize z15 opcodes such as veval, lxah, lxag, and lxaf.")
+
+
+def _library_flag(lib):
+    if re.search(r"\.so(\.\d+)*$", lib) or lib.endswith(".a"):
+        return f"-l:{lib}"
+    return f"-l{lib}"
+
+
+def _link_with_compiler(compiler, name, src, srcdir, library_dirs, include_dirs, libraries, ccflags):
+    suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    so = os.path.join(srcdir, f"{name}{suffix}")
+    scheme = sysconfig.get_default_scheme()
+    if scheme == "posix_local":
+        scheme = "posix_prefix"
+    py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
+    include_dirs = list(include_dirs) + [srcdir, py_include_dir]
+    cmd = [compiler, src, "-O3", "-shared", "-fPIC", "-o", so]
+    cmd += [_library_flag(lib) for lib in libraries]
+    cmd += [f"-L{directory}" for directory in library_dirs]
+    cmd += [f"-I{directory}" for directory in include_dirs if directory is not None]
+    cmd.extend(ccflags)
+    subprocess.check_call(cmd, stdout=subprocess.DEVNULL)
+    return so
+
+
 def compile_launcher_from_src(src, name):
-    key = hashlib.md5(src.encode("utf-8")).hexdigest()
+    # UBI OpenSSL on s390x rejects MD5 unless it is marked non-security.
+    md5_kwargs = {"usedforsecurity": False} if platform.machine() == "s390x" else {}
+    key = hashlib.md5(src.encode("utf-8"), **md5_kwargs).hexdigest()
     cache = get_cache_manager(key)
     cache_path = cache.get_file(f"{name}.so")
     if cache_path is None:
