@@ -73,6 +73,11 @@ def check_env_flag(name: str, default: str = "") -> bool:
     return os.getenv(name, default).upper() in ["ON", "1", "YES", "TRUE", "Y"]
 
 
+def cuda_redist_supported() -> bool:
+    """NVIDIA publishes the CUDA redistributables for x86_64 and Arm only."""
+    return platform.machine() != "s390x"
+
+
 def find_therock_rocm_include_dir() -> Optional[str]:
     """Find the ROCm include directory from a TheRock Python installation.
 
@@ -526,6 +531,9 @@ def download_and_copy(name, src_func, dst_path, override_path, version, url_func
     cache_path = helper_args.cache_path
     if override_path is not None:
         return
+    # s390x has no CUDA redistributable. Do not request linux-s390x archives.
+    if not cuda_redist_supported():
+        return
     base_dir = get_base_dir()
     system = platform.system()
     arch = platform.machine()
@@ -654,6 +662,12 @@ def get_nvidia_toolchain_packages():
 
 
 def download_and_copy_dependencies(helper_args: BuildHelperArgs):
+    if not helper_args.offline_build and not cuda_redist_supported():
+        print(
+            "Skipping NVIDIA CUDA redistributable download: "
+            f"CUDA libraries are not published for {platform.machine()}.",
+            file=sys.stderr,
+        )
     for package in get_nvidia_toolchain_packages():
         download_and_copy(
             name=package.name,

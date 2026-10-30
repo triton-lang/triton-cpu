@@ -725,8 +725,12 @@ void init_triton_llvm(py::module_ &m) {
           // VectorCombinePass::name() returns the C++ class name, not the
           // registry name "vector-combine".
           const StringRef kVectorCombinePassName = "VectorCombinePass";
+          // The callback's second parameter is llvm::Any in older LLVM
+          // releases and llvm::IRUnitRef in newer ones, and the Dockerfile
+          // builds whichever the cached LLVM layer happens to be. It is
+          // unused, so stay generic and compile against either.
           passInstrCb.registerShouldRunOptionalPassCallback(
-              [kVectorCombinePassName](StringRef passName, Any) {
+              [kVectorCombinePassName](StringRef passName, auto &&) {
                 return passName != kVectorCombinePassName;
               });
           enablePassInstrumentation = true;
