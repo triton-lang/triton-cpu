@@ -76,21 +76,29 @@ bool checkElemTypes(Type lhsElemTy, Type rhsElemTy, Type accElemTy,
 }
 
 // Check input shapes. Currently, support only 2D cases and ignore small
-// inputs.
-bool checkInputShapes(VectorType lhsTy, VectorType resTy) {
+// inputs. A non-zero native vector width additionally requires the N
+// dimension to be a whole number of vector registers.
+bool checkInputShapes(VectorType lhsTy, VectorType resTy,
+                      unsigned nativeVectorBitWidth) {
   if (lhsTy.getRank() != 2)
     return false;
 
-  if (resTy.getDimSize(1) < 8)
-    return false;
+  int64_t cols = resTy.getDimSize(1);
+  if (nativeVectorBitWidth == 0)
+    return cols >= 8;
 
-  return true;
+  unsigned elemBits = resTy.getElementType().getIntOrFloatBitWidth();
+  if (elemBits == 0 || nativeVectorBitWidth % elemBits != 0)
+    return false;
+  int64_t nativeElems = nativeVectorBitWidth / elemBits;
+  return nativeElems > 0 && cols >= nativeElems && cols % nativeElems == 0;
 }
 
 // Check if specified ContractionOp can be lowered to FMA operations.
 // If conversion is possible, then true is returned and candidate
 // structure is filled with detailed transformation info.
-bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate) {
+bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate,
+                    unsigned nativeVectorBitWidth) {
   MLIRContext *ctx = op.getContext();
   VectorType lhsTy = op.getA().getType();
   VectorType rhsTy = op.getB().getType();
@@ -108,7 +116,7 @@ bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate) {
     return false;
 
   // Check input shapes.
-  if (!checkInputShapes(lhsTy, resTy))
+  if (!checkInputShapes(lhsTy, resTy, nativeVectorBitWidth))
     return false;
 
   candidate.op = op;
@@ -224,8 +232,151 @@ void prefetch(Location loc, const MemBuffer &buf, int64_t m, int64_t n,
                              true);
 }
 
+Value asIndex(OpBuilder &b, Location loc, Value value) {
+  if (value.getType().isIndex())
+    return value;
+  return arith::IndexCastOp::create(b, loc, b.getIndexType(), value);
+}
+
+Value addOffset(OpBuilder &b, Location loc, Value index, Value delta) {
+  return arith::AddIOp::create(b, loc, b.getIndexType(), asIndex(b, loc, index),
+                               asIndex(b, loc, delta));
+}
+
+Value addConstOffset(OpBuilder &b, Location loc, Value index, int64_t delta) {
+  if (auto cst =
+          dyn_cast_or_null<arith::ConstantIndexOp>(index.getDefiningOp()))
+    return arith::ConstantIndexOp::create(b, loc, cst.value() + delta);
+  if (auto cst = dyn_cast_or_null<arith::ConstantOp>(index.getDefiningOp())) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return arith::ConstantIndexOp::create(b, loc, intAttr.getInt() + delta);
+  }
+  Value idx = asIndex(b, loc, index);
+  if (delta == 0)
+    return idx;
+  Value off = arith::ConstantIndexOp::create(b, loc, delta);
+  return arith::AddIOp::create(b, loc, b.getIndexType(), idx, off);
+}
+
+// LHS scalar at logical (row, col). `col` is the reduction index and may be
+// the induction variable of the K loop. Transpose swaps which physical
+// dimension receives the row, matching shiftIndices().
+Value loadLhsScalar(OpBuilder &b, Location loc, const MemBuffer &buf,
+                    int64_t row, Value col) {
+  SmallVector<Value> indices(buf.indices.begin(), buf.indices.end() - 2);
+  Value rowBase = *(buf.indices.end() - 2);
+  Value colBase = *(buf.indices.end() - 1);
+  if (buf.transposed) {
+    indices.push_back(addOffset(b, loc, rowBase, col));
+    indices.push_back(addConstOffset(b, loc, colBase, row));
+  } else {
+    indices.push_back(addConstOffset(b, loc, rowBase, row));
+    indices.push_back(addOffset(b, loc, colBase, col));
+  }
+  return memref::LoadOp::create(b, loc, buf.memRef, indices);
+}
+
+// One native-width slice of RHS row `row`, starting at column `col`.
+// loadRow() shifts the reduction dimension and leaves the contiguous
+// dimension at its base; this applies the same convention.
+Value loadRhsTile(OpBuilder &b, Location loc, VectorType tileTy,
+                  const MemBuffer &buf, Value row, int64_t col) {
+  SmallVector<Value> indices(buf.indices);
+  indices[indices.size() - 2] =
+      addOffset(b, loc, indices[indices.size() - 2], row);
+  indices[indices.size() - 1] =
+      addConstOffset(b, loc, indices[indices.size() - 1], col);
+  return vector::LoadOp::create(b, loc, tileTy, buf.memRef, indices);
+}
+
+// Lower a dot to 128-bit (or other native-width) FMAs. The K loop stays in
+// scf.for so a large tile does not unroll into hundreds of thousands of ops.
+// Each accumulator panel is one vector register wide and a few rows tall,
+// which fits in the 32 z/Architecture vector registers.
+LogicalResult lowerDotToNativeVectorFMA(FmaDotOpCandidate &candidate,
+                                        const MemBuffer &lhsBuf,
+                                        const MemBuffer &rhsBuf,
+                                        PatternRewriter &rewriter,
+                                        unsigned nativeVectorBitWidth) {
+  cpu::DotOp op = candidate.op;
+  Location loc = op.getLoc();
+  if (lhsBuf.indices.size() < 2 || rhsBuf.indices.size() < 2)
+    return failure();
+
+  unsigned elemBits = candidate.accElemTy.getIntOrFloatBitWidth();
+  if (elemBits == 0 || nativeVectorBitWidth % elemBits != 0)
+    return failure();
+  int64_t nativeElems = nativeVectorBitWidth / elemBits;
+  int64_t rows = candidate.accRows;
+  int64_t cols = candidate.accVecSize;
+  int64_t kDim = cast<VectorType>(op.getA().getType()).getDimSize(1);
+  if (nativeElems <= 0 || cols % nativeElems != 0)
+    return failure();
+
+  // z15 has 32 vector registers. Eight accumulator rows plus the RHS tile
+  // and the broadcast LHS stay well inside that file.
+  constexpr int64_t kPanelRows = 8;
+  VectorType nativeTy = VectorType::get({nativeElems}, candidate.accElemTy);
+  VectorType accTy = cast<VectorType>(op.getC().getType());
+  Type origElemTy = accTy.getElementType();
+  Value accMatrix = maybeCast(loc, op.getC(), candidate.accElemTy, rewriter);
+
+  Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  Value cK = arith::ConstantIndexOp::create(rewriter, loc, kDim);
+
+  for (int64_t m0 = 0; m0 < rows; m0 += kPanelRows) {
+    int64_t mr = std::min(kPanelRows, rows - m0);
+    for (int64_t n0 = 0; n0 < cols; n0 += nativeElems) {
+      SmallVector<Value> savedRows;
+      SmallVector<Value> initTiles;
+      savedRows.reserve(mr);
+      initTiles.reserve(mr);
+      SmallVector<int64_t, 1> offset{n0};
+      SmallVector<int64_t, 1> sizes{nativeElems};
+      SmallVector<int64_t, 1> strides{1};
+      for (int64_t m = 0; m < mr; ++m) {
+        Value row = vector::ExtractOp::create(rewriter, loc, accMatrix,
+                                              SmallVector<int64_t>({m0 + m}));
+        savedRows.push_back(row);
+        initTiles.push_back(vector::ExtractStridedSliceOp::create(
+            rewriter, loc, row, offset, sizes, strides));
+      }
+
+      int64_t col = n0;
+      auto kLoop = scf::ForOp::create(
+          rewriter, loc, c0, cK, c1, ValueRange(initTiles),
+          [&](OpBuilder &b, Location bodyLoc, Value kIv, ValueRange iterArgs) {
+            Value rhs = loadRhsTile(b, bodyLoc, nativeTy, rhsBuf, kIv, col);
+            SmallVector<Value> next;
+            next.reserve(mr);
+            for (int64_t m = 0; m < mr; ++m) {
+              Value lhsScalar = loadLhsScalar(b, bodyLoc, lhsBuf, m0 + m, kIv);
+              Value lhs =
+                  vector::BroadcastOp::create(b, bodyLoc, nativeTy, lhsScalar);
+              next.push_back(
+                  vector::FMAOp::create(b, bodyLoc, rhs, lhs, iterArgs[m]));
+            }
+            scf::YieldOp::create(b, bodyLoc, ValueRange(next));
+          });
+
+      for (int64_t m = 0; m < mr; ++m) {
+        Value updatedRow = vector::InsertStridedSliceOp::create(
+            rewriter, loc, kLoop.getResult(m), savedRows[m], offset, strides);
+        accMatrix =
+            vector::InsertOp::create(rewriter, loc, updatedRow, accMatrix,
+                                     SmallVector<int64_t>({m0 + m}));
+      }
+    }
+  }
+
+  rewriter.replaceOp(op, maybeCast(loc, accMatrix, origElemTy, rewriter));
+  return success();
+}
+
 LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
-                               PatternRewriter &rewriter) {
+                               PatternRewriter &rewriter,
+                               unsigned nativeVectorBitWidth) {
   cpu::DotOp op = candidate.op;
   Location loc = op.getLoc();
   VectorType lhsTy = cast<VectorType>(op.getA().getType());
@@ -254,6 +405,10 @@ LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
     Value rhs = maybeCast(loc, op.getB(), candidate.rhsElemTy, rewriter);
     rhsBuf = storeToTmpBuffer(loc, rhs, allocaPoint, rewriter);
   }
+
+  if (nativeVectorBitWidth != 0)
+    return lowerDotToNativeVectorFMA(candidate, lhsBuf, rhsBuf, rewriter,
+                                     nativeVectorBitWidth);
 
   Value acc = maybeCast(loc, op.getC(), candidate.accElemTy, rewriter);
   Value accToStore = acc;
@@ -385,6 +540,9 @@ LogicalResult convertCandidate(FmaDotOpCandidate &candidate,
 struct ConvertDotToFMA
     : public triton::cpu::impl::ConvertDotToFMABase<ConvertDotToFMA> {
   ConvertDotToFMA() = default;
+  explicit ConvertDotToFMA(unsigned nativeVectorBitWidth) {
+    this->nativeVectorBitWidth = nativeVectorBitWidth;
+  }
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -393,7 +551,7 @@ struct ConvertDotToFMA
     SmallVector<FmaDotOpCandidate, 1> candidates;
     mod->walk([this, &candidates](cpu::DotOp op) {
       FmaDotOpCandidate candidate;
-      if (isFmaCandidate(op, candidate)) {
+      if (isFmaCandidate(op, candidate, nativeVectorBitWidth)) {
         LLVM_DEBUG({
           LDBG("Found FMA candidate");
           LDBG("  Op: " << candidate.op);
@@ -421,7 +579,8 @@ struct ConvertDotToFMA
       LDBG("Starting conversion of candidate: " << candidate.op);
       PatternRewriter rewriter(context);
       rewriter.setInsertionPoint(candidate.op);
-      if (succeeded(convertCandidate(candidate, rewriter))) {
+      if (succeeded(
+              convertCandidate(candidate, rewriter, nativeVectorBitWidth))) {
         LDBG("Conversion succeeded!");
       } else {
         LDBG("Conversion failed!");
@@ -437,7 +596,12 @@ namespace triton {
 namespace cpu {
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA() {
-  return std::make_unique<ConvertDotToFMA>();
+  return createConvertDotToFMA(0);
+}
+
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertDotToFMA(unsigned nativeVectorBitWidth) {
+  return std::make_unique<ConvertDotToFMA>(nativeVectorBitWidth);
 }
 
 } // namespace cpu

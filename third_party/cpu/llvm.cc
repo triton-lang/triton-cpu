@@ -8,6 +8,7 @@
 #include "llvm/IR/PassTimingInfo.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
@@ -55,6 +56,20 @@ void initializeHostTarget() {
     if (llvm::InitializeNativeTargetAsmPrinter())
       throw std::runtime_error("LLVM native target assembly printer is not "
                                "available");
+    // SystemZ schedules legacy codegen passes (EarlyIfConverter, IfConverter,
+    // MachineCombiner) that InitializeNativeTarget does not register. With
+    // assertions enabled, the legacy pass manager aborts if they are missing.
+    llvm::PassRegistry &registry = *llvm::PassRegistry::getPassRegistry();
+    llvm::initializeCore(registry);
+    llvm::initializeCodeGen(registry);
+    llvm::initializeLoopStrengthReducePass(registry);
+    llvm::initializeUnreachableBlockElimLegacyPassPass(registry);
+    llvm::initializeConstantHoistingLegacyPassPass(registry);
+    llvm::initializeScalarOpts(registry);
+    llvm::initializeIPO(registry);
+    llvm::initializeVectorization(registry);
+    llvm::initializeScalarizeMaskedMemIntrinLegacyPassPass(registry);
+    llvm::initializeTransformUtils(registry);
   });
 
   // LLVM's global thread pool is not fork-safe. Triton kernels are small, so
@@ -115,6 +130,14 @@ std::set<std::string> getCPUFeatures() {
     // Only query the OS when LLVM has not already reported BF16.
     if (!result.count("bf16") && arm::osSupportsBF16())
       result.insert("bf16");
+  } else if (result.empty()) {
+    // VXE is mandatory on the s390x hosts this backend targets, and LLVM
+    // feature detection can return an empty set there as well.
+    std::string processTriple = llvm::sys::getProcessTriple();
+    std::size_t separator = processTriple.find('-');
+    if (separator != std::string::npos &&
+        processTriple.substr(0, separator) == "s390x")
+      result.insert("vxe");
   }
 
   return result;
@@ -129,7 +152,9 @@ static std::string getCPUFeaturesString() {
     if (!result.empty())
       result += ",";
     result += "+";
-    result += feature;
+    // "vxe" is the backend's name for the s390x vector facility; LLVM's
+    // SystemZ target calls it "vector" and warns on anything else.
+    result += feature == "vxe" ? "vector" : feature;
   }
   return result;
 }
