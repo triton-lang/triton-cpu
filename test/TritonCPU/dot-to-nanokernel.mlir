@@ -390,13 +390,14 @@ tt.func public @gemm_amx_int8_vnni(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2
     %31 = triton_cpu.extract_memref %13 : <1x1x16x128xsi8> -> memref<?x?x16x128xi8, strided<[?, 2048, 128, 1]>>
     %32 = vector.transfer_read %31[%21, %29, %c0, %c0], %c0_i8 {in_bounds = [true, true]} : memref<?x?x16x128xi8, strided<[?, 2048, 128, 1]>>, vector<16x128xi8>
     %res1, %res2 = vector.deinterleave %32 : vector<16x128xi8> -> vector<16x64xi8>
-    %33 = vector.transpose %res1, [1, 0] : vector<16x64xi8> to vector<64x16xi8>
-    %34 = vector.transpose %res2, [1, 0] : vector<16x64xi8> to vector<64x16xi8>
-    %35 = vector.interleave %33, %34 : vector<64x16xi8> -> vector<64x32xi8>
-    %36 = vector.transpose %35, [1, 0] : vector<64x32xi8> to vector<32x64xi8>
-    %res1_0, %res2_1 = vector.deinterleave %36 : vector<32x64xi8> -> vector<32x32xi8>
-    %37 = vector.transpose %res1_0, [1, 0] : vector<32x32xi8> to vector<32x32xi8>
-    %38 = vector.transpose %res2_1, [1, 0] : vector<32x32xi8> to vector<32x32xi8>
+    %res0, %res2_0 = vector.deinterleave %res1 : vector<16x64xi8> -> vector<16x32xi8>
+    %res1_0, %res3 = vector.deinterleave %res2 : vector<16x64xi8> -> vector<16x32xi8>
+    %33 = vector.transpose %res0, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
+    %34 = vector.transpose %res2_0, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
+    %35 = vector.transpose %res1_0, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
+    %36 = vector.transpose %res3, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
+    %37 = vector.interleave %33, %34 : vector<32x16xi8> -> vector<32x32xi8>
+    %38 = vector.interleave %35, %36 : vector<32x16xi8> -> vector<32x32xi8>
     %39 = vector.interleave %37, %38 : vector<32x32xi8> -> vector<32x64xi8>
     %40 = vector.transpose %39, [1, 0] : vector<32x64xi8> to vector<64x32xi8>
     %41 = triton_cpu.dot %30, %40, %arg9, inputPrecision = tf32 : vector<32x64xi8> * vector<64x32xi8> -> vector<32x32xi32>
@@ -664,13 +665,14 @@ tt.func public @gemm_avx10_2_int8_vnni(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %
     %33 = triton_cpu.extract_memref %15 : <1x1x1x256xsi8> -> memref<?x?x1x256xi8, strided<[?, 256, 256, 1]>>
     %34 = vector.transfer_read %33[%23, %31, %c0, %c0], %c0_i8 {in_bounds = [true, true]} : memref<?x?x1x256xi8, strided<[?, 256, 256, 1]>>, vector<1x256xi8>
     %res1, %res2 = vector.deinterleave %34 : vector<1x256xi8> -> vector<1x128xi8>
-    %35 = vector.transpose %res1, [1, 0] : vector<1x128xi8> to vector<128x1xi8>
-    %36 = vector.transpose %res2, [1, 0] : vector<1x128xi8> to vector<128x1xi8>
-    %37 = vector.interleave %35, %36 : vector<128x1xi8> -> vector<128x2xi8>
-    %38 = vector.transpose %37, [1, 0] : vector<128x2xi8> to vector<2x128xi8>
-    %res1_0, %res2_1 = vector.deinterleave %38 : vector<2x128xi8> -> vector<2x64xi8>
-    %39 = vector.transpose %res1_0, [1, 0] : vector<2x64xi8> to vector<64x2xi8>
-    %40 = vector.transpose %res2_1, [1, 0] : vector<2x64xi8> to vector<64x2xi8>
+    %res0, %res2_0 = vector.deinterleave %res1 : vector<1x128xi8> -> vector<1x64xi8>
+    %res1_0, %res3 = vector.deinterleave %res2 : vector<1x128xi8> -> vector<1x64xi8>
+    %35 = vector.transpose %res0, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
+    %36 = vector.transpose %res2_0, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
+    %37 = vector.transpose %res1_0, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
+    %38 = vector.transpose %res3, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
+    %39 = vector.interleave %35, %36 : vector<64x1xi8> -> vector<64x2xi8>
+    %40 = vector.interleave %37, %38 : vector<64x1xi8> -> vector<64x2xi8>
     %41 = vector.interleave %39, %40 : vector<64x2xi8> -> vector<64x4xi8>
     %42 = vector.transpose %41, [1, 0] : vector<64x4xi8> to vector<4x64xi8>
     %43 = triton_cpu.dot %32, %42, %arg9, inputPrecision = tf32 : vector<4x4xi8> * vector<4x64xi8> -> vector<4x64xi32>
@@ -945,13 +947,14 @@ tt.func public @gemm_avx_vnni_int8_int8_vnni(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<
     %33 = triton_cpu.extract_memref %15 : <1x1x1x128xsi8> -> memref<?x?x1x128xi8, strided<[?, 128, 128, 1]>>
     %34 = vector.transfer_read %33[%23, %31, %c0, %c0], %c0_i8 {in_bounds = [true, true]} : memref<?x?x1x128xi8, strided<[?, 128, 128, 1]>>, vector<1x128xi8>
     %res1, %res2 = vector.deinterleave %34 : vector<1x128xi8> -> vector<1x64xi8>
-    %35 = vector.transpose %res1, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
-    %36 = vector.transpose %res2, [1, 0] : vector<1x64xi8> to vector<64x1xi8>
-    %37 = vector.interleave %35, %36 : vector<64x1xi8> -> vector<64x2xi8>
-    %38 = vector.transpose %37, [1, 0] : vector<64x2xi8> to vector<2x64xi8>
-    %res1_0, %res2_1 = vector.deinterleave %38 : vector<2x64xi8> -> vector<2x32xi8>
-    %39 = vector.transpose %res1_0, [1, 0] : vector<2x32xi8> to vector<32x2xi8>
-    %40 = vector.transpose %res2_1, [1, 0] : vector<2x32xi8> to vector<32x2xi8>
+    %res0, %res2_0 = vector.deinterleave %res1 : vector<1x64xi8> -> vector<1x32xi8>
+    %res1_0, %res3 = vector.deinterleave %res2 : vector<1x64xi8> -> vector<1x32xi8>
+    %35 = vector.transpose %res0, [1, 0] : vector<1x32xi8> to vector<32x1xi8>
+    %36 = vector.transpose %res2_0, [1, 0] : vector<1x32xi8> to vector<32x1xi8>
+    %37 = vector.transpose %res1_0, [1, 0] : vector<1x32xi8> to vector<32x1xi8>
+    %38 = vector.transpose %res3, [1, 0] : vector<1x32xi8> to vector<32x1xi8>
+    %39 = vector.interleave %35, %36 : vector<32x1xi8> -> vector<32x2xi8>
+    %40 = vector.interleave %37, %38 : vector<32x1xi8> -> vector<32x2xi8>
     %41 = vector.interleave %39, %40 : vector<32x2xi8> -> vector<32x4xi8>
     %42 = vector.transpose %41, [1, 0] : vector<32x4xi8> to vector<4x32xi8>
     %43 = triton_cpu.dot %32, %42, %arg9, inputPrecision = tf32 : vector<2x4xi8> * vector<4x32xi8> -> vector<2x32xi32>

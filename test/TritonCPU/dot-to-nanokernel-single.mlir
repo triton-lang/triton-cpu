@@ -90,14 +90,15 @@ tt.func public @amx_single_muli_vnni(%a_ptr: !tt.ptr<i8>, %b_ptr: !tt.ptr<i8>, %
   %b = arith.index_cast %n : i32 to index
   %b_14 = vector.transfer_read %b_desc_13[%a_11, %b, %a_0, %a_0], %a {in_bounds = [true, true]} : memref<1x1x16x64xi8, strided<[?, ?, ?, 1]>>, vector<16x64xi8>
   %b_16, %b_17 = vector.deinterleave %b_14 : vector<16x64xi8> -> vector<16x32xi8>
-  %b_18 = vector.transpose %b_16, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
-  %b_19 = vector.transpose %b_17, [1, 0] : vector<16x32xi8> to vector<32x16xi8>
-  %b_20 = vector.interleave %b_18, %b_19 : vector<32x16xi8> -> vector<32x32xi8>
-  %b_21 = vector.transpose %b_20, [1, 0] : vector<32x32xi8> to vector<32x32xi8>
-  %b_22, %b_23 = vector.deinterleave %b_21 : vector<32x32xi8> -> vector<32x16xi8>
-  %b_24 = vector.transpose %b_22, [1, 0] : vector<32x16xi8> to vector<16x32xi8>
-  %b_25 = vector.transpose %b_23, [1, 0] : vector<32x16xi8> to vector<16x32xi8>
-  %b_26 = vector.interleave %b_24, %b_25 : vector<16x32xi8> -> vector<16x64xi8>
+  %b_18, %b_19 = vector.deinterleave %b_16 : vector<16x32xi8> -> vector<16x16xi8>
+  %b_20, %b_21 = vector.deinterleave %b_17 : vector<16x32xi8> -> vector<16x16xi8>
+  %b_22 = vector.transpose %b_18, [1, 0] : vector<16x16xi8> to vector<16x16xi8>
+  %b_23 = vector.transpose %b_19, [1, 0] : vector<16x16xi8> to vector<16x16xi8>
+  %b_24 = vector.transpose %b_20, [1, 0] : vector<16x16xi8> to vector<16x16xi8>
+  %b_25 = vector.transpose %b_21, [1, 0] : vector<16x16xi8> to vector<16x16xi8>
+  %b_even = vector.interleave %b_22, %b_23 : vector<16x16xi8> -> vector<16x32xi8>
+  %b_odd = vector.interleave %b_24, %b_25 : vector<16x16xi8> -> vector<16x32xi8>
+  %b_26 = vector.interleave %b_even, %b_odd : vector<16x32xi8> -> vector<16x64xi8>
   %b_27 = vector.transpose %b_26, [1, 0] : vector<16x64xi8> to vector<64x16xi8>
   %c_28 = triton_cpu.dot %a_12, %b_27, %c_8, inputPrecision = tf32 : vector<16x64xi8> * vector<64x16xi8> -> vector<16x16xi32>
   vector.transfer_write %c_28, %c_desc_5[%c_6, %c_7] {in_bounds = [true, true]} : vector<16x16xi32>, memref<?x?xi32, strided<[?, 1]>>
