@@ -10,6 +10,7 @@ def _vnni_decode2(arg0):
     tmp1, tmp2 = tl.split(tmp)
     return tl.join(tmp1.T, tmp2.T).reshape((arg0.shape[1] // 2, arg0.shape[0] * 2)).T
 
+
 @jit
 def _vnni_decode4(arg0):
     tl.static_assert(len(arg0.shape) == 2)
