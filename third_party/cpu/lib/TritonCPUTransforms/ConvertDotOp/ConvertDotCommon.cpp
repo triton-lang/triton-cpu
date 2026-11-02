@@ -72,7 +72,7 @@ Value getTransposedSrc(Value val) {
 //   %tmp5 = vector.interleave %tmp3, %tmp4
 //   %val = vector.transpose %tmp5, [1, 0]
 // and return %src if pattern matching succeeds.
-Value getVnniSrcImpl(Value val) {
+Value getVnniSrcImpl2(Value val) {
   auto transposedVal = getTransposedSrc(val);
   if (!transposedVal)
     return nullptr;
@@ -95,22 +95,73 @@ Value getVnniSrcImpl(Value val) {
   return deinterleave1.getSource();
 }
 
+// We are looking for the following sequence:
+//   %src02, %src13 = vector.deinterleave %src
+//   %src0, %src2 = vector.deinterleave %src02
+//   %src1, %src3 = vector.deinterleave %src13
+//   %t0 = vector.transpose %src0, [1, 0]
+//   %t1 = vector.transpose %src1, [1, 0]
+//   %t2 = vector.transpose %src2, [1, 0]
+//   %t3 = vector.transpose %src3, [1, 0]
+//   %i02 = vector.interleave %t0, %t2
+//   %i13 = vector.interleave %t1, %t3
+//   %i = vector.interleave %i02, %i13
+//   %val = vector.transpose %i, [1, 0]
+// and return %src if pattern matching succeeds.
+Value getVnniSrcImpl4(Value val) {
+  auto transposedVal = getTransposedSrc(val);
+  if (!transposedVal)
+    return nullptr;
+
+  auto interleave = transposedVal.getDefiningOp<vector::InterleaveOp>();
+  if (!interleave)
+    return nullptr;
+
+  auto interleave02 = interleave.getLhs().getDefiningOp<vector::InterleaveOp>();
+  auto interleave13 = interleave.getRhs().getDefiningOp<vector::InterleaveOp>();
+  if (!interleave02 || !interleave13)
+    return nullptr;
+
+  auto transposed0 = getTransposedSrc(interleave02.getLhs());
+  auto transposed1 = getTransposedSrc(interleave13.getLhs());
+  auto transposed2 = getTransposedSrc(interleave02.getRhs());
+  auto transposed3 = getTransposedSrc(interleave13.getRhs());
+  if (!transposed0 || !transposed1 || !transposed2 || !transposed3)
+    return nullptr;
+
+  auto deinterleave02 = transposed0.getDefiningOp<vector::DeinterleaveOp>();
+  auto deinterleave13 = transposed1.getDefiningOp<vector::DeinterleaveOp>();
+  if (!deinterleave02 || !deinterleave13 ||
+      deinterleave02.getResult(0) != transposed0 ||
+      deinterleave13.getResult(0) != transposed1 ||
+      deinterleave02.getResult(1) != transposed2 ||
+      deinterleave13.getResult(1) != transposed3)
+    return nullptr;
+
+  auto deinterleave =
+      deinterleave02.getSource().getDefiningOp<vector::DeinterleaveOp>();
+  if (!deinterleave ||
+      deinterleave.getResult(0) != deinterleave02.getSource() ||
+      deinterleave.getResult(1) != deinterleave13.getSource())
+    return nullptr;
+
+  return deinterleave.getSource();
+}
+
 } // namespace
 
 Value getVnniSrc(Value val) {
   Type elemTy = getElementTypeOrSelf(val.getType());
 
   // VNNI encoding is used for 8-bit and 16-bit values only.
-  if (elemTy.getIntOrFloatBitWidth() > 16)
+  switch (elemTy.getIntOrFloatBitWidth()) {
+  case 16:
+    return getVnniSrcImpl2(val);
+  case 8:
+    return getVnniSrcImpl4(val);
+  default:
     return nullptr;
-
-  // For 16-bit values VNNI encoding is a single interleave of
-  // subsequenct rows. For 8-bit values, it's applied twice.
-  Value encoded = getVnniSrcImpl(val);
-  if (encoded && elemTy.getIntOrFloatBitWidth() == 8)
-    encoded = getVnniSrcImpl(encoded);
-
-  return encoded;
+  }
 }
 
 MemBuffer findInputBuffer(Value val, bool allowTransposed, bool allowVnni) {
