@@ -244,7 +244,7 @@ struct ConvertMulSumToDotHorizontalSum
                                      res, outIdx);
     }
 
-    if (!isZeroConst(acc)) {
+    if (!isZeroFillConst(acc)) {
       res = arith::AddFOp::create(rewriter, loc, res, acc);
     }
     rewriter.replaceOp(op, res);

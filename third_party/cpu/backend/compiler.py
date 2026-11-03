@@ -332,7 +332,7 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_asm(src, metadata, options):
-        return cpu.llvm.translate_to_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+        return cpu.llvm.translate_to_asm(src)
 
     @staticmethod
     def make_so(src, metadata, options):

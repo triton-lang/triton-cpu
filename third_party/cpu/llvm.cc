@@ -135,8 +135,7 @@ static std::string getCPUFeaturesString() {
 }
 
 std::unique_ptr<llvm::TargetMachine>
-createHostTargetMachine(llvm::Module &module, const std::string &cpuFeatures,
-                        bool enableFpFusion, bool enableFastMath) {
+createHostTargetMachine(llvm::Module &module, const std::string &cpuFeatures) {
   std::string error;
   auto target =
       llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
@@ -144,10 +143,6 @@ createHostTargetMachine(llvm::Module &module, const std::string &cpuFeatures,
     throw std::runtime_error("target lookup error: " + error);
 
   llvm::TargetOptions options;
-  if (enableFpFusion)
-    options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
-  if (enableFastMath)
-    options.NoTrappingFPMath = true;
   options.TrapUnreachable = true;
   options.MCOptions.AsmVerbose = true;
   options.MCOptions.PreserveAsmComments = true;
@@ -178,8 +173,7 @@ void setVscaleRangeForSVE(llvm::Module &module, llvm::StringRef cpuFeatures) {
   }
 }
 
-std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
-                                     bool enableFastMath) {
+std::string translateHostLLVMIRToASM(llvm::Module &module) {
   if (mlir::triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP"))
     setLLVMBooleanOption("print-after-all", true);
 
@@ -225,8 +219,7 @@ std::string translateHostLLVMIRToASM(llvm::Module &module, bool enableFpFusion,
   // code generation is enabled.
   const std::string cpuFeatures = getCPUFeaturesString();
   setVscaleRangeForSVE(module, cpuFeatures);
-  auto machine = createHostTargetMachine(module, cpuFeatures, enableFpFusion,
-                                         enableFastMath);
+  auto machine = createHostTargetMachine(module, cpuFeatures);
   module.setDataLayout(machine->createDataLayout());
 
   std::string result;
@@ -278,8 +271,7 @@ void init_triton_cpu_llvm(py::module_ &m) {
   m.def("set_host_target",
         [](llvm::Module *module) { setHostTarget(*module); });
   m.def("translate_to_asm",
-        [](std::string llvmIR, bool enableFpFusion,
-           bool enableFastMath) -> py::object {
+        [](std::string llvmIR) -> py::object {
           std::string result;
           {
             py::gil_scoped_release release;
@@ -296,8 +288,7 @@ void init_triton_cpu_llvm(py::module_ &m) {
                   "failed to parse IR: " + error.getMessage() +
                   "lineno: " + std::to_string(error.getLineNo()));
             }
-            result = translateHostLLVMIRToASM(*module, enableFpFusion,
-                                              enableFastMath);
+            result = translateHostLLVMIRToASM(*module);
           }
           return py::str(result.c_str(), result.size());
         });
