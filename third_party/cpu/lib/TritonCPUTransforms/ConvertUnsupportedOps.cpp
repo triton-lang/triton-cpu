@@ -38,8 +38,9 @@ struct ConvertBf16ToFp32 : public OpRewritePattern<OpT> {
     OperationState newState(loc, OpT::getOperationName());
     // Convert operands to fp32 and generate fp32 op.
     for (auto operand : op->getOperands()) {
-      Value newOperand = arith::ExtFOp::create(
-          rewriter, loc, toFp32(operand.getType()), operand);
+      Value newOperand =
+          arith::ExtFOp::create(rewriter, loc, toFp32(operand.getType()),
+                                operand, arith::FastMathFlagsAttr{});
       newState.operands.push_back(newOperand);
     }
     newState.types = toFp32(op->getResultTypes());
@@ -343,7 +344,8 @@ struct ConvertMixedPrecisionMatmul
       if (valTy.getElementTypeBitWidth() > elemTy.getIntOrFloatBitWidth())
         return arith::TruncFOp::create(rewriter, loc, resTy, val);
       else
-        return arith::ExtFOp::create(rewriter, loc, resTy, val);
+        return arith::ExtFOp::create(rewriter, loc, resTy, val,
+                                     arith::FastMathFlagsAttr{});
     }
   }
 };
@@ -364,8 +366,10 @@ public:
     Type fp32Ty = toFp32(opTy);
     SmallVector<Value> fp32Ops;
     for (auto operand : op->getOperands())
-      fp32Ops.push_back(arith::ExtFOp::create(rewriter, loc, fp32Ty, operand));
-    auto newOp = OpT::create(rewriter, loc, fp32Ty, fp32Ops);
+      fp32Ops.push_back(arith::ExtFOp::create(rewriter, loc, fp32Ty, operand,
+                                              arith::FastMathFlagsAttr{}));
+    auto newOp =
+        OpT::create(rewriter, loc, fp32Ty, fp32Ops, typename OpT::Properties{});
     rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, opTy, newOp);
     return success();
   }

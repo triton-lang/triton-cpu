@@ -197,7 +197,8 @@ Value maybeCast(Location loc, Value val, Type dstElemTy,
   }
 
   if (srcTy.getElementTypeBitWidth() < dstTy.getElementTypeBitWidth())
-    return arith::ExtFOp::create(rewriter, loc, dstTy, val);
+    return arith::ExtFOp::create(rewriter, loc, dstTy, val,
+                                 arith::FastMathFlagsAttr{});
   return arith::TruncFOp::create(rewriter, loc, dstTy, val);
 }
 
