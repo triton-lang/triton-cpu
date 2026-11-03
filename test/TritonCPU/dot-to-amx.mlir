@@ -9,7 +9,7 @@
 // CHECK:       %[[OUT_DESC:.+]] = tt.make_tensor_descriptor %arg2,
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %[[LHS_DESC]] : <16x32xbf16> -> memref<16x32xbf16, strided<[32, 1]>>
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %[[RHS_DESC]] : <32x16xbf16> -> memref<32x16xbf16, strided<[16, 1]>>
-// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x32xbf16>
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<16x32xbf16>
 // CHECK:       %[[OUT_MEMREF:.+]] = triton_cpu.extract_memref %[[OUT_DESC]] : <16x16xf32> -> memref<16x16xf32, strided<[16, 1]>>
 // CHECK:       %[[ACC:.+]] = x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
 // CHECK-NEXT:  %[[LHS:.+]] = x86.amx.tile_load %[[LHS_MEMREF]][%[[C0]], %[[C0]]]
@@ -55,7 +55,7 @@ module {
 // CHECK:       %[[OUT_DESC:.+]] = tt.make_tensor_descriptor %arg2,
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %[[LHS_DESC]] : <16x128xi8> -> memref<16x128xi8, strided<[128, 1]>>
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %[[RHS_DESC]] : <128x16xi8> -> memref<128x16xi8, strided<[16, 1]>>
-// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<32x64xi8>
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<32x64xi8>
 // CHECK:       %[[OUT_MEMREF:.+]] = triton_cpu.extract_memref %[[OUT_DESC]] : <16x16xi32> -> memref<16x16xi32, strided<[16, 1]>>
 // CHECK:       %[[ACC:.+]] = x86.amx.tile_zero : !x86.amx.tile<16x16xi32>
 // CHECK-NEXT:  %[[LHS1:.+]] = x86.amx.tile_load %[[LHS_MEMREF]][%[[C0]], %[[C0]]]
@@ -105,7 +105,7 @@ module {
 // CHECK:       %[[OUT_DESC:.+]] = tt.make_tensor_descriptor %arg2,
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %[[LHS_DESC]] : <16x64xbf16> -> memref<16x64xbf16, strided<[64, 1]>>
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %[[RHS_DESC]] : <64x32xbf16> -> memref<64x32xbf16, strided<[32, 1]>>
-// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<32x64xbf16>
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<32x64xbf16>
 // CHECK:       %[[OUT_MEMREF:.+]] = triton_cpu.extract_memref %[[OUT_DESC]] : <16x32xf32> -> memref<16x32xf32, strided<[32, 1]>>
 // CHECK:       %[[ACC1:.+]] = x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
 // CHECK-NEXT:  %[[ACC2:.+]] = x86.amx.tile_zero : !x86.amx.tile<16x16xf32>
@@ -154,9 +154,9 @@ module {
 // cannot fit tile register file.
 
 // CHECK-LABEL: @test_loop_acc_two_blocks
-// CHECK:       %[[LHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<64x64xbf16>
-// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<32x64xbf16>
-// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<64x32xf32>
+// CHECK:       %[[LHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<64x64xbf16>
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<32x64xbf16>
+// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() alignment = 64 : memref<64x32xf32>
 // CHECK:       vector.transfer_write %cst{{.+}}, %[[ACC_BUF]][%c0{{.*}}, %c0{{.*}}] {in_bounds = [true, true]}  : vector<64x32xf32>, memref<64x32xf32>
 // CHECK:       scf.for %arg3 = %c0_i32 to %c128_i32 step %c64_i32  : i32
 // CHECK:         %[[IDX:.+]] = arith.index_cast %arg3 : i32 to index
@@ -328,7 +328,7 @@ module {
 // CHECK-LABEL: @test_loop_pre_encoded_indirect
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref
-// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x64xbf16>
+// CHECK:       %[[RHS_BUF:.+]] = memref.alloca() alignment = 64 : memref<16x64xbf16>
 // CHECK:       %[[RHS:.+]] = vector.transfer_read %[[RHS_MEMREF]]
 // CHECK:       vector.transfer_write %[[RHS]], %[[RHS_BUF]][%c0, %c0] {in_bounds = [true, true]}
 // CHECK:       x86.amx.tile_load %[[LHS_MEMREF]]
@@ -480,7 +480,7 @@ module {
 // CHECK: %[[ACC_TDESC:.+]] = tt.make_tensor_descriptor %arg2,
 // CHECK: %[[ACC_MEMREF:.+]] = triton_cpu.extract_memref %[[ACC_TDESC]]
 // CHECK: %[[ACC_INIT:.+]] = vector.transfer_read %[[ACC_MEMREF]]
-// CHECK: %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xf32>
+// CHECK: %[[ACC_BUF:.+]] = memref.alloca() alignment = 64 : memref<32x32xf32>
 // CHECK: vector.transfer_write %[[ACC_INIT]], %[[ACC_BUF]][%c0, %c0]
 // CHECK-COUNT-4: x86.amx.tile_load %[[ACC_BUF]]
 
