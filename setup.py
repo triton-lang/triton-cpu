@@ -37,7 +37,13 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from python.build_helpers import check_env_flag, find_therock_rocm_include_dir, get_base_dir, get_cmake_dir
+from python.build_helpers import (
+    check_env_flag,
+    cuda_redist_supported,
+    find_therock_rocm_include_dir,
+    get_base_dir,
+    get_cmake_dir,
+)
 
 
 def is_git_repo() -> bool:
@@ -371,8 +377,13 @@ class CMakeBuild(build_ext):
         ]
         cmake_args += [f"-D{option}={os.getenv(option)}" for option in passthrough_args if option in os.environ]
 
-        if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+        # Proton's CUPTI headers come from the CUDA redistributable, which is
+        # not published for s390x. Leave Proton off unless it is requested.
+        proton_default = "ON" if cuda_redist_supported() else "OFF"
+        if check_env_flag("TRITON_BUILD_PROTON", proton_default):
             cmake_args += self.get_proton_cmake_args()
+        elif "TRITON_BUILD_PROTON" not in os.environ:
+            cmake_args.append("-DTRITON_BUILD_PROTON=OFF")
 
         if is_offline_build():
             # unit test builds fetch googletests from GitHub
