@@ -270,26 +270,25 @@ void init_triton_cpu_llvm(py::module_ &m) {
   m.def("get_cpu_features", &getCPUFeatures);
   m.def("set_host_target",
         [](llvm::Module *module) { setHostTarget(*module); });
-  m.def("translate_to_asm",
-        [](std::string llvmIR) -> py::object {
-          std::string result;
-          {
-            py::gil_scoped_release release;
-            initializeHostTarget();
+  m.def("translate_to_asm", [](std::string llvmIR) -> py::object {
+    std::string result;
+    {
+      py::gil_scoped_release release;
+      initializeHostTarget();
 
-            llvm::LLVMContext context;
-            std::unique_ptr<llvm::MemoryBuffer> buffer =
-                llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
-            llvm::SMDiagnostic error;
-            std::unique_ptr<llvm::Module> module =
-                llvm::parseIR(buffer->getMemBufferRef(), error, context);
-            if (!module) {
-              llvm::report_fatal_error(
-                  "failed to parse IR: " + error.getMessage() +
-                  "lineno: " + std::to_string(error.getLineNo()));
-            }
-            result = translateHostLLVMIRToASM(*module);
-          }
-          return py::str(result.c_str(), result.size());
-        });
+      llvm::LLVMContext context;
+      std::unique_ptr<llvm::MemoryBuffer> buffer =
+          llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
+      llvm::SMDiagnostic error;
+      std::unique_ptr<llvm::Module> module =
+          llvm::parseIR(buffer->getMemBufferRef(), error, context);
+      if (!module) {
+        llvm::report_fatal_error(
+            "failed to parse IR: " + error.getMessage() +
+            "lineno: " + std::to_string(error.getLineNo()));
+      }
+      result = translateHostLLVMIRToASM(*module);
+    }
+    return py::str(result.c_str(), result.size());
+  });
 }

@@ -26,6 +26,7 @@ from triton._internal_testing import is_hip
 from triton.runtime.cache import FileCacheManager, RemoteCacheManager
 from triton.runtime.jit import get_device_key
 
+
 @pytest.mark.parametrize("backend, options_type, arch", [
     ("amd", "HIPOptions", "gfx950"),
     ("nvidia", "CUDAOptions", "sm90"),
