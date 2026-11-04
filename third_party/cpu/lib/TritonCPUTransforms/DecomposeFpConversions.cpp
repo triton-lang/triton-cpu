@@ -118,6 +118,14 @@ Value convertFp8(Location loc, Value src, int srcExpBits, int srcExpBias,
     double scale = pow(2, dstExpBias - srcExpBias);
     res = op_mulf(res, cst_like(res, scale));
   }
+  // E4M3FN reserves 0x7f and 0xff for NaN, not finite +/-480.
+  if (isa<Float8E4M3FNType>(getElemTyOrTy(srcTy))) {
+    Value magnitude = op_and(intSrc, cst_like(intSrc, 0x7f));
+    Value isNan = op_icmp_eq(magnitude, cst_like(intSrc, 0x7f));
+    int quietNanBits = dstFpTy.isF16() ? 0x7e00 : 0x7fc00000;
+    Value quietNan = op_bitcast(dstTy, cst_like(intSrc, quietNanBits));
+    res = op_select(isNan, quietNan, res);
+  }
   return res;
 }
 
