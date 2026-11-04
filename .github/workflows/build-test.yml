@@ -119,6 +119,7 @@ jobs:
             python/test/unit/cpu/test_cpu_conversions.py \
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
+            python/test/unit/cpu/test_cpu_utils.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_compile_errors.py \
             python/test/unit/language/test_conversions.py \
@@ -158,6 +159,7 @@ jobs:
             python/test/unit/cpu/test_cpu_features.py \
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
+            python/test/unit/cpu/test_cpu_utils.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_compile_errors.py \
             python/test/unit/language/test_conversions.py \
