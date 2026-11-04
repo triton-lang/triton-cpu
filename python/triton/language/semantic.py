@@ -1988,8 +1988,9 @@ class TritonSemantic(Generic[TensorTy]):
         for stride in strides[:-1]:
             static_stride = tl._unwrap_if_constexpr(stride)
             if isinstance(static_stride, int) and (static_stride * elem_size) % 16 != 0:
-                raise ValueError(f"Tensor descriptor strides must be 16-byte aligned, but got a stride of "
-                                 f"{static_stride} * {elem_size} = {static_stride * elem_size} bytes")
+                warnings.warn(f"Tensor descriptor strides must be 16-byte aligned, but got a stride of "
+                              f"{static_stride} * {elem_size} = {static_stride * elem_size} bytes")
+                return
 
     def _iisan_check_tensor_descriptor_alignment(self, base: TensorTy, strides: List[TensorTy], elem_size: int,
                                                  stride_sources: List) -> None:
