@@ -7,6 +7,8 @@
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/Index/IR/IndexOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -38,9 +40,16 @@ public:
     addLegalDialect<vector::VectorDialect>();
     addLegalDialect<arith::ArithDialect>();
     addLegalDialect<math::MathDialect>();
+    addLegalDialect<ub::UBDialect>();
+    addLegalDialect<memref::MemRefDialect>();
     addLegalDialect<TritonDialect>();
     addLegalDialect<TritonCPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
+
+    // Deferred maps must retain store-free regions. Convert their tensor
+    // manipulation operations after map expansion in the LLVM stage.
+    addLegalOp<triton::MapElementwiseOp>();
+    markOpRecursivelyLegal<triton::MapElementwiseOp>();
 
     addIllegalOp<triton::BroadcastOp>();
     addIllegalOp<triton::ExpandDimsOp>();
@@ -48,6 +57,7 @@ public:
     addIllegalOp<triton::TransOp>();
     addIllegalOp<triton::JoinOp>();
     addIllegalOp<triton::SplitOp>();
+    addIllegalOp<triton::GatherOp>();
   }
 };
 
@@ -177,6 +187,123 @@ struct SplitOpConversion : public OpConversionPattern<triton::SplitOp> {
   }
 };
 
+struct GatherOpConversion : public OpConversionPattern<triton::GatherOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::GatherOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto allocationScope = op->getParentOfType<triton::FuncOp>();
+    if (!allocationScope)
+      return rewriter.notifyMatchFailure(op,
+                                         "requires a parent Triton function");
+    auto loc = op.getLoc();
+    Value src = adaptor.getSrc();
+    Value indices = adaptor.getIndices();
+    auto srcTy = cast<VectorType>(src.getType());
+    auto indicesTy = cast<VectorType>(indices.getType());
+    auto resTy =
+        cast<VectorType>(getTypeConverter()->convertType(op.getType()));
+
+    // Scalar memory accesses use one byte per sub-byte integer element, while
+    // vector transfers pack them. Materialize these sources as bytes instead.
+    Type storageElemTy = srcTy.getElementType();
+    if (auto intTy = dyn_cast<IntegerType>(storageElemTy);
+        intTy && intTy.getWidth() < 8)
+      storageElemTy = rewriter.getI8Type();
+    auto srcStorageTy = VectorType::get(srcTy.getShape(), storageElemTy);
+    auto resStorageTy = VectorType::get(resTy.getShape(), storageElemTy);
+    if (srcStorageTy != srcTy)
+      src = arith::ExtUIOp::create(rewriter, loc, srcStorageTy, src);
+
+    // The pinned vector.gather requires a memref or tensor base. Allocate its
+    // fixed scratch buffer once at function entry, including for CFG loops.
+    // Retain vector ranks to avoid building a very wide flat vector.
+    Value buffer;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&allocationScope.getBody().front());
+      buffer = memref::AllocaOp::create(
+          rewriter, loc, MemRefType::get(srcTy.getShape(), storageElemTy),
+          rewriter.getI64IntegerAttr(64));
+    }
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    SmallVector<Value> positions(srcTy.getRank(), zero);
+    SmallVector<bool> inBounds(srcTy.getRank(), true);
+    vector::TransferWriteOp::create(rewriter, loc, src, buffer, positions,
+                                    inBounds);
+    Value flatBuffer = buffer;
+    if (srcTy.getRank() > 1) {
+      SmallVector<ReassociationIndices> reassociation(1);
+      for (int64_t dim = 0; dim < srcTy.getRank(); ++dim)
+        reassociation[0].push_back(dim);
+      flatBuffer =
+          memref::CollapseShapeOp::create(rewriter, loc, buffer, reassociation);
+    }
+
+    // A flat gather must include the unchanged coordinates in every other
+    // dimension. Keep its indices in the original result shape so downstream
+    // vector lowering can select native-sized gathers without a flat reshape.
+    auto indexTy = VectorType::get(resTy.getShape(), rewriter.getI64Type());
+    if (indicesTy != indexTy)
+      indices = arith::ExtUIOp::create(rewriter, loc, indexTy, indices);
+    auto splatIndex = [&](int64_t value) -> Value {
+      return arith::ConstantOp::create(
+          rewriter, loc, indexTy,
+          SplatElementsAttr::get(indexTy, rewriter.getI64IntegerAttr(value)));
+    };
+    Value validAxis =
+        arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult, indices,
+                              splatIndex(srcTy.getDimSize(op.getAxis())));
+    // Use a valid source element for invalid lanes so the memory gather can
+    // remain unmasked. Masked gathers may otherwise scalarize into a large
+    // control-flow graph on targets without native gather instructions.
+    Value safeIndices = arith::SelectOp::create(rewriter, loc, validAxis,
+                                                indices, splatIndex(0));
+
+    SmallVector<int64_t> srcStrides(srcTy.getRank(), 1);
+    SmallVector<int64_t> resStrides(resTy.getRank(), 1);
+    for (int64_t dim = srcTy.getRank() - 2; dim >= 0; --dim) {
+      srcStrides[dim] = srcStrides[dim + 1] * srcTy.getDimSize(dim + 1);
+      resStrides[dim] = resStrides[dim + 1] * resTy.getDimSize(dim + 1);
+    }
+    Value linearIndices = safeIndices;
+    if (srcStrides[op.getAxis()] != 1)
+      linearIndices = arith::MulIOp::create(
+          rewriter, loc, linearIndices, splatIndex(srcStrides[op.getAxis()]));
+
+    SmallVector<int64_t> nonAxisOffsets(resTy.getNumElements(), 0);
+    for (int64_t dim = 0; dim < resTy.getRank(); ++dim) {
+      if (dim == op.getAxis())
+        continue;
+      for (int64_t i = 0; i < resTy.getNumElements(); ++i)
+        nonAxisOffsets[i] +=
+            ((i / resStrides[dim]) % resTy.getDimSize(dim)) * srcStrides[dim];
+    }
+    Value offsets = arith::ConstantOp::create(
+        rewriter, loc, indexTy,
+        DenseIntElementsAttr::get(indexTy, ArrayRef<int64_t>(nonAxisOffsets)));
+    linearIndices =
+        arith::AddIOp::create(rewriter, loc, linearIndices, offsets);
+
+    // Keep invalid lanes poison after gathering only from valid scratch-buffer
+    // addresses, without introducing a faulting access into a pure operation.
+    auto maskTy = VectorType::get(resTy.getShape(), rewriter.getI1Type());
+    Value allTrue = arith::ConstantOp::create(
+        rewriter, loc, maskTy, DenseElementsAttr::get(maskTy, true));
+    Value passthrough = ub::PoisonOp::create(rewriter, loc, resStorageTy);
+    Value result = vector::GatherOp::create(
+        rewriter, loc, resStorageTy, flatBuffer, ValueRange{zero},
+        linearIndices, allTrue, passthrough);
+    result =
+        arith::SelectOp::create(rewriter, loc, validAxis, result, passthrough);
+    if (resStorageTy != resTy)
+      result = arith::TruncIOp::create(rewriter, loc, resTy, result);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct ConvertElemManipOps
     : public triton::impl::ConvertElemManipOpsBase<ConvertElemManipOps> {
   using ConvertElemManipOpsBase::ConvertElemManipOpsBase;
@@ -198,6 +325,7 @@ struct ConvertElemManipOps
     patterns.add<TransOpConversion>(typeConverter, context);
     patterns.add<JoinOpConversion>(typeConverter, context);
     patterns.add<SplitOpConversion>(typeConverter, context);
+    patterns.add<GatherOpConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
