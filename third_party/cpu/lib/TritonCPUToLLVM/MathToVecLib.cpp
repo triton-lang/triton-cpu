@@ -51,9 +51,10 @@ public:
     Type fp32VecTy = vecTy.cloneWith(std::nullopt, rewriter.getF32Type());
     SmallVector<Value> fp32Ops;
     for (auto operand : op->getOperands())
-      fp32Ops.push_back(
-          arith::ExtFOp::create(rewriter, loc, fp32VecTy, operand));
-    auto newOp = OpT::create(rewriter, loc, fp32VecTy, fp32Ops);
+      fp32Ops.push_back(arith::ExtFOp::create(rewriter, loc, fp32VecTy, operand,
+                                              arith::FastMathFlagsAttr{}));
+    auto newOp = OpT::create(rewriter, loc, fp32VecTy, fp32Ops,
+                             typename OpT::Properties{});
     rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, vecTy, newOp);
     return success();
   }
@@ -136,7 +137,8 @@ public:
                                                         indices);
                      });
       Value subRes =
-          OpT::create(rewriter, loc, subResTy, subInputs, op->getAttrs());
+          OpT::create(rewriter, loc, subResTy, subInputs, op.getProperties(),
+                      op->getDiscardableAttrDictionary().getValue());
       newRes = vector::InsertOp::create(rewriter, loc, subRes, newRes, indices);
     }
 

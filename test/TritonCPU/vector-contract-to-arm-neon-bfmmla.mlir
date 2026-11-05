@@ -307,7 +307,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS004:.*]] = vector.shuffle %[[B0]], %[[B1]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC004:.*]] = arm_neon.intr.bfmmla %[[ACC000]], %[[LHS004]], %[[RHS004]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE00:.*]] = vector.shape_cast %[[ACC004]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT00:.*]] = vector.insert_strided_slice %[[TILE00]], %[[C]] {offsets = [0, 0], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT00:.*]] = vector.insert_strided_slice %[[TILE00]], %[[C]] offsets = [0, 0], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: %[[B2:.*]] = vector.extract %[[B]][2] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[B3:.*]] = vector.extract %[[B]][3] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[ACC02:.*]] = vector.shuffle %[[C0]], %[[C1]] [2, 3, 8, 9] : vector<6xf32>, vector<6xf32>
@@ -318,7 +318,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS024:.*]] = vector.shuffle %[[B2]], %[[B3]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC024:.*]] = arm_neon.intr.bfmmla %[[ACC020]], %[[LHS024]], %[[RHS024]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE02:.*]] = vector.shape_cast %[[ACC024]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT02:.*]] = vector.insert_strided_slice %[[TILE02]], %[[RESULT00]] {offsets = [0, 2], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT02:.*]] = vector.insert_strided_slice %[[TILE02]], %[[RESULT00]] offsets = [0, 2], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: %[[B4:.*]] = vector.extract %[[B]][4] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[B5:.*]] = vector.extract %[[B]][5] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[ACC04:.*]] = vector.shuffle %[[C0]], %[[C1]] [4, 5, 10, 11] : vector<6xf32>, vector<6xf32>
@@ -329,7 +329,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS044:.*]] = vector.shuffle %[[B4]], %[[B5]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC044:.*]] = arm_neon.intr.bfmmla %[[ACC040]], %[[LHS044]], %[[RHS044]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE04:.*]] = vector.shape_cast %[[ACC044]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT04:.*]] = vector.insert_strided_slice %[[TILE04]], %[[RESULT02]] {offsets = [0, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT04:.*]] = vector.insert_strided_slice %[[TILE04]], %[[RESULT02]] offsets = [0, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: %[[A2:.*]] = vector.extract %[[A]][2] : vector<8xbf16> from vector<4x8xbf16>
 // PACK-NEXT: %[[A3:.*]] = vector.extract %[[A]][3] : vector<8xbf16> from vector<4x8xbf16>
 // PACK-NEXT: %[[C2:.*]] = vector.extract %[[C]][2] : vector<6xf32> from vector<4x6xf32>
@@ -344,7 +344,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS204:.*]] = vector.shuffle %[[B0]], %[[B1]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC204:.*]] = arm_neon.intr.bfmmla %[[ACC200]], %[[LHS204]], %[[RHS204]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE20:.*]] = vector.shape_cast %[[ACC204]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT20:.*]] = vector.insert_strided_slice %[[TILE20]], %[[RESULT04]] {offsets = [2, 0], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT20:.*]] = vector.insert_strided_slice %[[TILE20]], %[[RESULT04]] offsets = [2, 0], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: %[[B2:.*]] = vector.extract %[[B]][2] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[B3:.*]] = vector.extract %[[B]][3] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[ACC22:.*]] = vector.shuffle %[[C2]], %[[C3]] [2, 3, 8, 9] : vector<6xf32>, vector<6xf32>
@@ -355,7 +355,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS224:.*]] = vector.shuffle %[[B2]], %[[B3]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC224:.*]] = arm_neon.intr.bfmmla %[[ACC220]], %[[LHS224]], %[[RHS224]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE22:.*]] = vector.shape_cast %[[ACC224]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT22:.*]] = vector.insert_strided_slice %[[TILE22]], %[[RESULT20]] {offsets = [2, 2], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT22:.*]] = vector.insert_strided_slice %[[TILE22]], %[[RESULT20]] offsets = [2, 2], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: %[[B4:.*]] = vector.extract %[[B]][4] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[B5:.*]] = vector.extract %[[B]][5] : vector<8xbf16> from vector<6x8xbf16>
 // PACK-NEXT: %[[ACC24:.*]] = vector.shuffle %[[C2]], %[[C3]] [4, 5, 10, 11] : vector<6xf32>, vector<6xf32>
@@ -366,7 +366,7 @@ tt.func public @emit_native_tile(%a: vector<2x4xbf16>, %b: vector<2x4xbf16>, %c:
 // PACK-NEXT: %[[RHS244:.*]] = vector.shuffle %[[B4]], %[[B5]] [4, 5, 6, 7, 12, 13, 14, 15] : vector<8xbf16>, vector<8xbf16>
 // PACK-NEXT: %[[ACC244:.*]] = arm_neon.intr.bfmmla %[[ACC240]], %[[LHS244]], %[[RHS244]] : vector<8xbf16> to vector<4xf32>
 // PACK-NEXT: %[[TILE24:.*]] = vector.shape_cast %[[ACC244]] : vector<4xf32> to vector<2x2xf32>
-// PACK-NEXT: %[[RESULT24:.*]] = vector.insert_strided_slice %[[TILE24]], %[[RESULT22]] {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PACK-NEXT: %[[RESULT24:.*]] = vector.insert_strided_slice %[[TILE24]], %[[RESULT22]] offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PACK-NEXT: tt.return %[[RESULT24]] : vector<4x6xf32>
 // PACK-NEXT: }
 tt.func public @emit_rectangular_tiles(%a: vector<4x8xbf16>, %b: vector<6x8xbf16>, %c: vector<4x6xf32>) -> vector<4x6xf32> {
@@ -431,7 +431,7 @@ tt.func public @mm_defaults(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vect
 // CANON-NEXT: %[[BT:.*]] = vector.transpose %[[B]], [1, 0] : vector<8x6xbf16> to vector<6x8xbf16>
 // CANON: %[[B0:.*]] = vector.extract %[[BT]][0] : vector<8xbf16> from vector<6x8xbf16>
 // CANON-COUNT-12: arm_neon.intr.bfmmla
-// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // CANON-NEXT: tt.return %[[R]] : vector<4x6xf32>
 tt.func public @rectangular(%a: vector<4x8xbf16>, %b: vector<8x6xbf16>, %c: vector<4x6xf32>) -> vector<4x6xf32> {
   %0 = vector.contract #mm %a, %b, %c : vector<4x8xbf16>, vector<8x6xbf16> into vector<4x6xf32>
@@ -443,7 +443,7 @@ tt.func public @rectangular(%a: vector<4x8xbf16>, %b: vector<8x6xbf16>, %c: vect
 // CANON-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<6x8xbf16>, %[[C:.*]]: vector<4x6xf32>
 // CANON: %[[B0:.*]] = vector.extract %[[B]][0] : vector<8xbf16> from vector<6x8xbf16>
 // CANON-COUNT-12: arm_neon.intr.bfmmla
-// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // CANON-NEXT: tt.return %[[R]] : vector<4x6xf32>
 tt.func public @mmt(%a: vector<4x8xbf16>, %b: vector<6x8xbf16>, %c: vector<4x6xf32>) -> vector<4x6xf32> {
   %0 = vector.contract #mmt %a, %b, %c : vector<4x8xbf16>, vector<6x8xbf16> into vector<4x6xf32>
@@ -455,7 +455,7 @@ tt.func public @mmt(%a: vector<4x8xbf16>, %b: vector<6x8xbf16>, %c: vector<4x6xf
 // CANON-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<6x8xbf16>, %[[C:.*]]: vector<4x6xf32>
 // CANON: %[[B0:.*]] = vector.extract %[[B]][0] : vector<8xbf16> from vector<6x8xbf16>
 // CANON-COUNT-12: arm_neon.intr.bfmmla
-// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// CANON: %[[R:.*]] = vector.insert_strided_slice {{.*}} offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // CANON-NEXT: tt.return %[[R]] : vector<4x6xf32>
 tt.func public @mmt_defaults(%a: vector<4x8xbf16>, %b: vector<6x8xbf16>, %c: vector<4x6xf32>) -> vector<4x6xf32> {
   %0 = vector.contract #mmt %a, %b, %c {kind = #vector.kind<add>, fastmath = #arith.fastmath<none>} : vector<4x8xbf16>, vector<6x8xbf16> into vector<4x6xf32>
@@ -539,7 +539,7 @@ tt.func public @reject_mask(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vect
 // PIPELINE-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<8x6xbf16>, %[[X:.*]]: vector<4x6xbf16>, %[[Y:.*]]: vector<6x6xbf16>, %[[C:.*]]: vector<4x6xf32>
 // PIPELINE-NEXT: %[[BT:.*]] = vector.transpose %[[B]], [1, 0] : vector<8x6xbf16> to vector<6x8xbf16>
 // PIPELINE-COUNT-12: arm_neon.intr.bfmmla
-// PIPELINE: %[[ACCEPTED:.*]] = vector.insert_strided_slice {{.*}} {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// PIPELINE: %[[ACCEPTED:.*]] = vector.insert_strided_slice {{.*}} offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // PIPELINE-NEXT: %[[REJECTED:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MM_MAP]], #[[$ACC_MAP]]]{{.*}} %[[X]], %[[Y]], %[[C]] : vector<4x6xbf16>, vector<6x6xbf16> into vector<4x6xf32>
 // PIPELINE-NEXT: tt.return %[[ACCEPTED]], %[[REJECTED]] : vector<4x6xf32>, vector<4x6xf32>
 
@@ -547,7 +547,7 @@ tt.func public @reject_mask(%a: vector<2x4xbf16>, %b: vector<4x2xbf16>, %c: vect
 // FALLBACK-SAME: %[[A:.*]]: vector<4x8xbf16>, %[[B:.*]]: vector<8x6xbf16>, %[[X:.*]]: vector<4x6xbf16>, %[[Y:.*]]: vector<6x6xbf16>, %[[C:.*]]: vector<4x6xf32>
 // FALLBACK-NEXT: %[[BT:.*]] = vector.transpose %[[B]], [1, 0] : vector<8x6xbf16> to vector<6x8xbf16>
 // FALLBACK-COUNT-12: arm_neon.intr.bfmmla
-// FALLBACK: %[[ACCEPTED:.*]] = vector.insert_strided_slice {{.*}} {offsets = [2, 4], strides = [1, 1]} : vector<2x2xf32> into vector<4x6xf32>
+// FALLBACK: %[[ACCEPTED:.*]] = vector.insert_strided_slice {{.*}} offsets = [2, 4], strides = [1, 1] : vector<2x2xf32> into vector<4x6xf32>
 // FALLBACK-NEXT: %[[XF:.*]] = arith.extf %[[X]] : vector<4x6xbf16> to vector<4x6xf32>
 // FALLBACK-NEXT: %[[YF:.*]] = arith.extf %[[Y]] : vector<6x6xbf16> to vector<6x6xf32>
 // FALLBACK-NEXT: %[[REJECTED:.*]] = vector.contract {indexing_maps = [#[[$LHS_MAP]], #[[$MM_MAP]], #[[$ACC_MAP]]]{{.*}} %[[XF]], %[[YF]], %[[C]] : vector<4x6xf32>, vector<6x6xf32> into vector<4x6xf32>

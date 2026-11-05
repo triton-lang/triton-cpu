@@ -8,6 +8,9 @@ def TritonCPU_Dialect : Dialect {
 
   let cppNamespace = "::mlir::triton::cpu";
 
+  // Preserve the existing attr-dict syntax for inherent attributes.
+  let useStrictPropertiesInAssemblyFormat = 0;
+
   let hasOperationAttrVerify = 1;
 
   let description = [{

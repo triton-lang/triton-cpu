@@ -6,7 +6,7 @@
 // CHECK-LABEL: @test_two_tiles_four_mulf
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %0 : <16x64xbf16> -> memref<16x64xbf16, strided<[64, 1]>>
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %1 : <64x32xbf16> -> memref<64x32xbf16, strided<[32, 1]>>
-// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<16x32xf32>
+// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() alignment = 64 : memref<16x32xf32>
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_MEMREF]] : memref<16x64xbf16, strided<[64, 1]>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE4:.+]], %[[NONE5:.+]], %[[NONE6:.+]]:2, %[[RHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[RHS_MEMREF]] : memref<64x32xbf16, strided<[32, 1]>> -> memref<bf16>, index, index, index, index, index
 // CHECK:       %[[NONE7:.+]], %[[NONE8:.+]], %[[NONE0:.+]]:2, %[[ACC_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[ACC_BUF]] : memref<16x32xf32> -> memref<f32>, index, index, index, index, index
@@ -56,7 +56,7 @@ module {
 // CHECK:       %[[LOOP_LENGTH:.+]] = arith.subi %c128{{.*}}, %c0{{.*}} : i32
 // CHECK:       %[[NUM_BATCHES_INT:.+]] = arith.divui %[[LOOP_LENGTH]], %c64{{.*}} : i32
 // CHECK:       %[[NUM_BATCHES:.+]] = arith.index_cast %[[NUM_BATCHES_INT]] : i32 to index
-// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() {alignment = 64 : i64} : memref<64x32xf32>
+// CHECK:       %[[ACC_BUF:.+]] = memref.alloca() alignment = 64 : memref<64x32xf32>
 // CHECK:       %[[LHS_SUBVIEW:.+]] = memref.subview %[[LHS_MEMREF]][0, %[[IDX_0]]] [64, 64] [1, 1] : memref<64x128xbf16, strided<[128, 1]>> to memref<64x64xbf16, strided<[128, 1], offset: ?>>
 // CHECK:       %[[RHS_SUBVIEW:.+]] = memref.subview %[[RHS_MEMREF]][%[[IDX_0]], 0] [64, 32] [1, 1] : memref<128x32xbf16, strided<[32, 1]>> to memref<64x32xbf16, strided<[32, 1], offset: ?>>
 // CHECK:       %[[NONE1:.+]], %[[NONE2:.+]], %[[NONE3:.+]]:2, %[[LHS_STRIDES:.+]]:2 = memref.extract_strided_metadata %[[LHS_SUBVIEW]] : memref<64x64xbf16, strided<[128, 1], offset: ?>> -> memref<bf16>, index, index, index, index, index
@@ -121,9 +121,9 @@ module {
 // CHECK-LABEL: @test_loop_with_transpose
 // CHECK:       %[[LHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <1x1x32x32xbf16> -> memref<?x?x32x32xbf16, strided<[?, 1024, 32, 1]>>
 // CHECK:       %[[RHS_MEMREF:.+]] = triton_cpu.extract_memref %{{.+}} : <1x1x16x64xbf16> -> memref<?x?x16x64xbf16, strided<[1024, ?, 64, 1]>>
-// CHECK:       %[[LHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
-// CHECK:       %[[RHS_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xbf16>
-// CHECK:       %[[RES_ALLOCA:.*]] = memref.alloca() {alignment = 64 : i64} : memref<32x32xf32>
+// CHECK:       %[[LHS_ALLOCA:.*]] = memref.alloca() alignment = 64 : memref<32x32xbf16>
+// CHECK:       %[[RHS_ALLOCA:.*]] = memref.alloca() alignment = 64 : memref<32x32xbf16>
+// CHECK:       %[[RES_ALLOCA:.*]] = memref.alloca() alignment = 64 : memref<32x32xf32>
 // CHECK:       vector.transfer_write %cst_0, %[[RES_ALLOCA]][%c0, %c0] {in_bounds = [true, true]} : vector<32x32xf32>, memref<32x32xf32>
 // CHECK:       %[[LOOP_RES:.+]] = scf.for %[[IV1:.*]] = %c0_i32 to %{{.+}} step %c1_i32 iter_args(%[[RES_IV:.*]] = %cst_0) -> (vector<32x32xf32>)  : i32 {
 // CHECK:         %[[IDX_K:.+]] = arith.index_cast %[[IV1]] : i32 to index

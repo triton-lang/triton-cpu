@@ -256,7 +256,7 @@ class CPUBackend(BaseBackend):
         num_warp_groups = src.get_int_attr("triton_gpu.num-warp-groups-per-cta")
         if num_warp_groups is not None:
             metadata["num_warps"] *= num_warp_groups
-        metadata["threads_per_warp"] = 1
+        metadata["warp_size"] = self.target.warp_size
         mod = src
         # TritonCPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
@@ -332,7 +332,7 @@ class CPUBackend(BaseBackend):
 
     @staticmethod
     def make_asm(src, metadata, options):
-        return cpu.llvm.translate_to_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+        return cpu.llvm.translate_to_asm(src)
 
     @staticmethod
     def make_so(src, metadata, options):
