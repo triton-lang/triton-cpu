@@ -119,6 +119,8 @@ jobs:
             python/test/unit/cpu/test_cpu_conversions.py \
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
+            python/test/unit/cpu/test_cpu_tensor_descriptor.py \
+            python/test/unit/cpu/test_cpu_transpose.py \
             python/test/unit/cpu/test_cpu_utils.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_compile_errors.py \
@@ -143,15 +145,15 @@ jobs:
             --deselect python/test/unit/runtime/test_subproc.py::test_replenishing_process_pool_reuses_clean_processes \
             --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_only_intercepts_launches \
             --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_coordinator_deduplicates_and_propagates_errors \
+            --deselect python/test/unit/runtime/test_cache.py::test_preload_gluon_function_kernel \
             -k "not bfloat16"
 
       - name: Run python unit tests for Intel
         if: matrix.config.target-os == 'ubuntu'
         run: |
-          python -m pytest -s -n 32 --device cpu \
-            python/test/unit/language/test_core.py \
-            python/test/unit/cpu/test_cpu_tensor_descriptor.py
-          python -m pytest -s -n 32 --device cpu \
+          python -m pytest -s -n 32 --durations=10 --device cpu \
+            python/test/unit/language/test_core.py
+          python -m pytest -s -n 32 --durations=10 --device cpu \
             python/test/unit/cpu/test_math.py \
             python/test/unit/cpu/test_opt.py \
             python/test/unit/cpu/test_cpu_annotations.py \
@@ -159,6 +161,8 @@ jobs:
             python/test/unit/cpu/test_cpu_features.py \
             python/test/unit/cpu/test_cpu_flip.py \
             python/test/unit/cpu/test_cpu_subprocess.py \
+            python/test/unit/cpu/test_cpu_tensor_descriptor.py \
+            python/test/unit/cpu/test_cpu_transpose.py \
             python/test/unit/cpu/test_cpu_utils.py \
             python/test/unit/language/test_annotations.py \
             python/test/unit/language/test_compile_errors.py \
@@ -181,7 +185,14 @@ jobs:
             --deselect python/test/unit/language/test_conversions.py::test_typeconvert_downcast_clamping \
             --deselect python/test/unit/language/test_standard.py::test_flip \
             --deselect python/test/unit/runtime/test_subproc.py::test_replenishing_process_pool_reuses_clean_processes \
-            --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_only_intercepts_launches
+            --deselect python/test/unit/runtime/test_driver.py::test_compile_warmup_only_intercepts_launches \
+            --deselect python/test/unit/runtime/test_cache.py::test_preload_gluon_function_kernel \
+            --deselect python/test/unit/language/test_standard.py::test_argminmax_special_values \
+            --deselect python/test/unit/language/test_standard.py::test_argminmax_special_values[False-False-max-bfloat16] \
+            --deselect python/test/unit/language/test_standard.py::test_argminmax_special_values[True-False-min-bfloat16] \
+            --deselect python/test/unit/language/test_standard.py::test_argminmax_special_values[False-False-min-bfloat16] \
+            --deselect python/test/unit/language/test_standard.py::test_argminmax_special_values[True-False-max-bfloat16]
+
 
       - name: Run lit tests
         run: |

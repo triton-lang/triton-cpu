@@ -10,6 +10,9 @@
 #include "cpu/include/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
+
 #include <numeric>
 
 namespace mlir {
@@ -221,46 +224,27 @@ struct ReduceOpConversion
       initVal = rewriter.getOneAttr(elemTy);
     else if (kind == vector::CombiningKind::AND ||
              kind == vector::CombiningKind::MINUI)
-      initVal = rewriter.getIntegerAttr(elemTy, -1);
+      initVal = rewriter.getIntegerAttr(
+          elemTy, llvm::APInt::getAllOnes(elemTy.getIntOrFloatBitWidth()));
     else if (kind == vector::CombiningKind::MAXSI)
       initVal = rewriter.getIntegerAttr(
           elemTy,
-          static_cast<int64_t>(-(1UL << (elemTy.getIntOrFloatBitWidth() - 1))));
+          llvm::APInt::getSignedMinValue(elemTy.getIntOrFloatBitWidth()));
     else if (kind == vector::CombiningKind::MINSI)
       initVal = rewriter.getIntegerAttr(
-          elemTy, static_cast<int64_t>(
-                      (1UL << (elemTy.getIntOrFloatBitWidth() - 1)) - 1));
+          elemTy,
+          llvm::APInt::getSignedMaxValue(elemTy.getIntOrFloatBitWidth()));
     else if (kind == vector::CombiningKind::MINIMUMF ||
-             kind == vector::CombiningKind::MAXIMUMF) {
-      if (elemTy.isF32())
-        initVal =
-            rewriter.getF32FloatAttr(std::numeric_limits<float>::quiet_NaN());
-      else if (elemTy.isF64())
-        initVal =
-            rewriter.getF64FloatAttr(std::numeric_limits<double>::quiet_NaN());
-      else
-        llvm_unreachable("Unsupported type for acc init value.");
-    }
-
-    else if (kind == vector::CombiningKind::MINNUMF) {
-      if (elemTy.isF32())
-        initVal =
-            rewriter.getF32FloatAttr(std::numeric_limits<float>::infinity());
-      else if (elemTy.isF64())
-        initVal =
-            rewriter.getF64FloatAttr(std::numeric_limits<double>::infinity());
-      else
-        llvm_unreachable("Unsupported type for acc init value.");
-    } else if (kind == vector::CombiningKind::MAXNUMF) {
-      if (elemTy.isF32())
-        initVal =
-            rewriter.getF32FloatAttr(-std::numeric_limits<float>::infinity());
-      else if (elemTy.isF64())
-        initVal =
-            rewriter.getF64FloatAttr(-std::numeric_limits<double>::infinity());
-      else
-        llvm_unreachable("Unsupported type for acc init value.");
-    }
+             kind == vector::CombiningKind::MAXIMUMF)
+      initVal = rewriter.getFloatAttr(
+          elemTy,
+          llvm::APFloat::getQNaN(cast<FloatType>(elemTy).getFloatSemantics()));
+    else if (kind == vector::CombiningKind::MINNUMF ||
+             kind == vector::CombiningKind::MAXNUMF)
+      initVal = rewriter.getFloatAttr(
+          elemTy,
+          llvm::APFloat::getInf(cast<FloatType>(elemTy).getFloatSemantics(),
+                                kind == vector::CombiningKind::MAXNUMF));
 
     if (vecTy)
       initVal = SplatElementsAttr::get(vecTy, initVal);

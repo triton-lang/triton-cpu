@@ -171,6 +171,9 @@ typedef struct _DevicePtrInfo {{
   bool valid;
 }} DevicePtrInfo;
 
+static PyObject *data_ptr_str = NULL;
+static PyObject *num_cpu_threads_str = NULL;
+
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
@@ -185,7 +188,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     // valid nullptr
     return ptr_info;
   }}
-  PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
+  PyObject *ptr = PyObject_GetAttr(obj, data_ptr_str);
   if(ptr){{
     PyObject *empty_tuple = PyTuple_New(0);
     if (!empty_tuple) {{
@@ -289,7 +292,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // Extract num_threads metadata.
   int num_threads = 0;
-  PyObject *num_threads_attr = PyObject_GetAttrString(kernel_metadata, "num_cpu_threads");
+  PyObject *num_threads_attr = PyObject_GetAttr(kernel_metadata, num_cpu_threads_str);
   if (num_threads_attr) {{
     if (PyLong_Check(num_threads_attr)) {{
       num_threads = PyLong_AsLong(num_threads_attr);
@@ -352,6 +355,17 @@ static struct PyModuleDef ModuleDef = {{
 PyMODINIT_FUNC PyInit___triton_cpu_launcher(void) {{
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
+    return NULL;
+  }}
+  data_ptr_str = PyUnicode_InternFromString("data_ptr");
+  if (data_ptr_str == NULL) {{
+    Py_DECREF(m);
+    return NULL;
+  }}
+  num_cpu_threads_str = PyUnicode_InternFromString("num_cpu_threads");
+  if (num_cpu_threads_str == NULL) {{
+    Py_CLEAR(data_ptr_str);
+    Py_DECREF(m);
     return NULL;
   }}
   PyModule_AddFunctions(m, ModuleMethods);

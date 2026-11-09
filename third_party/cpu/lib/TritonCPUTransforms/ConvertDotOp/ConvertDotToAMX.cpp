@@ -404,7 +404,7 @@ MemBuffer prepareTensorBuffer(Location loc, Value val, bool interleave,
     return inputBuf;
   }
 
-  if (skipForZeros && isZeroConst(val)) {
+  if (skipForZeros && isZeroFillConst(val)) {
     LDBG("Skip buffer for zero vector.");
     return {};
   }

@@ -5,7 +5,7 @@
 // TODO: There is an optimization opportunity to reuse temp buffers.
 
 // CHECK-LABEL: @strided_masked_load_store
-// CHECK:       %[[ALLOCA1:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xf32>
+// CHECK:       %[[ALLOCA1:.*]] = memref.alloca() alignment = 64 : memref<128xf32>
 // CHECK-NEXT:  scf.for %[[IV1:.*]] = %c0 to %c128 step %c1 {
 // CHECK-NEXT:    %[[IV1_I32:.*]] = arith.index_castui %[[IV1]] : index to i32
 // CHECK-NEXT:    %[[IDX1:.*]] = arith.muli %[[IV1_I32]], %c3_i32 : i32
@@ -19,7 +19,7 @@
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT:  %[[TENSOR_VAL:.*]] = triton_cpu.load %[[ALLOCA1]] : memref<128xf32> -> tensor<128xf32>
-// CHECK-NEXT:  %[[ALLOCA2:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xf32>
+// CHECK-NEXT:  %[[ALLOCA2:.*]] = memref.alloca() alignment = 64 : memref<128xf32>
 // CHECK-NEXT:  triton_cpu.store %[[TENSOR_VAL]], %[[ALLOCA2]] : tensor<128xf32>, memref<128xf32>
 // CHECK-NEXT:  scf.for %[[IV2:.*]] = %c0 to %c128 step %c1 {
 // CHECK-NEXT:    %[[IV2_I32:.*]] = arith.index_castui %[[IV2]] : index to i32
@@ -57,11 +57,11 @@ module {
 // TODO: There is an optimization opportunity to reuse temp buffers.
 
 // CHECK-LABEL: @indirect_masked_load_store
-// CHECK:       %[[ALLOCA_VALS1:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xf32>
-// CHECK-NEXT:  %[[ALLOCA_PTRS1:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xi64>
+// CHECK:       %[[ALLOCA_VALS1:.*]] = memref.alloca() alignment = 64 : memref<128xf32>
+// CHECK-NEXT:  %[[ALLOCA_PTRS1:.*]] = memref.alloca() alignment = 64 : memref<128xi64>
 // CHECK-NEXT:  triton_cpu.store %{{.*}}, %[[ALLOCA_PTRS1]] : tensor<128x!tt.ptr<f32>>, memref<128xi64>
 // CHECK-NEXT:  %[[EXT_MASK:.*]] = arith.extui %{{.*}} : tensor<128xi1> to tensor<128xi8>
-// CHECK-NEXT:  %[[ALLOCA_MASK1:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xi8>
+// CHECK-NEXT:  %[[ALLOCA_MASK1:.*]] = memref.alloca() alignment = 64 : memref<128xi8>
 // CHECK-NEXT:  triton_cpu.store %[[EXT_MASK]], %[[ALLOCA_MASK1]] : tensor<128xi8>, memref<128xi8>
 // CHECK-NEXT:  scf.for %[[IV1:.*]] = %c0 to %c128 step %c1 {
 // CHECK-NEXT:    %[[PTR1_INT:.*]] = memref.load %[[ALLOCA_PTRS1]][%[[IV1]]] : memref<128xi64>
@@ -76,11 +76,11 @@ module {
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT:  %[[TENSOR_VAL:.*]] = triton_cpu.load %[[ALLOCA_VALS1]] : memref<128xf32> -> tensor<128xf32>
-// CHECK:       %[[ALLOCA_PTRS2:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xi64>
+// CHECK:       %[[ALLOCA_PTRS2:.*]] = memref.alloca() alignment = 64 : memref<128xi64>
 // CHECK-NEXT:  triton_cpu.store %{{.*}}, %[[ALLOCA_PTRS2]] : tensor<128x!tt.ptr<f32>>, memref<128xi64>
-// CHECK-NEXT:  %[[ALLOCA_MASK2:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xi8>
+// CHECK-NEXT:  %[[ALLOCA_MASK2:.*]] = memref.alloca() alignment = 64 : memref<128xi8>
 // CHECK-NEXT:  triton_cpu.store %[[EXT_MASK]], %[[ALLOCA_MASK2]] : tensor<128xi8>, memref<128xi8>
-// CHECK-NEXT:  %[[ALLOCA_VALS2:.*]] = memref.alloca() {alignment = 64 : i64} : memref<128xf32>
+// CHECK-NEXT:  %[[ALLOCA_VALS2:.*]] = memref.alloca() alignment = 64 : memref<128xf32>
 // CHECK-NEXT:  triton_cpu.store %[[TENSOR_VAL]], %[[ALLOCA_VALS2]] : tensor<128xf32>, memref<128xf32>
 // CHECK-NEXT:  scf.for %[[IV2:.*]] = %c0 to %c128 step %c1 {
 // CHECK-NEXT:    %[[PTR2_INT:.*]] = memref.load %[[ALLOCA_PTRS2]][%[[IV2]]] : memref<128xi64>

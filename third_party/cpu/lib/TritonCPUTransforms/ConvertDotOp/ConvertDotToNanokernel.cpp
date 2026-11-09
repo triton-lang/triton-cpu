@@ -310,7 +310,7 @@ bool isNanokernelCandidate(triton::cpu::DotOp op, DotOpCandidate &candidate,
   vector::TransferReadOp accRead =
       accInitValue.getDefiningOp<vector::TransferReadOp>();
   arith::ConstantOp accConstInit;
-  if (!accRead && isZeroConst(accInitValue) &&
+  if (!accRead && isZeroFillConst(accInitValue) &&
       (mask & ~(AMX_BF16 | AMX_INT8 | AMX_FP8))) {
     // AMX lowering doesn't support direct zero-initialization yet.
     accConstInit = accInitValue.getDefiningOp<arith::ConstantOp>();
@@ -1238,7 +1238,7 @@ struct ElideSelfCopyPattern : public OpRewritePattern<vector::StoreOp> {
 // we can replace loads and transfer_reads from it with constants.
 void elideZeroAcc(DotOpCandidate &candidate, PatternRewriter &rewriter) {
   if (candidate.accConstInit ||
-      !isZeroConst(candidate.accInit.getValueToStore()))
+      !isZeroFillConst(candidate.accInit.getValueToStore()))
     return;
 
   // Bail out if there's an unexpected user of the accumulation buffer.

@@ -118,6 +118,14 @@ Value convertFp8(Location loc, Value src, int srcExpBits, int srcExpBias,
     double scale = pow(2, dstExpBias - srcExpBias);
     res = op_mulf(res, cst_like(res, scale));
   }
+  // E4M3FN reserves 0x7f and 0xff for NaN, not finite +/-480.
+  if (isa<Float8E4M3FNType>(getElemTyOrTy(srcTy))) {
+    Value magnitude = op_and(intSrc, cst_like(intSrc, 0x7f));
+    Value isNan = op_icmp_eq(magnitude, cst_like(intSrc, 0x7f));
+    int quietNanBits = dstFpTy.isF16() ? 0x7e00 : 0x7fc00000;
+    Value quietNan = op_bitcast(dstTy, cst_like(intSrc, quietNanBits));
+    res = op_select(isNan, quietNan, res);
+  }
   return res;
 }
 
@@ -289,64 +297,64 @@ Value convertFp16ToFp8E5M2Rtne(Location loc, Value src,
 
 Value convertFp16ToFp8E5M2B16Rtz(Location loc, Value src,
                                  PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2FNUZType>(),
                       5, 16, false, true, rewriter);
 }
 
 Value convertFp16ToFp8E5M2B16Rtne(Location loc, Value src,
                                   PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2FNUZType>(),
                       5, 16, true, true, rewriter);
 }
 
 Value convertBf16ToFp8E4M3Rtz(Location loc, Value src,
                               PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E4M3FNType>(),
                       4, 7, false, false, rewriter);
 }
 
 Value convertBf16ToFp8E4M3Rtne(Location loc, Value src,
                                PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E4M3FNType>(),
                       4, 7, true, false, rewriter);
 }
 
 Value convertBf16ToFp8E5M2Rtz(Location loc, Value src,
                               PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2Type>(), 5,
                       15, false, false, rewriter);
 }
 
 Value convertBf16ToFp8E5M2Rtne(Location loc, Value src,
                                PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2Type>(), 5,
                       15, true, false, rewriter);
 }
 
 Value convertBf16ToFp8E5M2B16Rtz(Location loc, Value src,
                                  PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2FNUZType>(),
                       5, 16, false, true, rewriter);
 }
 
 Value convertBf16ToFp8E5M2B16Rtne(Location loc, Value src,
                                   PatternRewriter &rewriter) {
-  Value f32Src =
-      arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()), src);
+  Value f32Src = arith::ExtFOp::create(rewriter, loc, toFp32(src.getType()),
+                                       src, arith::FastMathFlagsAttr{});
   return convertToFp8(loc, f32Src, rewriter.getType<mlir::Float8E5M2FNUZType>(),
                       5, 16, true, true, rewriter);
 }
