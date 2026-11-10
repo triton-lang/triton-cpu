@@ -1,4 +1,5 @@
 // RUN: triton-opt %s -split-input-file -triton-cpu-convert-atomic-ops | FileCheck %s
+// RUN: triton-opt %s -split-input-file -triton-cpu-convert-atomic-ops -triton-cpu-atomic-ops-to-llvm | FileCheck %s --check-prefix=LLVM
 
 // Convert atomic ops with non-constant masks into scf.if + maskless atomic op.
 // Check that the final tt.atomic_rmw only has 5 parameters (the 6th would be the mask).
@@ -32,5 +33,47 @@ module {
     %10 = builtin.unrealized_conversion_cast %9 : vector<16xi1> to tensor<16xi1>
     %11 = tt.atomic_rmw fadd, acq_rel, gpu, %4, %0, %10 : (tensor<16x!tt.ptr<f32>>, tensor<16xf32>, tensor<16xi1>) -> tensor<16xf32>
     tt.return
+  }
+}
+
+// -----
+
+// Each scalar atomic_cas result must be inserted into the returned vector.
+
+// CHECK-LABEL: @atomic_cas_tensor
+// CHECK:       %[[ZERO:.+]] = arith.constant dense<0> : vector<2xi32>
+// CHECK:       %[[OLD0:.+]] = tt.atomic_cas relaxed, gpu
+// CHECK-NEXT:  %[[RES0:.+]] = vector.insert %[[OLD0]], %[[ZERO]] [0] : i32 into vector<2xi32>
+// CHECK:       %[[OLD1:.+]] = tt.atomic_cas relaxed, gpu
+// CHECK-NEXT:  %[[RES1:.+]] = vector.insert %[[OLD1]], %[[RES0]] [1] : i32 into vector<2xi32>
+// CHECK-NEXT:  %[[CAST:.+]] = builtin.unrealized_conversion_cast %[[RES1]]
+// CHECK-NEXT:  tt.return %[[CAST]]
+
+module {
+  tt.func @atomic_cas_tensor(%ptrs: vector<2xi64>, %cmp: vector<2xi32>, %val: vector<2xi32>) -> tensor<2xi32> {
+    %p = builtin.unrealized_conversion_cast %ptrs : vector<2xi64> to tensor<2x!tt.ptr<i32>>
+    %c = builtin.unrealized_conversion_cast %cmp : vector<2xi32> to tensor<2xi32>
+    %v = builtin.unrealized_conversion_cast %val : vector<2xi32> to tensor<2xi32>
+    %r = tt.atomic_cas relaxed, gpu, %p, %c, %v : (tensor<2x!tt.ptr<i32>>, tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+    tt.return %r : tensor<2xi32>
+  }
+}
+
+// -----
+
+// cmpxchg only takes integers, so floating-point atomic_cas compares bitwise.
+
+// LLVM-LABEL: @atomic_cas_f16
+// LLVM:       %[[CMP:.+]] = llvm.bitcast %{{.+}} : f16 to i16
+// LLVM-NEXT:  %[[VAL:.+]] = llvm.bitcast %{{.+}} : f16 to i16
+// LLVM-NEXT:  %[[PAIR:.+]] = llvm.cmpxchg %{{.+}}, %[[CMP]], %[[VAL]] acq_rel acquire : !llvm.ptr, i16
+// LLVM-NEXT:  %[[OLD:.+]] = llvm.extractvalue %[[PAIR]][0] : !llvm.struct<(i16, i1)>
+// LLVM-NEXT:  %[[RES:.+]] = llvm.bitcast %[[OLD]] : i16 to f16
+// LLVM-NEXT:  tt.return %[[RES]] : f16
+
+module {
+  tt.func @atomic_cas_f16(%ptr: !tt.ptr<f16>, %cmp: f16, %val: f16) -> f16 {
+    %r = tt.atomic_cas acq_rel, gpu, %ptr, %cmp, %val : (!tt.ptr<f16>, f16, f16) -> f16
+    tt.return %r : f16
   }
 }

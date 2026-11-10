@@ -158,7 +158,7 @@ struct AtomicCASOpConversion : public OpConversionPattern<triton::AtomicCASOp> {
     auto ptrTy = cast<RankedTensorType>(op.getPtr().getType()).getElementType();
     auto vecTy = cast<VectorType>(vals.getType());
     auto strides = computeStrides(vecTy.getShape());
-    auto res =
+    Value res =
         arith::ConstantOp::create(rewriter, loc, rewriter.getZeroAttr(vecTy));
     int64_t numElems = vecTy.getNumElements();
     for (int64_t idx = 0; idx < numElems; ++idx) {
@@ -169,7 +169,7 @@ struct AtomicCASOpConversion : public OpConversionPattern<triton::AtomicCASOp> {
       Value cmpVal = vector::ExtractOp::create(rewriter, loc, cmpVals, indices);
       Value resElem = triton::AtomicCASOp::create(rewriter, loc, val.getType(),
                                                   ptr, cmpVal, val, sem, scope);
-      vector::InsertOp::create(rewriter, loc, resElem, res, indices);
+      res = vector::InsertOp::create(rewriter, loc, resElem, res, indices);
     }
 
     rewriter.replaceOp(op, res);

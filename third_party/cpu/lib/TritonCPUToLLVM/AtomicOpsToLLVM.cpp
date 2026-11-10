@@ -108,9 +108,19 @@ struct AtomicCASOpConversion : public OpConversionPattern<AtomicCASOp> {
     auto failureOrdering = ordering != LLVM::AtomicOrdering::monotonic
                                ? LLVM::AtomicOrdering::acquire
                                : ordering;
+    // cmpxchg only takes integers and pointers, so floating-point values are
+    // compared bitwise through an integer of the same width.
+    Type valTy = val.getType();
+    if (isa<FloatType>(valTy)) {
+      Type intTy = rewriter.getIntegerType(valTy.getIntOrFloatBitWidth());
+      cmp = LLVM::BitcastOp::create(rewriter, loc, intTy, cmp);
+      val = LLVM::BitcastOp::create(rewriter, loc, intTy, val);
+    }
     Value cmpXchg = LLVM::AtomicCmpXchgOp::create(rewriter, loc, ptr, cmp, val,
                                                   ordering, failureOrdering);
     Value oldVal = LLVM::ExtractValueOp::create(rewriter, loc, cmpXchg, 0);
+    if (oldVal.getType() != valTy)
+      oldVal = LLVM::BitcastOp::create(rewriter, loc, valTy, oldVal);
     rewriter.replaceOp(op, oldVal);
     return success();
   }
