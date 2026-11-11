@@ -148,6 +148,7 @@ CPU_TEST_CORE_ALLOWLIST = frozenset([
     "test_tensor_atomic_cas",
     "test_tensor_atomic_rmw",
     "test_tensor_atomic_rmw_block",
+    "test_tensor_atomic_use_result",
     "test_tl_range_num_stages",
     "test_tl_range_option_none",
     "test_trans_2d",
