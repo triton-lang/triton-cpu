@@ -139,19 +139,26 @@ struct FpToFpOpConversion : public OpConversionPattern<triton::FpToFpOp> {
                          ? cast<VectorType>(resTy).getElementType()
                          : resTy;
 
-    if (srcElemTy.getIntOrFloatBitWidth() > resElemTy.getIntOrFloatBitWidth()) {
+    unsigned srcElemWidth = srcElemTy.getIntOrFloatBitWidth();
+    unsigned resElemWidth = resElemTy.getIntOrFloatBitWidth();
+    if (srcElemWidth >= resElemWidth) {
       std::optional<RoundingMode> rounding = op.getRounding();
       assert(rounding && "Rounding mode expected for truncate conversions");
       auto roundingAttr = arith::RoundingModeAttr::get(
           getContext(), *rounding == RoundingMode::RTZ
                             ? arith::RoundingMode::toward_zero
                             : arith::RoundingMode::to_nearest_even);
-      rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, resTy, src, roundingAttr,
-                                                   nullptr);
+      if (srcElemWidth > resElemWidth)
+        rewriter.replaceOpWithNewOp<arith::TruncFOp>(
+            op, resTy, src, roundingAttr, arith::FastMathFlagsAttr{});
+      else
+        rewriter.replaceOpWithNewOp<arith::ConvertFOp>(
+            op, resTy, src, roundingAttr, arith::FastMathFlagsAttr{});
+
       return success();
     }
 
-    if (srcElemTy.getIntOrFloatBitWidth() < resElemTy.getIntOrFloatBitWidth()) {
+    if (srcElemWidth < resElemWidth) {
       rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, resTy, src);
       return success();
     }
