@@ -265,6 +265,12 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_ukernels_to_onednn_llvmir(pm)
         if options.get_ukernels() == Ukernels.XSMM:
             cpu.passes.ttcpuir.add_ukernels_to_xsmm_llvmir(pm)
+        # Map inlining creates CFG blocks, so lower enclosing structured
+        # control flow first. Then expose deferred tensor operations before
+        # the vector and memory lowering passes.
+        passes.convert.add_scf_to_cf(pm)
+        cpu.passes.ttcpuir.add_map_elementwise_to_llvmir(pm)
+        cpu.passes.ttcpuir.add_convert_elem_manip_ops(pm)
         if {"sve", "sve2"} & self.cpu_features:
             cpu.passes.ttcpuir.add_lower_sve(pm)
         cpu.passes.ttcpuir.add_lower_vector_multi_dim(pm)
