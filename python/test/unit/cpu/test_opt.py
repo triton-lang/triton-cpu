@@ -113,3 +113,81 @@ def test_cpu_triple_matches_compiled_target(device):
     expected_arch = arch_aliases.get(machine, machine)
     reported_arch = triple.split("-")[0]
     assert arch_aliases.get(reported_arch, reported_arch) == expected_arch
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("allow_fp_fusion", [False, True])
+@pytest.mark.parametrize("default_fp_fusion", [False, True])
+@pytest.mark.parametrize("enable_fp_fusion", [None, False, True])
+@pytest.mark.parametrize("enable_fast_math", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("scalar", [False, True])
+@pytest.mark.parametrize("explicit_fma", [False, True])
+@pytest.mark.parametrize("subtract", [False, True])
+def test_cpu_fp_fusion(allow_fp_fusion, default_fp_fusion, enable_fp_fusion, enable_fast_math, dtype, scalar,
+                       explicit_fma, subtract, device, fresh_knobs, tmp_path):
+    if device != "cpu":
+        pytest.skip("CPU fusion test requires --device cpu.")
+
+    @triton.jit
+    def kernel(A, B, C, Out, N, SCALAR: tl.constexpr, EXPLICIT_FMA: tl.constexpr, SUBTRACT: tl.constexpr,
+               BLOCK: tl.constexpr):
+        if SCALAR:
+            a = tl.load(A)
+            b = tl.load(B)
+            c = tl.load(C)
+            if EXPLICIT_FMA:
+                result = tl.fma(a, b, -c if SUBTRACT else c)
+            elif SUBTRACT:
+                result = a * b - c
+            else:
+                result = a * b + c
+            tl.store(Out, result)
+        else:
+            offsets = tl.arange(0, BLOCK)
+            a = tl.load(A + offsets, offsets < N, other=0)
+            b = tl.load(B + offsets, offsets < N, other=0)
+            c = tl.load(C + offsets, offsets < N, other=0)
+            if EXPLICIT_FMA:
+                result = tl.fma(a, b, -c if SUBTRACT else c)
+            elif SUBTRACT:
+                result = a * b - c
+            else:
+                result = a * b + c
+            tl.store(Out + offsets, result, offsets < N)
+
+    fresh_knobs.cache.home_dir = str(tmp_path)
+    fresh_knobs.language.allow_fp_fusion = allow_fp_fusion
+    fresh_knobs.language.default_fp_fusion = default_fp_fusion
+    effective_fusion = allow_fp_fusion and (default_fp_fusion if enable_fp_fusion is None else enable_fp_fusion)
+    size = 1 if scalar else 17
+    epsilon = torch.finfo(dtype).eps
+    a = torch.full((size, ), 1 + epsilon, dtype=dtype, device=device)
+    b = torch.full((size, ), 1 - epsilon, dtype=dtype, device=device)
+    c = torch.full((size, ), 1 if subtract else -1, dtype=dtype, device=device)
+    storage = torch.full((size + 8, ), 123, dtype=dtype, device=device)
+    output = storage[4:-4]
+    options = {"enable_fast_math": enable_fast_math, "num_cpu_threads": 1, "vec_lib": None}
+    if enable_fp_fusion is not None:
+        options["enable_fp_fusion"] = enable_fp_fusion
+    compiled = kernel[(1, )](a, b, c, output, size, SCALAR=scalar, EXPLICIT_FMA=explicit_fma, SUBTRACT=subtract,
+                             BLOCK=32, **options)
+
+    fused = -(epsilon**2)
+    if explicit_fma:
+        torch.testing.assert_close(output, torch.full_like(output, fused), rtol=0, atol=0)
+    elif effective_fusion:
+        assert torch.all((output == 0) | (output == fused))
+    else:
+        assert torch.all(output == 0)
+        assert not torch.signbit(output).any()
+    assert torch.all(storage[:4] == 123)
+    assert torch.all(storage[-4:] == 123)
+    assert compiled.metadata.enable_fp_fusion == effective_fusion
+
+    features = cpu.llvm.get_cpu_features()
+    if "neon" in features or "fma" in features:
+        # Include destructive SVE forms as well as scalar and x86 FMA.
+        fma_pattern = r"\b(fn?m(add|sub|ad|sb)|fn?ml[as]|vfn?m(add|sub)\w*)\b"
+        has_fma = re.search(fma_pattern, compiled.asm["asm"]) is not None
+        assert has_fma == (explicit_fma or effective_fusion)
