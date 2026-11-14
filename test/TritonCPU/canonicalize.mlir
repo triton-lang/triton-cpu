@@ -26,3 +26,18 @@ module {
     tt.return
   }
 }
+
+// -----
+
+// The rank-reduced read needs a mask of the new rank as well.
+// CHECK-LABEL: @fold_masked_transfer_read_shape_cast
+// CHECK: %[[MASK:.+]] = vector.shape_cast %arg3 : vector<1x16xi1> to vector<16xi1>
+// CHECK: %[[MASKED_VALUE:.+]] = vector.transfer_read %arg0[%arg1, %arg2], %{{.+}}, %[[MASK]] {in_bounds = [true]} : memref<?x?xf32>, vector<16xf32>
+// CHECK-NOT: vector.shape_cast
+// CHECK: tt.return %[[MASKED_VALUE]]
+tt.func public @fold_masked_transfer_read_shape_cast(%base: memref<?x?xf32>, %i: index, %j: index, %mask: vector<1x16xi1>) -> vector<16xf32> {
+  %zero = arith.constant 0.0 : f32
+  %read = vector.transfer_read %base[%i, %j], %zero, %mask {in_bounds = [true, true]} : memref<?x?xf32>, vector<1x16xf32>
+  %result = vector.shape_cast %read : vector<1x16xf32> to vector<16xf32>
+  tt.return %result : vector<16xf32>
+}

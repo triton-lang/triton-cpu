@@ -522,11 +522,11 @@ struct CpuLoadOpConversion : public MemoryOpConversion<triton::cpu::LoadOp> {
 };
 
 struct DescriptorLoadOpConversion
-    : public MemoryOpConversion<DescriptorLoadOp> {
+    : public MemoryOpConversion<triton::DescriptorLoadOp> {
   using MemoryOpConversion::MemoryOpConversion;
 
   LogicalResult
-  matchAndRewrite(DescriptorLoadOp descLoadOp, OpAdaptor adaptor,
+  matchAndRewrite(triton::DescriptorLoadOp descLoadOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (auto cachePolicy = dyn_cast_if_present<CachePolicyAttr>(
             descLoadOp.getCachePolicyAttr())) {
@@ -547,20 +547,7 @@ struct DescriptorLoadOpConversion
 
     auto vectorTy =
         cast<VectorType>(getTypeConverter()->convertType(descLoadOp.getType()));
-    auto readVectorTy = vectorTy;
-
     Value memRef = extractMemRef(makeDescOp, rewriter);
-    auto memRefTy = cast<MemRefType>(memRef.getType());
-
-    if (!assumeInBounds && vectorTy.getRank() < memRefTy.getRank()) {
-      // Enforce equals ranks, because a ranked-reduced vector.transfer_read
-      // doesn't model out-of-bounds checks for the leading/non-vector
-      // dimensions.
-      SmallVector<int64_t> extShape(memRefTy.getRank(), 1);
-      llvm::copy(vectorTy.getShape(),
-                 extShape.begin() + (memRefTy.getRank() - vectorTy.getRank()));
-      readVectorTy = VectorType::get(extShape, vectorTy.getElementType());
-    }
 
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
@@ -583,23 +570,18 @@ struct DescriptorLoadOpConversion
           descLoadOp, "Unsupported padding option in tensor descriptor");
     }
 
-    SmallVector<bool> inBounds(readVectorTy.getRank(), assumeInBounds);
-    Value res = vector::TransferReadOp::create(
-        rewriter, loc, readVectorTy, memRef, indices, paddingVal, inBounds);
-    if (readVectorTy != vectorTy)
-      res = vector::ShapeCastOp::create(rewriter, loc, vectorTy, res);
-
-    rewriter.replaceOp(descLoadOp, res);
+    rewriter.replaceOpWithNewOp<cpu::DescriptorLoadOp>(
+        descLoadOp, vectorTy, memRef, indices, paddingVal, assumeInBounds);
     return success();
   }
 };
 
 struct DescriptorStoreOpConversion
-    : public MemoryOpConversion<DescriptorStoreOp> {
+    : public MemoryOpConversion<triton::DescriptorStoreOp> {
   using MemoryOpConversion::MemoryOpConversion;
 
   LogicalResult
-  matchAndRewrite(DescriptorStoreOp descStoreOp, OpAdaptor adaptor,
+  matchAndRewrite(triton::DescriptorStoreOp descStoreOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto makeDescOp = descStoreOp.getDesc().getDefiningOp<MakeTensorDescOp>();
     if (!makeDescOp)
@@ -624,9 +606,8 @@ struct DescriptorStoreOpConversion
     SmallVector<Value> indices;
     castToIndex(adaptor.getIndices(), indices, rewriter, loc);
 
-    SmallVector<bool> inBounds(vectorTy.getRank(), assumeInBounds);
-    rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
-        descStoreOp, vecToStore, memRef, indices, inBounds);
+    rewriter.replaceOpWithNewOp<cpu::DescriptorStoreOp>(
+        descStoreOp, vecToStore, memRef, indices, assumeInBounds);
 
     return success();
   }
