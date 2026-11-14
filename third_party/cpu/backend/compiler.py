@@ -206,6 +206,7 @@ class CPUBackend(BaseBackend):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        cpu.passes.ttcpuir.add_lower_tensor_descriptor_ops(pm)
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)

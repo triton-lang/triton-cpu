@@ -10,6 +10,7 @@ add_triton_library(TritonCPUTransforms
     ConvertUnsupportedOps.cpp
     ConvertVectorContractToArmNeonBFMMLA.cpp
     DecomposeFpConversions.cpp
+    LowerTensorDescriptorOps.cpp
     OptimizeMasks.cpp
 
     DEPENDS

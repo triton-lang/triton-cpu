@@ -3,6 +3,15 @@
 
 include "mlir/Pass/PassBase.td"
 
+def LowerTensorDescriptorOps : Pass<"triton-cpu-lower-tensor-descriptor-ops", "mlir::ModuleOp"> {
+    let summary = "Lower CPU descriptor accesses to masked vector transfers.";
+    let constructor = "mlir::triton::cpu::createLowerTensorDescriptorOps()";
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::memref::MemRefDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 def ConvertUnsupportedOps : Pass<"triton-cpu-add-casts-for-unsupported-ops", "mlir::ModuleOp"> {
     let summary = "Convert operations on unsupported types.";
     let description = [{

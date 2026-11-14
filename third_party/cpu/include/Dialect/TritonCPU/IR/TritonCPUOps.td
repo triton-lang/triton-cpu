@@ -109,6 +109,45 @@ def TTC_StoreOp : TTC_Op<"store", [
   let assemblyFormat = "$src `,` $dst attr-dict `:` type($src) `,` type($dst)";
 }
 
+def TTC_DescriptorLoadOp : TTC_Op<"descriptor_load"> {
+  let summary = "Load a descriptor block into a vector";
+  let description = [{
+    Read a block from the base memref of a tensor descriptor. Indices specify
+    its origin in every memref dimension. The result may omit leading unit
+    block dimensions; bounds checks still cover those dimensions. Elements
+    outside the memref are replaced by padding. assume_in_bounds suppresses
+    these checks and requires the entire block to be in bounds.
+  }];
+  let arguments = (ins Arg<AnyMemRef, "descriptor base", [MemRead]>:$base,
+                       Variadic<Index>:$indices, AnyType:$padding,
+                       DefaultValuedAttr<BoolAttr, "false">:$assume_in_bounds);
+  let results = (outs TTC_Vector:$result);
+  let assemblyFormat = [{
+    $base `[` $indices `]` `,` $padding attr-dict `:`
+    type($base) `,` type($padding) `->` type($result)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTC_DescriptorStoreOp : TTC_Op<"descriptor_store"> {
+  let summary = "Store a vector into a descriptor block";
+  let description = [{
+    Write a block to the base memref of a tensor descriptor. Indices specify
+    its origin in every memref dimension. Out-of-bounds elements are not
+    written. assume_in_bounds suppresses these checks and requires the
+    entire block to be in bounds.
+  }];
+  let arguments = (ins TTC_Vector:$value,
+                       Arg<AnyMemRef, "descriptor base", [MemWrite]>:$base,
+                       Variadic<Index>:$indices,
+                       DefaultValuedAttr<BoolAttr, "false">:$assume_in_bounds);
+  let assemblyFormat = [{
+    $value `,` $base `[` $indices `]` attr-dict `:`
+    type($value) `,` type($base)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTC_PrintOp : TTC_Op<"print", [MemoryEffects<[MemWrite<GlobalMemory>]>]> {
   let summary = "Print at most a single scalar or vector (converted from tensor) on each line";
 

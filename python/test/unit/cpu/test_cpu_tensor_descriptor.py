@@ -122,3 +122,35 @@ def test_cpu_tensor_descriptor_padding(device):
     expected[:, input_shape[1]:] = float("nan")
     expected[input_shape[0]:, :] = float("nan")
     torch.testing.assert_close(expected, out, equal_nan=True)
+
+
+@pytest.mark.parametrize("row,col", [(0, 0), (0, -16), (1, -4), (0, 28), (-1, 0), (2, 0)])
+def test_cpu_tensor_descriptor_rank_reduced_bounds(row, col, device):
+
+    @triton.jit
+    def access(in_ptr, out_ptr, loaded_ptr, row, col):
+        desc = tl.make_tensor_descriptor(in_ptr, [2, 32], [32, 1], [1, 16])
+        values = tl.reshape(desc.load([row, col]), (16, ))
+        tl.store(loaded_ptr + tl.arange(0, 16), values)
+        out_desc = tl.make_tensor_descriptor(out_ptr, [2, 32], [32, 1], [1, 16])
+        out_desc.store([row, col], tl.full((1, 16), 7, tl.float32))
+
+    # Guards keep the tested negative/upper accesses within the allocation, so
+    # an incorrect mask is caught by values rather than an invalid pointer.
+    source_storage = torch.full((192, ), 17, dtype=torch.float32, device=device)
+    source = source_storage[64:128].reshape(2, 32)
+    source.copy_(torch.arange(64, dtype=torch.float32, device=device).reshape(2, 32))
+    destination = torch.full_like(source_storage, 123)
+    output = destination[64:128].reshape(2, 32)
+    loaded = torch.empty((16, ), dtype=torch.float32, device=device)
+    access[(1, )](source, output, loaded, row, col)
+
+    expected = torch.full_like(destination, 123)
+    expected_load = torch.zeros_like(loaded)
+    if 0 <= row < source.shape[0]:
+        start, stop = max(col, 0), min(col + loaded.numel(), source.shape[1])
+        if start < stop:
+            expected_load[start - col:stop - col] = source[row, start:stop]
+            expected[64 + row * 32 + start:64 + row * 32 + stop] = 7
+    torch.testing.assert_close(loaded, expected_load, rtol=0, atol=0)
+    torch.testing.assert_close(destination, expected, rtol=0, atol=0)

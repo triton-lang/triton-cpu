@@ -138,6 +138,9 @@ void init_triton_cpu_passes_ttcpuir(py::module_ &m) {
   m.def("add_triton_cpu_canonicalizer", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createCanonicalize());
   });
+  m.def("add_lower_tensor_descriptor_ops", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createLowerTensorDescriptorOps());
+  });
   m.def("add_optimize_masks", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createOptimizeMasks());
   });
