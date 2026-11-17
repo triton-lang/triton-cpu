@@ -140,6 +140,7 @@ class CPUBackend(BaseBackend):
 
     def parse_options(self, opts) -> Any:
         args = {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
+        args["enable_fp_fusion"] = knobs.language.fp_fusion_enabled(args.get("enable_fp_fusion"))
         if "enable_fast_math" not in args:
             args["enable_fast_math"] = os.getenv("TRITON_CPU_FAST_MATH", "1") != "0"
         if "supported_fp8_dtypes" not in args:

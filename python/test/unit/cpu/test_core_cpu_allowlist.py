@@ -19,6 +19,7 @@ CPU_TEST_CORE_ALLOWLIST = frozenset([
     "test_abs_fp8",
     "test_addptr",
     "test_aliasing",
+    "test_allow_fp_fusion",
     "test_arange",
     "test_argmax_argmin_tie_break_fast_with_nan",
     "test_argmax_argmin_with_nan",
