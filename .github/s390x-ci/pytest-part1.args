@@ -1,0 +1,2 @@
+python/test/unit/language/test_core.py
+python/test/unit/cpu/test_cpu_tensor_descriptor.py

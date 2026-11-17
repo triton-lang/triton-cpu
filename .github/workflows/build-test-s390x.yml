@@ -1,0 +1,134 @@
+name: Build and test on s390x
+
+# Builds Triton and runs its tests on IBM Z (s390x) runners from
+# https://github.com/IBM/actionspz. Jobs run in a prebuilt image that has
+# LLVM and the Python dependencies (see .github/s390x-ci/build.py). The
+# Python unit tests are split across two parallel jobs.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: s390x CI image, built and pushed with .github/s390x-ci/build.py
+        type: string
+        default: ghcr.io/triton-lang/triton-cpu-s390x-ci:ubuntu26.04-llvmb010a18d-pytorch2.15.0-r1
+
+permissions:
+  contents: read
+
+env:
+  CCACHE_COMPRESS: "true"
+  CCACHE_DIR: /github/home/.ccache
+  CCACHE_MAXSIZE: 2G
+  MAX_JOBS: "4"
+  TRITON_BUILD_WITH_CCACHE: "true"
+  TRITON_BUILD_WITH_CLANG_LLD: "true"
+
+jobs:
+  build:
+    name: Build on s390x
+    runs-on: ubuntu-26.04-s390x
+    timeout-minutes: 60
+    # Non-blocking until the s390x results are stable.
+    continue-on-error: true
+    container:
+      image: ${{ inputs.image }}
+      options: --user root
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check that the image's LLVM matches the pin
+        run: |
+          expected=$(jq -r .llvm_hash cmake/llvm-info.json)
+          actual=$(cat /opt/llvm/llvm-commit)
+          echo "cmake/llvm-info.json: ${expected}"
+          echo "image /opt/llvm:      ${actual}"
+          if [ "${expected}" != "${actual}" ]; then
+            echo "::error::The s390x CI image has LLVM ${actual}, but cmake/llvm-info.json pins ${expected}. Rebuild the image with .github/s390x-ci/build.py, push it, and update the image tag in .github/workflows/build-test-s390x.yml."
+            exit 1
+          fi
+
+      - name: Restore ccache
+        id: restore-ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.ccache
+          key: s390x-ccache-${{ hashFiles('cmake/llvm-info.json') }}-${{ github.sha }}
+          restore-keys: |
+            s390x-ccache-${{ hashFiles('cmake/llvm-info.json') }}-
+
+      - name: Build Triton wheel
+        run: |
+          ccache --zero-stats
+          python3 -m pip wheel --no-build-isolation --no-deps -w dist -v .
+          ccache --show-stats
+
+      - name: Run lit tests
+        run: |
+          LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
+          if [ ! -d "${LIT_TEST_DIR}" ]; then
+            echo "Could not find '${LIT_TEST_DIR}'" ; exit -1
+          fi
+          lit -v "${LIT_TEST_DIR}/TritonCPU"
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: s390x-wheel
+          path: dist/triton-*.whl
+          retention-days: 3
+
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.ccache
+          key: ${{ steps.restore-ccache.outputs.cache-primary-key }}
+
+  test:
+    name: Test on s390x (part ${{ matrix.part }})
+    needs: build
+    runs-on: ubuntu-26.04-s390x
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2]
+    container:
+      image: ${{ inputs.image }}
+      options: --user root
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: s390x-wheel
+          path: dist
+
+      # python/conftest.py puts python/ on sys.path, so python/triton (no compiled
+      # extension) would shadow the wheel.
+      - name: Install Triton
+        run: |
+          python3 -m pip install --no-deps dist/triton-*.whl
+          rm -rf python/triton
+
+      - name: Run python unit tests
+        env:
+          PYTHONPATH: .github/s390x-ci/pytest-plugins
+        run: |
+          python3 -m pytest -s --tb=short -n 4 --device cpu \
+            --timeout 600 --max-worker-restart 64 -p s390x_known_failures \
+            --junitxml=pytest-s390x-part${{ matrix.part }}.xml \
+            @.github/s390x-ci/pytest-part${{ matrix.part }}.args
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-s390x-part${{ matrix.part }}
+          path: pytest-s390x-part${{ matrix.part }}.xml
+          retention-days: 14
