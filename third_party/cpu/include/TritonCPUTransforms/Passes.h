@@ -33,6 +33,7 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createDecomposeFpConversions(bool decomposeBf16Conversions,
                              bool decomposeFp8Conversions);
 std::unique_ptr<OperationPass<ModuleOp>> createOptimizeMasks();
+std::unique_ptr<OperationPass<ModuleOp>> createLowerTensorDescriptorOps();
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotProduct();
 std::unique_ptr<OperationPass<ModuleOp>>

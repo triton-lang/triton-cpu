@@ -9,6 +9,34 @@
 
 namespace mlir::triton::cpu {
 
+LogicalResult DescriptorLoadOp::verify() {
+  auto baseTy = cast<MemRefType>(getBase().getType());
+  auto resultTy = cast<VectorType>(getType());
+  if (getIndices().size() != baseTy.getRank())
+    return emitOpError("expects one index per memref dimension");
+  if (resultTy.isScalable() || resultTy.getRank() > baseTy.getRank())
+    return emitOpError(
+        "expects a fixed vector with rank at most the memref rank");
+  if (resultTy.getElementType() != baseTy.getElementType() ||
+      getPadding().getType() != resultTy.getElementType())
+    return emitOpError(
+        "expects matching memref, vector and padding element types");
+  return success();
+}
+
+LogicalResult DescriptorStoreOp::verify() {
+  auto baseTy = cast<MemRefType>(getBase().getType());
+  auto valueTy = cast<VectorType>(getValue().getType());
+  if (getIndices().size() != baseTy.getRank())
+    return emitOpError("expects one index per memref dimension");
+  if (valueTy.isScalable() || valueTy.getRank() != baseTy.getRank())
+    return emitOpError(
+        "expects a fixed vector with the same rank as the memref");
+  if (valueTy.getElementType() != baseTy.getElementType())
+    return emitOpError("expects matching memref and vector element types");
+  return success();
+}
+
 LogicalResult PrintOp::verify() {
   if (getOperands().size() > 1)
     return emitOpError("expects at most one operand");
