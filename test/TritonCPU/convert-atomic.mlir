@@ -50,11 +50,8 @@ module {
 // CHECK-NEXT:  tt.return %[[CAST]]
 
 module {
-  tt.func @atomic_cas_tensor(%ptrs: vector<2xi64>, %cmp: vector<2xi32>, %val: vector<2xi32>) -> tensor<2xi32> {
-    %p = builtin.unrealized_conversion_cast %ptrs : vector<2xi64> to tensor<2x!tt.ptr<i32>>
-    %c = builtin.unrealized_conversion_cast %cmp : vector<2xi32> to tensor<2xi32>
-    %v = builtin.unrealized_conversion_cast %val : vector<2xi32> to tensor<2xi32>
-    %r = tt.atomic_cas relaxed, gpu, %p, %c, %v : (tensor<2x!tt.ptr<i32>>, tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+  tt.func @atomic_cas_tensor(%ptrs: tensor<2x!tt.ptr<i32>>, %cmp: tensor<2xi32>, %val: tensor<2xi32>) -> tensor<2xi32> {
+    %r = tt.atomic_cas relaxed, gpu, %ptrs, %cmp, %val : (tensor<2x!tt.ptr<i32>>, tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
     tt.return %r : tensor<2xi32>
   }
 }
