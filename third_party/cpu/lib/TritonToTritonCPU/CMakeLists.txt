@@ -21,5 +21,7 @@ add_triton_library(TritonToTritonCPU
 
     LINK_LIBS PUBLIC
     TritonCPUIR
+    MLIRMemRefDialect
     MLIRVectorDialect
+    MLIRUBDialect
 )

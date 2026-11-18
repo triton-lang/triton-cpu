@@ -15,6 +15,15 @@ def FuncOpToLLVM : Pass<"triton-cpu-func-op-to-llvm", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def MapElementwiseToLLVM : Pass<"triton-cpu-map-elementwise-to-llvm", "mlir::ModuleOp"> {
+    let summary = "Convert scalar maps over CPU tensor blocks to LLVM.";
+    let constructor = "mlir::triton::cpu::createMapElementwiseToLLVMPass()";
+
+    let dependentDialects = ["mlir::cf::ControlFlowDialect",
+                             "mlir::LLVM::LLVMDialect",
+                             "mlir::triton::TritonDialect"];
+}
+
 def MemoryOpToLLVM : Pass<"triton-cpu-memory-op-to-llvm", "mlir::ModuleOp"> {
     let summary = "Convert Triton memory operations to LLVM for CPU.";
     let description = [{}];

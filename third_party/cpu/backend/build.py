@@ -97,7 +97,7 @@ def _build_cpu_shared_object(name, src, srcdir, libraries, ccflags, source_kind)
         if system == "Darwin" and machine in ("aarch64", "arm64"):
             # LLVM can emit CSSC instructions on Apple Silicon, but Apple clang
             # does not enable that extension for standalone assembly by default.
-            cpu_flags.append("-mcpu=native+cssc")
+            cpu_flags.append("-mcpu=native+cssc+bf16")
         if system == "Linux" and machine in ("aarch64", "arm64"):
             # Arm assembly may need an explicit target to enable host features.
             cpu_flags.append("-mcpu=native")

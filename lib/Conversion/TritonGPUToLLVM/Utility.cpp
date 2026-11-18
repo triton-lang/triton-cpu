@@ -2183,14 +2183,17 @@ SmallVector<Value> inlineRegionImpl(RewriterBase &rewriter, Region &region,
   rewriter.setInsertionPointToEnd(curBlock);
   LLVM::BrOp::create(rewriter, loc, args, regionMap.lookup(&region.front()));
 
-  ValueRange terminatorOperands;
+  SmallVector<Type> resultTypes;
   for (Block &origBlock : region) {
     Block *newBlock = regionMap.lookup(&origBlock);
     rewriter.moveBlockBefore(newBlock, remainingOpsBlock);
 
     auto terminator = newBlock->getTerminator();
     if (terminator->getRegisteredInfo()->getTypeID() == terminatorTypeId) {
-      terminatorOperands = terminator->getOperands();
+      ValueRange terminatorOperands = terminator->getOperands();
+      // Without pattern rollback, replacement immediately erases the
+      // terminator and its operand storage. Save the types before replacing it.
+      resultTypes = llvm::to_vector(terminator->getOperandTypes());
       rewriter.setInsertionPointAfter(terminator);
       rewriter.replaceOpWithNewOp<LLVM::BrOp>(terminator, terminatorOperands,
                                               remainingOpsBlock);
@@ -2199,7 +2202,7 @@ SmallVector<Value> inlineRegionImpl(RewriterBase &rewriter, Region &region,
 
   rewriter.setInsertionPointToStart(remainingOpsBlock);
   SmallVector<Value> vals;
-  for (auto resultTy : terminatorOperands.getType()) {
+  for (Type resultTy : resultTypes) {
     auto val = remainingOpsBlock->addArgument(resultTy, loc);
     vals.push_back(val);
   }
