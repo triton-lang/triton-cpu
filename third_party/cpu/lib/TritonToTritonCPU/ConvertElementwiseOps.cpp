@@ -251,6 +251,14 @@ struct ConvertElementwiseOps
     patterns.add<OpTypeConversion<math::ErfOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::CbrtOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::TruncOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::RoundEvenOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::RoundOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::CopySignOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::CtPopOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::CountLeadingZerosOp>>(typeConverter,
+                                                              context);
+    patterns.add<OpTypeConversion<math::CountTrailingZerosOp>>(typeConverter,
+                                                               context);
 
     patterns.add<OpTypeConversion<triton::BitcastOp, arith::BitcastOp>>(
         typeConverter, context);

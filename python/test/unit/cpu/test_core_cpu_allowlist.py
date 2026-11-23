@@ -92,6 +92,7 @@ CPU_TEST_CORE_ALLOWLIST = frozenset([
     "test_join_with_mma",
     "test_keyword_only_arguments",
     "test_keyword_only_launch_errors",
+    "test_libdevice_rint",
     "test_load_cache_modifier",
     "test_load_scalar_with_mask",
     "test_load_scope_sem_coop_grid_cta_one",

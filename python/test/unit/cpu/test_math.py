@@ -179,6 +179,163 @@ def test_libdevice_math_fn(vec_lib, dtype_str, math_fn, size, test_scalar, devic
         assert meta.asm["asm"].count(lib_prefix[vec_lib]) == 0
 
 
+def round_half_away_from_zero(x):
+    t = torch.trunc(x)
+    return torch.copysign(t.abs() + ((x - t).abs() >= 0.5).to(x.dtype), x)
+
+
+@pytest.mark.parametrize("test_scalar", [False, True])
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16", "float32", "float64"])
+@pytest.mark.parametrize("math_fn, intrinsic, ref_fn", [
+    ("rint", "llvm.roundeven", torch.round),
+    ("nearbyint", "llvm.roundeven", torch.round),
+    ("round", "llvm.round", round_half_away_from_zero),
+    ("copysign", "llvm.copysign", torch.copysign),
+])
+def test_libdevice_native_float_fn(math_fn, intrinsic, ref_fn, dtype_str, test_scalar, device):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    @triton.jit
+    def unary_kernel(src, dst, MATH_FN: tl.constexpr, BLOCK_SIZE: tl.constexpr, TEST_SCALAR: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        if TEST_SCALAR:
+            tl.store(dst, getattr(libdevice, MATH_FN)(tl.load(src)))
+        else:
+            tl.store(dst + idxs, getattr(libdevice, MATH_FN)(tl.load(src + idxs)))
+
+    @triton.jit
+    def binary_kernel(x_ptr, y_ptr, dst, MATH_FN: tl.constexpr, BLOCK_SIZE: tl.constexpr, TEST_SCALAR: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        if TEST_SCALAR:
+            tl.store(dst, getattr(libdevice, MATH_FN)(tl.load(x_ptr), tl.load(y_ptr)))
+        else:
+            tl.store(dst + idxs, getattr(libdevice, MATH_FN)(tl.load(x_ptr + idxs), tl.load(y_ptr + idxs)))
+
+    dtype = getattr(torch, dtype_str)
+    # Halfway cases distinguish round-half-even from round-half-away-from-zero.
+    values = [-2.5, -1.5, -0.5, -0.0, 0.0, 0.5, 1.5, 2.5, 0.25, 3.75, -3.75, 1e4, 7.0]
+    values += [float("inf"), float("-inf"), float("nan")]
+    x = torch.tensor(values, dtype=dtype, device=device)
+    inputs = [x]
+    if math_fn == "copysign":
+        inputs.append(torch.tensor([1.0, -1.0] * (len(values) // 2), dtype=dtype, device=device))
+    ref = ref_fn(*inputs)
+    res = torch.zeros_like(x)
+    kernel = binary_kernel if len(inputs) == 2 else unary_kernel
+    meta = kernel[(1, )](*inputs, res, MATH_FN=math_fn, BLOCK_SIZE=len(values), TEST_SCALAR=test_scalar)
+    if test_scalar:
+        ref, res = ref[:1], res[:1]
+    torch.testing.assert_close(res, ref, rtol=0, atol=0, equal_nan=True)
+    assert torch.equal(torch.signbit(res), torch.signbit(ref))
+    # Lowered to an LLVM intrinsic instead of a vector library call.
+    assert f"@{intrinsic}." in meta.asm["llir"]
+    assert "Sleef_" not in meta.asm["llir"]
+
+
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16", "float32", "float64"])
+def test_libdevice_copysign_literal(dtype_str, device):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    @triton.jit
+    def kernel(src, dst, BLOCK_SIZE: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        x = tl.load(src + idxs)
+        y = libdevice.copysign(x, -1.0)
+        tl.static_assert(y.dtype == x.dtype)
+        tl.store(dst + idxs, y)
+
+    src = torch.tensor([1.0, -2.0, 0.0, -0.0], dtype=getattr(torch, dtype_str), device=device)
+    res = torch.empty_like(src)
+    kernel[(1, )](src, res, BLOCK_SIZE=4)
+    assert torch.equal(res, -src.abs())
+    assert torch.signbit(res).all()
+
+
+@pytest.mark.parametrize("dtype_str", ["int32", "int64"])
+@pytest.mark.parametrize("math_fn", ["popc", "clz", "ffs"])
+def test_libdevice_native_bit_fn(math_fn, dtype_str, device):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    @triton.jit
+    def kernel(src, dst, MATH_FN: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+        idxs = tl.arange(0, BLOCK_SIZE)
+        tl.store(dst + idxs, getattr(libdevice, MATH_FN)(tl.load(src + idxs)))
+
+    bits = 32 if dtype_str == "int32" else 64
+    values = [0, 1, -1, 2, 8, 12, 255, 1024, 7, -8, 3, 96, 2**(bits - 2), -2**(bits - 1), 2**(bits - 1) - 1, 5]
+
+    def ref_fn(v):
+        u = v & ((1 << bits) - 1)
+        if math_fn == "popc":
+            return bin(u).count("1")
+        if math_fn == "clz":
+            return bits - u.bit_length()
+        return (u & -u).bit_length()
+
+    src = torch.tensor(values, dtype=getattr(torch, dtype_str), device=device)
+    # Like CUDA's 64-bit variants (e.g. __nv_popcll), results are int32.
+    res = torch.zeros(len(values), dtype=torch.int32, device=device)
+    meta = kernel[(1, )](src, res, MATH_FN=math_fn, BLOCK_SIZE=len(values))
+    assert res.tolist() == [ref_fn(v) for v in values]
+    intrinsic = {"popc": "llvm.ctpop", "clz": "llvm.ctlz", "ffs": "llvm.cttz"}[math_fn]
+    assert f"@{intrinsic}." in meta.asm["llir"]
+
+
+# Block inputs to isnan/isinf are covered by test_libdevice_math_fn.
+@pytest.mark.parametrize("math_fn, dtype_str, ref_fn, test_scalar", [
+    ("finitef", "float32", torch.isfinite, False),
+    ("finitef", "float32", torch.isfinite, True),
+    ("isfinited", "float64", torch.isfinite, False),
+    ("isfinited", "float64", torch.isfinite, True),
+    ("isnan", "float32", torch.isnan, True),
+    ("isinf", "float32", torch.isinf, True),
+])
+def test_libdevice_float_predicate(math_fn, dtype_str, ref_fn, test_scalar, device):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    @triton.jit
+    def kernel(src, dst, MATH_FN: tl.constexpr, BLOCK_SIZE: tl.constexpr, TEST_SCALAR: tl.constexpr):
+        if TEST_SCALAR:
+            y = getattr(libdevice, MATH_FN)(tl.load(src))
+            tl.static_assert(y.dtype == tl.int1)
+            tl.store(dst, ~y)
+        else:
+            idxs = tl.arange(0, BLOCK_SIZE)
+            y = getattr(libdevice, MATH_FN)(tl.load(src + idxs))
+            tl.static_assert(y.dtype == tl.int1)
+            tl.store(dst + idxs, ~y)
+
+    values = [0.0, -0.0, 1.0, -1.5, 1e-40, 3e38, float("inf"), float("-inf"), float("nan"), -float("nan"), 2.0, 4.0]
+    values += [8.0] * (16 - len(values))
+    src = torch.tensor(values, dtype=getattr(torch, dtype_str), device=device)
+    res = torch.zeros(len(values), dtype=torch.bool, device=device)
+    ref = ~ref_fn(src)
+    for i in ([2, 6, 8] if test_scalar else [None]):
+        inp = src[i:i + 1] if test_scalar else src
+        kernel[(1, )](inp, res, MATH_FN=math_fn, BLOCK_SIZE=len(values), TEST_SCALAR=test_scalar)
+        if test_scalar:
+            assert res[0] == ref[i]
+        else:
+            assert torch.equal(res, ref)
+
+
+def test_libdevice_rejects_fp8(device):
+    if not is_cpu():
+        pytest.skip("This test is CPU-specific")
+
+    @triton.jit
+    def kernel(src, dst):
+        tl.store(dst, libdevice.rint(tl.load(src).to(tl.float8e5)).to(tl.float32))
+
+    src = torch.ones(1, device=device)
+    with pytest.raises(triton.CompilationError, match="rint expects fp16, bf16, fp32 or fp64"):
+        kernel[(1, )](src, torch.empty_like(src))
+
+
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16", "float32", "float64"])
 @pytest.mark.parametrize("size", [4, 16, 64, 256])
 @pytest.mark.parametrize("math_fn, ulp_suffix", [("sin", "_u10"), ("sqrt", "_u05"), ("floor", "_")])
