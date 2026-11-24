@@ -227,6 +227,10 @@ def test_libdevice_native_float_fn(math_fn, intrinsic, ref_fn, dtype_str, test_s
     if test_scalar:
         ref, res = ref[:1], res[:1]
     torch.testing.assert_close(res, ref, rtol=0, atol=0, equal_nan=True)
+    if math_fn != "copysign":
+        # Rounding permits either sign for a NaN result.
+        non_nan = ~torch.isnan(ref)
+        res, ref = res[non_nan], ref[non_nan]
     assert torch.equal(torch.signbit(res), torch.signbit(ref))
     # Lowered to an LLVM intrinsic instead of a vector library call.
     assert f"@{intrinsic}." in meta.asm["llir"]
