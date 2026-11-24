@@ -61,6 +61,12 @@ mlir::Value createUnaryMathOp(TritonOpBuilder &builder, mlir::Value &value) {
   return builder.create<OpTy>(value);
 }
 
+template <typename OpTy>
+mlir::Value createBinaryMathOp(TritonOpBuilder &builder, mlir::Value &lhs,
+                               mlir::Value &rhs) {
+  return builder.create<OpTy>(lhs, rhs);
+}
+
 void init_triton_cpu_ir(py::module_ &m) {
   m.def("create_acos", &createUnaryMathOp<mlir::math::AcosOp>);
   m.def("create_acosh", &createUnaryMathOp<mlir::math::AcoshOp>);
@@ -77,6 +83,12 @@ void init_triton_cpu_ir(py::module_ &m) {
   m.def("create_tan", &createUnaryMathOp<mlir::math::TanOp>);
   m.def("create_tanh", &createUnaryMathOp<mlir::math::TanhOp>);
   m.def("create_trunc", &createUnaryMathOp<mlir::math::TruncOp>);
+  m.def("create_roundeven", &createUnaryMathOp<mlir::math::RoundEvenOp>);
+  m.def("create_round", &createUnaryMathOp<mlir::math::RoundOp>);
+  m.def("create_copysign", &createBinaryMathOp<mlir::math::CopySignOp>);
+  m.def("create_ctpop", &createUnaryMathOp<mlir::math::CtPopOp>);
+  m.def("create_ctlz", &createUnaryMathOp<mlir::math::CountLeadingZerosOp>);
+  m.def("create_cttz", &createUnaryMathOp<mlir::math::CountTrailingZerosOp>);
 }
 
 } // namespace

@@ -157,12 +157,90 @@ def fmod(arg0, arg1, _semantic=None):
         }, is_pure=True, _semantic=_semantic)
 
 
+def _check_floating(name, *args):
+    for arg in args:
+        if arg.dtype not in (tl.float16, tl.bfloat16, tl.float32, tl.float64):
+            raise ValueError(f"{name} expects fp16, bf16, fp32 or fp64, got {arg.dtype}")
+
+
+def _check_int32_or_int64(name, arg):
+    if not arg.dtype.is_int() or arg.dtype.primitive_bitwidth not in (32, 64):
+        raise ValueError(f"{name} expects a 32-bit or 64-bit integer type, got {arg.dtype}")
+
+
+@core.extern
+def rint(arg0, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    _check_floating("rint", arg0)
+    return core.tensor(_cpu.ir.create_roundeven(_semantic.builder, arg0.handle), arg0.type)
+
+
+@core.extern
+def nearbyint(arg0, _semantic=None):
+    # Triton kernels always run in the default round-to-nearest-even mode.
+    arg0 = _semantic.to_tensor(arg0)
+    _check_floating("nearbyint", arg0)
+    return core.tensor(_cpu.ir.create_roundeven(_semantic.builder, arg0.handle), arg0.type)
+
+
+@core.extern
+def round(arg0, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    _check_floating("round", arg0)
+    return core.tensor(_cpu.ir.create_round(_semantic.builder, arg0.handle), arg0.type)
+
+
+@core.extern
+def copysign(arg0, arg1, _semantic=None):
+    arg0 = core._unwrap_if_constexpr(arg0)
+    arg1 = core._unwrap_if_constexpr(arg1)
+    arg0, arg1 = core.binary_op_type_legalization(arg0, arg1, _semantic)
+    _check_floating("copysign", arg0, arg1)
+    return core.tensor(_cpu.ir.create_copysign(_semantic.builder, arg0.handle, arg1.handle), arg0.type)
+
+
+# Bit-counting functions return int32 for both 32-bit and 64-bit inputs, like
+# CUDA's __nv_popc/__nv_popcll and friends.
+@core.extern
+def popc(arg0, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    _check_int32_or_int64("popc", arg0)
+    res = core.tensor(_cpu.ir.create_ctpop(_semantic.builder, arg0.handle), arg0.type)
+    return _semantic.cast(res, tl.int32)
+
+
+@core.extern
+def clz(arg0, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    _check_int32_or_int64("clz", arg0)
+    res = core.tensor(_cpu.ir.create_ctlz(_semantic.builder, arg0.handle), arg0.type)
+    return _semantic.cast(res, tl.int32)
+
+
+@core.extern
+def _cttz(arg0, _semantic=None):
+    return core.tensor(_cpu.ir.create_cttz(_semantic.builder, arg0.handle), arg0.type)
+
+
+@jit
+def _ffs(arg0):
+    # Position of the least significant set bit, counting from 1; 0 if no bit is set.
+    return tl.where(arg0 == 0, 0, _cttz(arg0) + 1).to(tl.int32)
+
+
+@builtin
+def ffs(arg0, _semantic=None, _generator=None):
+    arg0 = _semantic.to_tensor(arg0)
+    _check_int32_or_int64("ffs", arg0)
+    return _generator.call_JitFunction(_ffs, (arg0, ), kwargs={})
+
+
 @jit
 def _const(v, dtype):
     """
-    Create a tensor with a single value of type :dtype.
+    Create a scalar with value :v of type :dtype.
     """
-    return tl.full((1, ), v, dtype)
+    return tl.full((), v, dtype)
 
 
 @jit
@@ -186,6 +264,8 @@ def _is_special_float(arg0, uint_dtype, kind: tl.constexpr):
         return exp_is_all_ones & (shifted_mantissa != zero)
     elif kind == "inf":
         return exp_is_all_ones & (shifted_mantissa == zero)
+    elif kind == "finite":
+        return ~exp_is_all_ones
     else:
         raise ValueError(f"Unexpected kind {kind}")
 
@@ -206,6 +286,24 @@ def isinf(arg0, _semantic=None, _generator=None):
     bitwidth = arg0.dtype.primitive_bitwidth
     uint_dtype = tl.core.get_int_dtype(bitwidth, signed=False)
     return _generator.call_JitFunction(_is_special_float, (arg0, uint_dtype, "inf"), kwargs={})
+
+
+def _is_finite(name, arg0, expected_dtype, _semantic, _generator):
+    arg0 = _semantic.to_tensor(arg0)
+    if arg0.dtype != expected_dtype:
+        raise ValueError(f"{name} expects {expected_dtype}, got {arg0.dtype}")
+    uint_dtype = tl.core.get_int_dtype(arg0.dtype.primitive_bitwidth, signed=False)
+    return _generator.call_JitFunction(_is_special_float, (arg0, uint_dtype, "finite"), kwargs={})
+
+
+@builtin
+def finitef(arg0, _semantic=None, _generator=None):
+    return _is_finite("finitef", arg0, tl.float32, _semantic, _generator)
+
+
+@builtin
+def isfinited(arg0, _semantic=None, _generator=None):
+    return _is_finite("isfinited", arg0, tl.float64, _semantic, _generator)
 
 
 @jit
